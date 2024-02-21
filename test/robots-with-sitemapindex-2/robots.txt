@@ -1,0 +1,5 @@
+User-agent: *
+Disallow: /
+
+Sitemap: http://HOST/sitemapindex-1.xml
+Sitemap: http://HOST/sitemapindex-2.xml
