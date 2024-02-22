@@ -23,7 +23,7 @@ func TestS_setConfigDefaults(t *testing.T) {
 			name: "default config",
 			s:    &S{},
 			want: config{
-				userAgent:    "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/master/README.md)",
+				userAgent:    "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
 				fetchTimeout: 3,
 			},
 		},

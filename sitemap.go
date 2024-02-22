@@ -110,12 +110,12 @@ func New() *S {
 
 // setConfigDefaults sets the default configuration values for the S structure.
 // It initializes the cfg field with the default values for userAgent and fetchTimeout.
-// The default userAgent is "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/master/README.md)",
+// The default userAgent is "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
 // and the default fetchTimeout is 3 seconds.
 // This method does not return any value.
 func (s *S) setConfigDefaults() {
 	s.cfg = config{
-		userAgent:    "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/master/README.md)",
+		userAgent:    "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
 		fetchTimeout: 3,
 	}
 }

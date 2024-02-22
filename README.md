@@ -35,7 +35,7 @@ s := sitemap.New()
 
 ### Configuration defaults
 
- - userAgent: `"go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/master/README.md)"`
+ - userAgent: `"go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)"`
  - fetchTimeout: `3` seconds
 
 ### Overwrite defaults
@@ -92,4 +92,4 @@ In this example, sitemap is parsed from "https://www.sitemaps.org/sitemap.xml". 
 
 ## Examples
 
-Examples can be found in [/examples](https://github.com/aafeher/go-sitemap-parser/tree/master/examples).
+Examples can be found in [/examples](https://github.com/aafeher/go-sitemap-parser/tree/main/examples).
