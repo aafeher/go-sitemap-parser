@@ -1,5 +1,6 @@
-on: [push, pull_request]
-name: build
+name: Go
+on: [push]
+
 jobs:
 
   test:
@@ -12,21 +13,17 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-
-    - name: Install Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: ${{ matrix.go-version }}
-        cache: false
-
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Test
-      run: go test -v ./... -coverprofile=coverage.txt -covermode=atomic
-      
-    - name: Upload coverage reports to Codecov
-      uses: codecov/codecov-action@v4.0.1
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
-        slug: aafeher/go-sitemap-parser
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: false
+      - name: Test
+        run: go test -v ./... -coverprofile=coverage.txt -covermode=atomic
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v4.0.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: aafeher/go-sitemap-parser
