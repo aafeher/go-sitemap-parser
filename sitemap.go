@@ -154,6 +154,7 @@ func (s *S) SetFetchTimeout(fetchTimeout uint8) *S {
 // It returns the S structure and nil error if the method was able to complete successfully.
 func (s *S) Parse(url string, urlContent *string) (*S, error) {
 	var err error
+	var mu sync.Mutex
 	var wg sync.WaitGroup
 
 	s.mainURL = url
@@ -171,6 +172,10 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 			rTXTsmURL := robotsTXTSitemapURL
 			go func() {
 				defer wg.Done()
+
+				mu.Lock()
+				defer mu.Unlock()
+
 				robotsTXTSitemapContent, err := s.fetch(rTXTsmURL)
 				if err != nil {
 					s.errs = append(s.errs, err)
