@@ -10,7 +10,7 @@ func main() {
 	url := "https://www.sitemaps.org/sitemap.xml"
 
 	// create new instance, overwrite default configuration and call Parse() with url
-	s := sitemap.New().SetUserAgent("Mozilla/5.0 (X11; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0").SetFetchTimeout(5)
+	s := sitemap.New().SetUserAgent("Mozilla/5.0 (X11; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0").SetFetchTimeout(5).SetMultiThread(false)
 	sm, err := s.Parse(url, nil)
 	if err != nil {
 		log.Printf("%v", err)

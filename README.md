@@ -37,6 +37,7 @@ s := sitemap.New()
 
  - userAgent: `"go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)"`
  - fetchTimeout: `3` seconds
+ - multiThread: `true`
 
 ### Overwrite defaults
 
@@ -64,6 +65,20 @@ s = s.SetFetchTimeout(10)
 ... or ...
 ```go
 s := sitemap.New().SetFetchTimeout(10)
+```
+
+#### Multi-threading
+
+By default, the package uses multi-threading to fetch and parse sitemaps concurrently.
+To set the multi-thread flag on/off, use the `SetMultiThread()` function.
+
+```go
+s := sitemap.New()
+s = s.SetMultiThread(false)
+```
+... or ...
+```go
+s := sitemap.New().SetMultiThread(false)
 ```
 
 #### Chaining methods

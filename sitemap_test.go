@@ -25,6 +25,7 @@ func TestS_setConfigDefaults(t *testing.T) {
 			want: config{
 				userAgent:    "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
 				fetchTimeout: 3,
+				multiThread:  true,
 			},
 		},
 	}
@@ -93,6 +94,31 @@ func TestS_SetFetchTimeout(t *testing.T) {
 	}
 }
 
+func TestS_SetMultiThread(t *testing.T) {
+	tests := []struct {
+		name        string
+		multiThread bool
+	}{
+		{
+			name:        "MultiThread",
+			multiThread: true,
+		},
+		{
+			name:        "Sequential",
+			multiThread: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := New()
+			s.SetMultiThread(test.multiThread)
+			if s.cfg.multiThread != test.multiThread {
+				t.Errorf("expected %v, got %v", test.multiThread, s.cfg.multiThread)
+			}
+		})
+	}
+}
+
 func TestS_Parse(t *testing.T) {
 	server := testServer()
 	defer server.Close()
@@ -110,6 +136,7 @@ func TestS_Parse(t *testing.T) {
 	tests := []struct {
 		name                 string
 		url                  string
+		multiThread          bool
 		content              *string
 		err                  *string
 		mainURLContent       *string
@@ -121,6 +148,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "invalid url",
 			url:                  "invalid_url",
+			multiThread:          true,
 			err:                  pointerOfString("Get \"invalid_url\": unsupported protocol scheme \"\""),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
@@ -137,6 +165,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "testServer index page",
 			url:                  server.URL,
+			multiThread:          false,
 			err:                  pointerOfString("received HTTP status 404"),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
@@ -147,6 +176,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "page not found",
 			url:                  fmt.Sprintf("%s/404", server.URL),
+			multiThread:          true,
 			err:                  pointerOfString("received HTTP status 404"),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
@@ -159,6 +189,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "robots.txt empty file",
 			url:                  fmt.Sprintf("%s/robots-empty/robots.txt", server.URL),
+			multiThread:          false,
 			mainURLContent:       pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
@@ -167,6 +198,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "robots.txt empty content",
 			url:                  fmt.Sprintf("%s/robots-empty/robots.txt", server.URL),
+			multiThread:          true,
 			content:              pointerOfString(""),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
@@ -176,6 +208,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "robots.txt without sitemap",
 			url:                  fmt.Sprintf("%s/robots-without-sitemap/robots.txt", server.URL),
+			multiThread:          false,
 			mainURLContent:       pointerOfString("User-agent: *\nDisallow: /\n\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
@@ -184,6 +217,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "robots.txt with sitemapindex",
 			url:                  fmt.Sprintf("%s/robots-with-sitemapindex/robots.txt", server.URL),
+			multiThread:          true,
 			mainURLContent:       pointerOfString(fmt.Sprintf("User-agent: *\nDisallow: /\n\nSitemap: %s/sitemapindex-1.xml\n\n", server.URL)),
 			robotsTxtSitemapURLs: []string{fmt.Sprintf("%s/sitemapindex-1.xml", server.URL)},
 			sitemapLocations: []string{
@@ -234,6 +268,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:           "robots.txt with two sitemapindex",
 			url:            fmt.Sprintf("%s/robots-with-sitemapindex-2/robots.txt", server.URL),
+			multiThread:    false,
 			mainURLContent: pointerOfString(fmt.Sprintf("User-agent: *\nDisallow: /\n\nSitemap: %s/sitemapindex-1.xml\nSitemap: %s/sitemapindex-2.xml\n\n", server.URL, server.URL)),
 			robotsTxtSitemapURLs: []string{
 				fmt.Sprintf("%s/sitemapindex-1.xml", server.URL),
@@ -327,6 +362,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "robots.txt with invalid sitemap",
 			url:                  fmt.Sprintf("%s/robots-with-invalid-sitemap/robots.txt", server.URL),
+			multiThread:          true,
 			mainURLContent:       pointerOfString(fmt.Sprintf("User-agent: *\nDisallow: /\n\nSitemap: %s/invalid.xml\n\n", server.URL)),
 			robotsTxtSitemapURLs: []string{fmt.Sprintf("%s/invalid.xml", server.URL)},
 			sitemapLocations:     nil,
@@ -336,6 +372,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "robots.txt with sitemapindex.xml.gz",
 			url:                  fmt.Sprintf("%s/robots-with-sitemapindex-gz/robots.txt", server.URL),
+			multiThread:          false,
 			mainURLContent:       pointerOfString(fmt.Sprintf("User-agent: *\nDisallow: /\n\nSitemap: %s/sitemapindex-1.xml.gz\n\n", server.URL)),
 			robotsTxtSitemapURLs: []string{fmt.Sprintf("%s/sitemapindex-1.xml.gz", server.URL)},
 			sitemapLocations: []string{
@@ -388,6 +425,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemapindex.xml.gz corrupted file",
 			url:                  fmt.Sprintf("%s/sitemapindex-empty-corrupted.xml.gz", server.URL),
+			multiThread:          true,
 			mainURLContent:       pointerOfString("error: gzip: invalid checksum\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
@@ -397,6 +435,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemapindex.xml.gz empty file",
 			url:                  fmt.Sprintf("%s/sitemapindex-empty.xml.gz", server.URL),
+			multiThread:          false,
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
@@ -406,6 +445,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemapindex.xml.gz",
 			url:                  fmt.Sprintf("%s/sitemapindex-1.xml.gz", server.URL),
+			multiThread:          true,
 			mainURLContent:       pointerOfString(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <sitemap>\n        <loc>%s/sitemap-01.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n    <sitemap>\n        <loc>%s/sitemap-02.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n    <sitemap>\n        <loc>%s/sitemap-03.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n</sitemapindex>", server.URL, server.URL, server.URL)),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations: []string{
@@ -458,6 +498,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemap.xml.gz empty file",
 			url:                  fmt.Sprintf("%s/sitemap-empty.xml.gz", server.URL),
+			multiThread:          false,
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
@@ -467,6 +508,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemap.xml.gz",
 			url:                  fmt.Sprintf("%s/sitemap-02.xml.gz", server.URL),
+			multiThread:          true,
 			mainURLContent:       pointerOfString(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <url>\n        <loc>%s/page-02</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n        <changefreq>hourly</changefreq>\n        <priority>0.5</priority>\n    </url>\n    <url>\n        <loc>%s/page-03</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n        <changefreq>daily</changefreq>\n        <priority>0.5</priority>\n    </url>\n</urlset>\n", server.URL, server.URL)),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
@@ -490,6 +532,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemapindex.xml empty file",
 			url:                  fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL),
+			multiThread:          false,
 			mainURLContent:       pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
@@ -499,6 +542,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemapindex.xml empty content",
 			url:                  fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL),
+			multiThread:          true,
 			content:              pointerOfString("\n"),
 			mainURLContent:       pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
@@ -509,6 +553,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemapindex.xml",
 			url:                  fmt.Sprintf("%s/sitemapindex-1.xml.gz", server.URL),
+			multiThread:          false,
 			mainURLContent:       pointerOfString(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <sitemap>\n        <loc>%s/sitemap-01.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n    <sitemap>\n        <loc>%s/sitemap-02.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n    <sitemap>\n        <loc>%s/sitemap-03.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n</sitemapindex>", server.URL, server.URL, server.URL)),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations: []string{
@@ -559,6 +604,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemapindex.xml with invalid sitemap",
 			url:                  fmt.Sprintf("%s/sitemapindex-with-invalid-sitemap.xml", server.URL),
+			multiThread:          true,
 			content:              nil,
 			mainURLContent:       pointerOfString(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <sitemap>\n        <loc>%s/invalid.xml</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n</sitemapindex>\n", server.URL)),
 			robotsTxtSitemapURLs: nil,
@@ -574,6 +620,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemap.xml empty file",
 			url:                  fmt.Sprintf("%s/sitemap-empty.xml", server.URL),
+			multiThread:          false,
 			mainURLContent:       pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
@@ -583,6 +630,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemap.xml empty content",
 			url:                  fmt.Sprintf("%s/sitemap-empty.xml", server.URL),
+			multiThread:          true,
 			content:              pointerOfString("\n"),
 			mainURLContent:       pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
@@ -593,6 +641,7 @@ func TestS_Parse(t *testing.T) {
 		{
 			name:                 "sitemap.xml",
 			url:                  fmt.Sprintf("%s/sitemap-02.xml.gz", server.URL),
+			multiThread:          false,
 			mainURLContent:       pointerOfString(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <url>\n        <loc>%s/page-02</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n        <changefreq>hourly</changefreq>\n        <priority>0.5</priority>\n    </url>\n    <url>\n        <loc>%s/page-03</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n        <changefreq>daily</changefreq>\n        <priority>0.5</priority>\n    </url>\n</urlset>\n", server.URL, server.URL)),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
@@ -616,7 +665,7 @@ func TestS_Parse(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			s := New()
-			sitemap, err := s.Parse(test.url, test.content)
+			sitemap, err := s.SetMultiThread(test.multiThread).Parse(test.url, test.content)
 			if err != nil {
 				if err.Error() != *test.err {
 					t.Errorf("Unexpected error: %v", err)
@@ -1085,7 +1134,7 @@ func TestS_checkAndUnzipContent(t *testing.T) {
 	}
 }
 
-func TestS_parseAndFetchUrls(t *testing.T) {
+func TestS_parseAndFetchUrlsMultiThread(t *testing.T) {
 	server := testServer()
 	defer server.Close()
 
@@ -1127,7 +1176,62 @@ func TestS_parseAndFetchUrls(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3}, errs: []error{}}
-			s.parseAndFetchUrls(test.locations)
+			s.parseAndFetchUrlsMultiThread(test.locations)
+
+			if len(s.urls) != int(test.urlsCount) {
+				t.Errorf("expected %d, got %d", test.urlsCount, len(s.urls))
+			}
+
+			if len(s.errs) != int(test.errsCount) {
+				t.Errorf("expected %d, got %d", test.errsCount, len(s.errs))
+			}
+		})
+	}
+}
+
+func TestS_parseAndFetchUrlsSequential(t *testing.T) {
+	server := testServer()
+	defer server.Close()
+
+	tests := []struct {
+		name      string
+		locations []string
+		urlsCount int64
+		errsCount int64
+	}{
+		{
+			name: "emptyStrings",
+			locations: []string{
+				"",
+				"",
+			},
+			urlsCount: 0,
+			errsCount: 2,
+		},
+		{
+			name: "invalidURLs",
+			locations: []string{
+				"invalid_url",
+				"http://[::1]",
+			},
+			urlsCount: 0,
+			errsCount: 2,
+		},
+		{
+			name: "mainURLs",
+			locations: []string{
+				fmt.Sprintf("%s/sitemapindex-1.xml", server.URL),
+				fmt.Sprintf("%s/sitemap-04.xml", server.URL),
+			},
+			urlsCount: 1,
+			errsCount: 0,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3}, errs: []error{}}
+			s.parseAndFetchUrlsSequential(test.locations)
 
 			if len(s.urls) != int(test.urlsCount) {
 				t.Errorf("expected %d, got %d", test.urlsCount, len(s.urls))

@@ -37,9 +37,11 @@ type (
 	// config is a structure that holds configuration settings.
 	// It contains a userAgent field of type string, which represents the User-Agent header value for HTTP requests.
 	// The fetchTimeout field of type uint8 represents the timeout value (in seconds) for fetching data.
+	// The multiThread field of type bool determines whether to use multi-threading for fetching URLs.
 	config struct {
 		userAgent    string
 		fetchTimeout uint8
+		multiThread  bool
 	}
 
 	// sitemapIndex is a structure of <sitemapindex>
@@ -111,12 +113,13 @@ func New() *S {
 // setConfigDefaults sets the default configuration values for the S structure.
 // It initializes the cfg field with the default values for userAgent and fetchTimeout.
 // The default userAgent is "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
-// and the default fetchTimeout is 3 seconds.
+// the default fetchTimeout is 3 seconds and multi-thread flag is true.
 // This method does not return any value.
 func (s *S) setConfigDefaults() {
 	s.cfg = config{
 		userAgent:    "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
 		fetchTimeout: 3,
+		multiThread:  true,
 	}
 }
 
@@ -136,6 +139,15 @@ func (s *S) SetUserAgent(userAgent string) *S {
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetFetchTimeout(fetchTimeout uint8) *S {
 	s.cfg.fetchTimeout = fetchTimeout
+
+	return s
+}
+
+// SetMultiThread sets the multi-threading for the Sitemap Parser.
+// The multi-threading flag determines whether the parser should fetch URLs concurrently using goroutines.
+// The function returns a pointer to the S structure to allow method chaining.
+func (s *S) SetMultiThread(multiThread bool) *S {
+	s.cfg.multiThread = multiThread
 
 	return s
 }
@@ -183,13 +195,21 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 				}
 				robotsTXTSitemapContent = s.checkAndUnzipContent(robotsTXTSitemapContent)
 
-				s.parseAndFetchUrls(s.parse(rTXTsmURL, string(robotsTXTSitemapContent)))
+				if s.cfg.multiThread {
+					s.parseAndFetchUrlsMultiThread(s.parse(rTXTsmURL, string(robotsTXTSitemapContent)))
+				} else {
+					s.parseAndFetchUrlsSequential(s.parse(rTXTsmURL, string(robotsTXTSitemapContent)))
+				}
 			}()
 		}
 	} else {
 		mainURLContent := s.checkAndUnzipContent([]byte(s.mainURLContent))
 		s.mainURLContent = string(mainURLContent)
-		s.parseAndFetchUrls(s.parse(s.mainURL, s.mainURLContent))
+		if s.cfg.multiThread {
+			s.parseAndFetchUrlsMultiThread(s.parse(s.mainURL, s.mainURLContent))
+		} else {
+			s.parseAndFetchUrlsSequential(s.parse(s.mainURL, s.mainURLContent))
+		}
 	}
 
 	wg.Wait()
@@ -346,14 +366,14 @@ func (s *S) checkAndUnzipContent(content []byte) []byte {
 	return content
 }
 
-// parseAndFetchUrls concurrently parses and fetches the URLs specified in the "locations" parameter.
+// parseAndFetchUrlsMultiThread concurrently parses and fetches the URLs specified in the "locations" parameter.
 // It uses a sync.WaitGroup to wait for all fetch operations to complete.
 // For each location, it starts a goroutine that fetches the content using the fetch method of the S structure.
 // If there is an error during the fetch operation, the error is appended to the "errs" field of the S structure.
 // The fetched content is then checked and uncompressed using the checkAndUnzipContent method of the S structure.
 // Finally, the uncompressed content is passed to the parse method of the S structure.
 // This method does not return any value.
-func (s *S) parseAndFetchUrls(locations []string) {
+func (s *S) parseAndFetchUrlsMultiThread(locations []string) {
 	var wg sync.WaitGroup
 	for _, location := range locations {
 		wg.Add(1)
@@ -371,6 +391,24 @@ func (s *S) parseAndFetchUrls(locations []string) {
 		}()
 	}
 	wg.Wait()
+}
+
+// parseAndFetchUrlsSequential sequentially parses and fetches the URLs specified in the "locations" parameter.
+// For each location, it fetches the content using the fetch method of the S structure.
+// If there is an error during the fetch operation, the error is appended to the "errs" field of the S structure.
+// The fetched content is then checked and uncompressed using the checkAndUnzipContent method of the S structure.
+// Finally, the uncompressed content is passed to the parse method of the S structure.
+// This method does not return any value.
+func (s *S) parseAndFetchUrlsSequential(locations []string) {
+	for _, location := range locations {
+		content, err := s.fetch(location)
+		if err != nil {
+			s.errs = append(s.errs, err)
+			continue
+		}
+		content = s.checkAndUnzipContent(content)
+		_ = s.parse(location, string(content))
+	}
 }
 
 // parse parses the provided URL and its content.
