@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -38,10 +39,18 @@ type (
 	// It contains a userAgent field of type string, which represents the User-Agent header value for HTTP requests.
 	// The fetchTimeout field of type uint8 represents the timeout value (in seconds) for fetching data.
 	// The multiThread field of type bool determines whether to use multi-threading for fetching URLs.
+	// The follow field is a slice of strings that contains regular expressions to match URLs to follow.
+	// The followRegexes field is a slice of *regexp.Regexp that stores the compiled regular expressions for the follow field.
+	// The rules field is a slice of strings that contains regular expressions to match URLs to include.
+	// The rulesRegexes field is a slice of *regexp.Regexp that stores the compiled regular expressions for the rules field.
 	config struct {
-		userAgent    string
-		fetchTimeout uint8
-		multiThread  bool
+		userAgent     string
+		fetchTimeout  uint8
+		multiThread   bool
+		follow        []string
+		followRegexes []*regexp.Regexp
+		rules         []string
+		rulesRegexes  []*regexp.Regexp
 	}
 
 	// sitemapIndex is a structure of <sitemapindex>
@@ -114,12 +123,15 @@ func New() *S {
 // It initializes the cfg field with the default values for userAgent and fetchTimeout.
 // The default userAgent is "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
 // the default fetchTimeout is 3 seconds and multi-thread flag is true.
+// The follow and rules fields are empty slices.
 // This method does not return any value.
 func (s *S) setConfigDefaults() {
 	s.cfg = config{
 		userAgent:    "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
 		fetchTimeout: 3,
 		multiThread:  true,
+		follow:       []string{},
+		rules:        []string{},
 	}
 }
 
@@ -152,7 +164,41 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 	return s
 }
 
+// SetFollow sets the follow patterns using the provided list of regex strings and compiles them into regex objects.
+// Any errors encountered during compilation are appended to the error list in the struct.
+// The function returns a pointer to the S structure to allow method chaining.
+func (s *S) SetFollow(regexes []string) *S {
+	s.cfg.follow = regexes
+	for _, followPattern := range s.cfg.follow {
+		re, err := regexp.Compile(followPattern)
+		if err != nil {
+			s.errs = append(s.errs, err)
+			continue
+		}
+		s.cfg.followRegexes = append(s.cfg.followRegexes, re)
+	}
+
+	return s
+}
+
+// SetRules sets the rules patterns using the provided list of regex strings and compiles them into regex objects.
+// Any errors encountered during compilation are appended to the error list in the struct.
+// The function returns a pointer to the S structure to allow method chaining.
+func (s *S) SetRules(regexes []string) *S {
+	s.cfg.rules = regexes
+	for _, rulePattern := range s.cfg.rules {
+		re, err := regexp.Compile(rulePattern)
+		if err != nil {
+			s.errs = append(s.errs, err)
+			continue
+		}
+		s.cfg.rulesRegexes = append(s.cfg.rulesRegexes, re)
+	}
+	return s
+}
+
 // Parse is a method of the S structure. It parses the given URL and its content.
+// If the S object has any errors, it returns an error with the message "errors occurred before parsing, see GetErrors() for details".
 // It sets the mainURL field to the given URL and the mainURLContent field to the given URL content.
 // It returns an error if there was an error setting the content.
 // If the URL ends with "/robots.txt", it parses the robots.txt file and fetches URLs from the sitemap files mentioned in the robots.txt.
@@ -168,6 +214,10 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 	var err error
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+
+	if len(s.errs) > 0 {
+		return s, errors.New("errors occurred before parsing, see GetErrors() for details")
+	}
 
 	s.mainURL = url
 	s.mainURLContent, err = s.setContent(urlContent)
@@ -426,11 +476,44 @@ func (s *S) parse(url string, content string) []string {
 		// SitemapIndex
 		s.sitemapLocations = append(s.sitemapLocations, url)
 		for _, sitemapIndexSitemap := range smIndex.Sitemap {
+			// Check if the sitemapIndexSitemap.Loc matches any of the regular expressions in s.cfg.followRegexes.
+			matches := false
+			if len(s.cfg.followRegexes) > 0 {
+				for _, re := range s.cfg.followRegexes {
+					if re.MatchString(sitemapIndexSitemap.Loc) {
+						matches = true
+						break
+					}
+				}
+			} else {
+				matches = true
+			}
+			if !matches {
+				continue
+			}
 			sitemapLocationsAdded = append(sitemapLocationsAdded, sitemapIndexSitemap.Loc)
 			s.sitemapLocations = append(s.sitemapLocations, sitemapIndexSitemap.Loc)
 		}
 	} else if errSitemapIndex != nil && errURLSet == nil {
-		s.urls = append(s.urls, urlSet.URL...)
+		// URLSet
+		for _, urlSetURL := range urlSet.URL {
+			// Check if the urlSetURL.Loc matches any of the regular expressions in s.cfg.rulesRegexes.
+			matches := false
+			if len(s.cfg.rulesRegexes) > 0 {
+				for _, re := range s.cfg.rulesRegexes {
+					if re.MatchString(urlSetURL.Loc) {
+						matches = true
+						break
+					}
+				}
+			} else {
+				matches = true
+			}
+			if !matches {
+				continue
+			}
+			s.urls = append(s.urls, urlSetURL)
+		}
 	} else if errSitemapIndex != nil && errURLSet != nil {
 		s.errs = append(s.errs, errors.New("the content is neither sitemapindex nor sitemap"))
 	}

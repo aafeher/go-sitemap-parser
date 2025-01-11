@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap>
+        <loc>http://HOST/sitemap-follow-alpha-01.xml</loc>
+        <lastmod>2024-02-12T12:34:56+01:00</lastmod>
+    </sitemap>
+    <sitemap>
+        <loc>http://HOST/sitemap-follow-alpha-02.xml</loc>
+        <lastmod>2024-02-12T12:34:56+01:00</lastmod>
+    </sitemap>
+    <sitemap>
+        <loc>http://HOST/sitemap-follow-beta-01.xml</loc>
+        <lastmod>2024-02-12T12:34:56+01:00</lastmod>
+    </sitemap>
+</sitemapindex>
