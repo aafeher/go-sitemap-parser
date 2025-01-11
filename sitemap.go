@@ -437,7 +437,10 @@ func (s *S) parseAndFetchUrlsMultiThread(locations []string) {
 				return
 			}
 			content = s.checkAndUnzipContent(content)
-			_ = s.parse(loc, string(content))
+			parsedLocations := s.parse(loc, string(content))
+			if len(parsedLocations) > 0 {
+				s.parseAndFetchUrlsMultiThread(parsedLocations)
+			}
 		}()
 	}
 	wg.Wait()
@@ -457,7 +460,10 @@ func (s *S) parseAndFetchUrlsSequential(locations []string) {
 			continue
 		}
 		content = s.checkAndUnzipContent(content)
-		_ = s.parse(location, string(content))
+		parsedLocations := s.parse(location, string(content))
+		if len(parsedLocations) > 0 {
+			s.parseAndFetchUrlsSequential(parsedLocations)
+		}
 	}
 }
 

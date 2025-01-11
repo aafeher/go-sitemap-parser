@@ -1281,7 +1281,7 @@ func TestS_parseAndFetchUrlsMultiThread(t *testing.T) {
 				fmt.Sprintf("%s/sitemapindex-1.xml", server.URL),
 				fmt.Sprintf("%s/sitemap-04.xml", server.URL),
 			},
-			urlsCount: 1,
+			urlsCount: 7,
 			errsCount: 0,
 		},
 	}
@@ -1336,7 +1336,7 @@ func TestS_parseAndFetchUrlsSequential(t *testing.T) {
 				fmt.Sprintf("%s/sitemapindex-1.xml", server.URL),
 				fmt.Sprintf("%s/sitemap-04.xml", server.URL),
 			},
-			urlsCount: 1,
+			urlsCount: 7,
 			errsCount: 0,
 		},
 	}
