@@ -457,7 +457,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("the content is neither sitemapindex nor sitemap")},
+			errs:                 []error{errors.New("EOF"), errors.New("EOF")},
 		},
 		{
 			name:                 "sitemapindex.xml.gz empty file",
@@ -469,7 +469,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("the content is neither sitemapindex nor sitemap")},
+			errs:                 []error{errors.New("sitemapindex is empty"), errors.New("sitemap is empty")},
 		},
 		{
 			name:                 "sitemapindex.xml.gz",
@@ -536,7 +536,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("the content is neither sitemapindex nor sitemap")},
+			errs:                 []error{errors.New("sitemapindex is empty"), errors.New("sitemap is empty")},
 		},
 		{
 			name:                 "sitemap.xml.gz",
@@ -574,7 +574,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("the content is neither sitemapindex nor sitemap")},
+			errs:                 []error{errors.New("EOF"), errors.New("EOF")},
 		},
 		{
 			name:                 "sitemapindex.xml empty content",
@@ -587,7 +587,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("the content is neither sitemapindex nor sitemap")},
+			errs:                 []error{errors.New("EOF"), errors.New("EOF")},
 		},
 		{
 			name:                 "sitemapindex.xml",
@@ -734,7 +734,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("the content is neither sitemapindex nor sitemap")},
+			errs:                 []error{errors.New("EOF"), errors.New("EOF")},
 		},
 		{
 			name:                 "sitemap.xml empty content",
@@ -747,7 +747,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("the content is neither sitemapindex nor sitemap")},
+			errs:                 []error{errors.New("EOF"), errors.New("EOF")},
 		},
 		{
 			name:                 "sitemap.xml",
@@ -1391,7 +1391,7 @@ func TestS_parse(t *testing.T) {
 			content:                    "invalid content",
 			sitemapLocationsAddedCount: 0,
 			urlsCount:                  0,
-			errsCount:                  1,
+			errsCount:                  2,
 		},
 	}
 

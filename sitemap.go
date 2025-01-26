@@ -471,14 +471,15 @@ func (s *S) parseAndFetchUrlsSequential(locations []string) {
 // It determines whether the content is a sitemap index or a sitemap.
 // If it is a sitemap index, it adds the URLs from the sitemap index to the sitemap locations.
 // If it is a sitemap, it adds the URLs from the sitemap to the URL list.
-// If the content is neither a sitemap index nor a sitemap, it adds an error to the error list.
+// Parsing errors are added to the error list.
 // It returns a slice of sitemap locations that were added.
 func (s *S) parse(url string, content string) []string {
 	smIndex, errSitemapIndex := s.parseSitemapIndex(content)
 	urlSet, errURLSet := s.parseURLSet(content)
-	_ = urlSet
+
 	var sitemapLocationsAdded []string
-	if errSitemapIndex == nil && errURLSet != nil {
+
+	if smIndex.Sitemap != nil {
 		// SitemapIndex
 		s.sitemapLocations = append(s.sitemapLocations, url)
 		for _, sitemapIndexSitemap := range smIndex.Sitemap {
@@ -500,7 +501,7 @@ func (s *S) parse(url string, content string) []string {
 			sitemapLocationsAdded = append(sitemapLocationsAdded, sitemapIndexSitemap.Loc)
 			s.sitemapLocations = append(s.sitemapLocations, sitemapIndexSitemap.Loc)
 		}
-	} else if errSitemapIndex != nil && errURLSet == nil {
+	} else if len(urlSet.URL) > 0 {
 		// URLSet
 		for _, urlSetURL := range urlSet.URL {
 			// Check if the urlSetURL.Loc matches any of the regular expressions in s.cfg.rulesRegexes.
@@ -520,9 +521,15 @@ func (s *S) parse(url string, content string) []string {
 			}
 			s.urls = append(s.urls, urlSetURL)
 		}
-	} else if errSitemapIndex != nil && errURLSet != nil {
-		s.errs = append(s.errs, errors.New("the content is neither sitemapindex nor sitemap"))
 	}
+
+	if errSitemapIndex != nil && len(urlSet.URL) == 0 {
+		s.errs = append(s.errs, errSitemapIndex)
+	}
+	if errURLSet != nil && smIndex.Sitemap == nil {
+		s.errs = append(s.errs, errURLSet)
+	}
+
 	return sitemapLocationsAdded
 }
 
