@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"golang.org/x/net/html/charset"
 	"io"
 	"math/rand"
 	"net/http"
@@ -546,7 +547,10 @@ func (s *S) parseSitemapIndex(data string) (sitemapIndex, error) {
 		return smIndex, fmt.Errorf("sitemapindex is empty")
 	}
 
-	err := xml.Unmarshal([]byte(data), &smIndex)
+	decoder := xml.NewDecoder(bytes.NewReader([]byte(data)))
+	decoder.CharsetReader = charset.NewReaderLabel
+
+	err := decoder.Decode(&smIndex)
 	return smIndex, err
 
 }
@@ -562,11 +566,10 @@ func (s *S) parseURLSet(data string) (URLSet, error) {
 		return urlSet, fmt.Errorf("sitemap is empty")
 	}
 
-	err := xml.Unmarshal([]byte(data), &urlSet)
-	if err != nil {
-		return urlSet, err
-	}
+	decoder := xml.NewDecoder(bytes.NewReader([]byte(data)))
+	decoder.CharsetReader = charset.NewReaderLabel
 
+	err := decoder.Decode(&urlSet)
 	return urlSet, err
 }
 
