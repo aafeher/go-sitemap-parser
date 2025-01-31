@@ -619,20 +619,28 @@ func (l *lastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error
 		return err
 	}
 
+	formats := []string{
+		"2006",
+		"2006-01",
+		"2006-01-02",
+		"2006-01-02T15:04-07:00",
+		"2006-01-02T15:04Z",
+		"2006-01-02T15:04:05-07:00",
+		"2006-01-02T15:04:05Z",
+		"2006-01-02T15:04:05.999999999-07:00",
+		"2006-01-02T15:04:05.999999999Z",
+		time.RFC3339,
+		time.RFC3339Nano,
+	}
+
 	var parsedTime time.Time
-	if len(v) == len("2006-01-02") {
-		parsedTime, err = time.Parse("2006-01-02", v)
-		if err != nil {
-			return err
-		}
-	} else {
-		parsedTime, err = time.Parse("2006-01-02T15:04:05-07:00", v)
-		if err != nil {
-			return err
+	for _, format := range formats {
+		parsedTime, err = time.Parse(format, v)
+		if err == nil {
+			*l = lastModTime{parsedTime}
+			return nil
 		}
 	}
 
-	*l = lastModTime{parsedTime}
-
-	return nil
+	return err
 }
