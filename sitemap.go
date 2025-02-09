@@ -520,6 +520,7 @@ func (s *S) parse(url string, content string) []string {
 			if !matches {
 				continue
 			}
+			urlSetURL.Loc = strings.TrimSpace(urlSetURL.Loc)
 			s.urls = append(s.urls, urlSetURL)
 		}
 	}
