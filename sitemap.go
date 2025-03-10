@@ -484,6 +484,7 @@ func (s *S) parse(url string, content string) []string {
 		// SitemapIndex
 		s.sitemapLocations = append(s.sitemapLocations, url)
 		for _, sitemapIndexSitemap := range smIndex.Sitemap {
+			sitemapIndexSitemap.Loc = strings.TrimSpace(sitemapIndexSitemap.Loc)
 			// Check if the sitemapIndexSitemap.Loc matches any of the regular expressions in s.cfg.followRegexes.
 			matches := false
 			if len(s.cfg.followRegexes) > 0 {
@@ -505,6 +506,7 @@ func (s *S) parse(url string, content string) []string {
 	} else if len(urlSet.URL) > 0 {
 		// URLSet
 		for _, urlSetURL := range urlSet.URL {
+			urlSetURL.Loc = strings.TrimSpace(urlSetURL.Loc)
 			// Check if the urlSetURL.Loc matches any of the regular expressions in s.cfg.rulesRegexes.
 			matches := false
 			if len(s.cfg.rulesRegexes) > 0 {
@@ -520,7 +522,6 @@ func (s *S) parse(url string, content string) []string {
 			if !matches {
 				continue
 			}
-			urlSetURL.Loc = strings.TrimSpace(urlSetURL.Loc)
 			s.urls = append(s.urls, urlSetURL)
 		}
 	}
