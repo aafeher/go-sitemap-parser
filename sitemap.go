@@ -635,6 +635,8 @@ func (l *lastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error
 		time.RFC3339Nano,
 	}
 
+	v = strings.TrimSpace(v)
+
 	var parsedTime time.Time
 	for _, format := range formats {
 		parsedTime, err = time.Parse(format, v)
