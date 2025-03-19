@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"regexp/syntax"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1610,6 +1611,103 @@ func TestS_zip(t *testing.T) {
 				t.Errorf("expected %v, got %v", test.output, compressed)
 			}
 
+		})
+	}
+}
+
+func TestLastModTime_UnmarshalXML(t *testing.T) {
+	tests := []struct {
+		name     string
+		xmlInput string
+		want     time.Time
+		wantErr  bool
+	}{
+		{
+			name:     "Year only",
+			xmlInput: "<lastmod>2023</lastmod>",
+			want:     time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC),
+			wantErr:  false,
+		},
+		{
+			name:     "Year-Month",
+			xmlInput: "<lastmod>2023-06</lastmod>",
+			want:     time.Date(2023, 6, 1, 0, 0, 0, 0, time.UTC),
+			wantErr:  false,
+		},
+		{
+			name:     "Year-Month-Day",
+			xmlInput: "<lastmod>2023-06-15</lastmod>",
+			want:     time.Date(2023, 6, 15, 0, 0, 0, 0, time.UTC),
+			wantErr:  false,
+		},
+		{
+			name:     "ISO8601 with timezone offset",
+			xmlInput: "<lastmod>2023-06-15T10:30:00-07:00</lastmod>",
+			want:     time.Date(2023, 6, 15, 10, 30, 0, 0, time.FixedZone("", -7*60*60)),
+			wantErr:  false,
+		},
+		{
+			name:     "ISO8601 with Z timezone",
+			xmlInput: "<lastmod>2023-06-15T10:30:00Z</lastmod>",
+			want:     time.Date(2023, 6, 15, 10, 30, 0, 0, time.UTC),
+			wantErr:  false,
+		},
+		{
+			name:     "ISO8601 with microseconds",
+			xmlInput: "<lastmod>2023-06-15T10:30:05.123456Z</lastmod>",
+			want:     time.Date(2023, 6, 15, 10, 30, 5, 123456000, time.UTC),
+			wantErr:  false,
+		},
+		{
+			name:     "RFC3339",
+			xmlInput: "<lastmod>2023-06-15T10:30:05+02:00</lastmod>",
+			want:     time.Date(2023, 6, 15, 10, 30, 5, 0, time.FixedZone("", 2*60*60)),
+			wantErr:  false,
+		},
+		{
+			name:     "With whitespace",
+			xmlInput: "<lastmod> 2023-06-15 </lastmod>",
+			want:     time.Date(2023, 6, 15, 0, 0, 0, 0, time.UTC),
+			wantErr:  false,
+		},
+		{
+			name:     "Invalid format",
+			xmlInput: "<lastmod>invalid-date</lastmod>",
+			want:     time.Time{},
+			wantErr:  true,
+		},
+		{
+			name:     "Empty input",
+			xmlInput: "<lastmod>",
+			want:     time.Time{},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decoder := xml.NewDecoder(strings.NewReader(tt.xmlInput))
+
+			token, err := decoder.Token()
+			if err != nil {
+				t.Fatalf("Failed to read XML token: %v\n", err)
+			}
+			startElement := token.(xml.StartElement)
+
+			var got lastModTime
+			err = got.UnmarshalXML(decoder, startElement)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("lastModTime.UnmarshalXML() error = %v, expected error: %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr {
+				gotTime := got.Time
+				if !gotTime.Equal(tt.want) {
+					t.Errorf("lastModTime.UnmarshalXML() = %v, expected value: %v", gotTime, tt.want)
+				}
+			}
 		})
 	}
 }
