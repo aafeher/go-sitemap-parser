@@ -6,6 +6,8 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"regexp/syntax"
@@ -1192,6 +1194,43 @@ func TestS_fetch(t *testing.T) {
 				return
 			}
 		})
+	}
+}
+
+func TestS_fetch_NewRequestError(t *testing.T) {
+	e := New()
+
+	_, err := e.fetch("://invalid-url")
+	if err == nil {
+		t.Error("expected error for invalid URL but got none")
+	}
+}
+
+func TestS_fetch_IOCopyError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		for i := 0; i < 1000; i++ {
+			_, err := w.Write([]byte("Some content that will be interrupted"))
+			if err != nil {
+				return
+			}
+		}
+		if hijacker, ok := w.(http.Hijacker); ok {
+			conn, _, _ := hijacker.Hijack()
+			err := conn.Close()
+			if err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	e := New()
+	e.SetFetchTimeout(1)
+
+	_, err := e.fetch(server.URL)
+	if err == nil {
+		t.Error("expected io.Copy error but got none")
 	}
 }
 
