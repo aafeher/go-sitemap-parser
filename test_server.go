@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+var zipFunc = zip
+
 // testServer creates a test server with a custom request handler that serves static files and dynamically replaces
 // the "HOST" string in the response with the value of the request's Host header. The server handles the following routes:
 //   - "/" returns a 404 Not Found response.
@@ -48,7 +50,7 @@ func testServer() *httptest.Server {
 			}
 			strRes = strings.Replace(string(resUncompressed), "HOST", r.Host, -1)
 
-			resCompressed, err := zip([]byte(strRes), nil)
+			resCompressed, err := zipFunc([]byte(strRes), nil)
 			if err != nil {
 				_, _ = fmt.Fprintf(w, "error: %v\n", err)
 				return

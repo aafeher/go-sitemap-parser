@@ -1558,7 +1558,7 @@ func TestS_parseURLSet(t *testing.T) {
 	}
 }
 
-func Test_unzip(t *testing.T) {
+func TestUnzip(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    []byte
