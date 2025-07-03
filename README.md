@@ -82,6 +82,48 @@ s = s.SetMultiThread(false)
 s := sitemap.New().SetMultiThread(false)
 ```
 
+#### Follow rules
+
+To set the follow rules, use the `SetFollow()` function. It should be specified a `[]string` value.
+It is a list of regular expressions. When parsing a sitemap index, only sitemaps with a `loc` that matches one of these expressions will be followed and parsed.
+If no follow rules are provided, all sitemaps in the index are followed.
+
+```go
+s := sitemap.New()
+s.SetFollow([]string{
+	`\.xml$`,
+	`\.xml\.gz$`,
+})
+```
+... or ...
+```go
+s := sitemap.New().SetFollow([]string{
+	`\.xml$`,
+	`\.xml\.gz$`,
+})
+```
+
+#### URL rules
+
+To set the URL rules, use the `SetRules()` function. It should be specified a `[]string` value.
+It is a list of regular expressions. Only URLs that match one of these expressions will be included in the final result.
+If no rules are provided, all URLs found are included.
+
+```go
+s := sitemap.New()
+s.SetRules([]string{
+	`product/`,
+	`category/`,
+})
+```
+... or ...
+```go
+s := sitemap.New().SetRules([]string{
+	`product/`,
+	`category/`,
+})
+```
+
 #### Chaining methods
 
 In both cases, the functions return a pointer to the main object of the package, allowing you to chain these setting methods in a fluent interface style:
