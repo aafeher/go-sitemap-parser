@@ -1,7 +1,10 @@
 package sitemap
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,15 +41,14 @@ func testServer() *httptest.Server {
 
 		strRes := string(res)
 		if strings.Contains(strRes, "\x1f\x8b\x08") {
-			s := &S{}
-			resUncompressed, err := s.unzip(res)
+			resUncompressed, err := unzip(res)
 			if err != nil {
 				_, _ = fmt.Fprintf(w, "error: %v\n", err)
 				return
 			}
 			strRes = strings.Replace(string(resUncompressed), "HOST", r.Host, -1)
 
-			resCompressed, err := s.zip([]byte(strRes))
+			resCompressed, err := zip([]byte(strRes), nil)
 			if err != nil {
 				_, _ = fmt.Fprintf(w, "error: %v\n", err)
 				return
@@ -58,4 +60,33 @@ func testServer() *httptest.Server {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, strRes)
 	}))
+}
+
+// zip compresses the given content using gzip compression.
+// It returns the compressed content as a byte array.
+// If an error occurs during compression, it returns the original content and the error.
+// The optional 'w' parameter allows injecting a custom io.Writer for testing purposes.
+func zip(content []byte, w io.Writer) ([]byte, error) {
+	if w == nil {
+		w = bytes.NewBuffer(nil)
+	}
+	gzipWriter := gzip.NewWriter(w)
+	_, err := gzipWriter.Write(content)
+	if err != nil {
+		return content, err
+	}
+	err = gzipWriter.Close()
+	if err != nil {
+		return content, err
+	}
+	// Type assertion to get bytes.Buffer if the writer is one.
+	// This assumes that if w is nil, it will be a bytes.Buffer.
+	// If a custom writer is provided, it must be able to return its bytes.
+	// For testing, we know our mockWriter has a bytes.Buffer.
+	if buf, ok := w.(*bytes.Buffer); ok {
+		return buf.Bytes(), nil
+	}
+	// If not a bytes.Buffer, we can't get the bytes this way.
+	// This case should ideally not be hit in this specific context where we control `w`.
+	return nil, fmt.Errorf("cannot retrieve compressed bytes from provided writer type")
 }

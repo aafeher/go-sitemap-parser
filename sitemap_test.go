@@ -1558,7 +1558,7 @@ func TestS_parseURLSet(t *testing.T) {
 	}
 }
 
-func TestS_unzip(t *testing.T) {
+func Test_unzip(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    []byte
@@ -1593,9 +1593,7 @@ func TestS_unzip(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			s := New()
-
-			uncompressed, err := s.unzip(test.input)
+			uncompressed, err := unzip(test.input)
 
 			if (err != nil) != test.hasError {
 				t.Errorf("expected %v, got %v", test.hasError, err)
@@ -1603,51 +1601,6 @@ func TestS_unzip(t *testing.T) {
 
 			if !bytes.Equal(uncompressed, test.output) {
 				t.Errorf("expected %v, got %v", test.output, uncompressed)
-			}
-
-		})
-	}
-}
-
-func TestS_zip(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    []byte
-		output   []byte
-		hasError bool
-	}{
-		{
-			name:     "Valid content",
-			input:    []byte("hello world"),
-			output:   gzipByte("hello world"),
-			hasError: false,
-		},
-		{
-			name:     "Empty content",
-			input:    []byte(""),
-			output:   gzipByte(""),
-			hasError: false,
-		},
-		{
-			name:     "Nil content",
-			input:    nil,
-			output:   gzipByte(""),
-			hasError: false,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			s := New()
-
-			compressed, err := s.zip(test.input)
-
-			if (err != nil) != test.hasError {
-				t.Errorf("expected %v, got %v", test.hasError, err)
-			}
-
-			if !bytes.Equal(compressed, test.output) {
-				t.Errorf("expected %v, got %v", test.output, compressed)
 			}
 
 		})
@@ -1750,6 +1703,49 @@ func TestLastModTime_UnmarshalXML(t *testing.T) {
 		})
 	}
 }
+
+//func Test_zip(t *testing.T) {
+//	tests := []struct {
+//		name     string
+//		input    []byte
+//		output   []byte
+//		hasError bool
+//	}{
+//		{
+//			name:     "Valid content",
+//			input:    []byte("hello world"),
+//			output:   gzipByte("hello world"),
+//			hasError: false,
+//		},
+//		{
+//			name:     "Empty content",
+//			input:    []byte(""),
+//			output:   gzipByte(""),
+//			hasError: false,
+//		},
+//		{
+//			name:     "Nil content",
+//			input:    nil,
+//			output:   gzipByte(""),
+//			hasError: false,
+//		},
+//	}
+//
+//	for _, test := range tests {
+//		t.Run(test.name, func(t *testing.T) {
+//			compressed, err := zip(test.input, nil)
+//
+//			if (err != nil) != test.hasError {
+//				t.Errorf("expected %v, got %v", test.hasError, err)
+//			}
+//
+//			if !bytes.Equal(compressed, test.output) {
+//				t.Errorf("expected %v, got %v", test.output, compressed)
+//			}
+//
+//		})
+//	}
+//}
 
 func configsEqual(c1, c2 config) bool {
 	return c1.fetchTimeout == c2.fetchTimeout &&

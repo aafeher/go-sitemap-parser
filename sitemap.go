@@ -406,7 +406,7 @@ func (s *S) fetch(url string) ([]byte, error) {
 func (s *S) checkAndUnzipContent(content []byte) []byte {
 	gzipPrefix := []byte("\x1f\x8b\x08")
 	if bytes.HasPrefix(content, gzipPrefix) {
-		uncompressed, err := s.unzip(content)
+		uncompressed, err := unzip(content)
 		if err != nil {
 			s.errs = append(s.errs, err)
 			// return the original content if error
@@ -578,7 +578,7 @@ func (s *S) parseURLSet(data string) (URLSet, error) {
 // unzip decompresses the given content using gzip compression.
 // It returns the uncompressed content and any error encountered during decompression.
 // If an error occurs and it is not `io.ErrUnexpectedEOF`, the original content is returned.
-func (s *S) unzip(content []byte) ([]byte, error) {
+func unzip(content []byte) ([]byte, error) {
 	reader, err := gzip.NewReader(bytes.NewReader(content))
 	if err != nil {
 		return content, err
@@ -594,24 +594,6 @@ func (s *S) unzip(content []byte) ([]byte, error) {
 	}
 
 	return uncompressed, nil
-}
-
-// zip compresses the given content using gzip compression.
-// It returns the compressed content as a byte array.
-// If an error occurs during compression, it returns the original content and the error.
-func (s *S) zip(content []byte) ([]byte, error) {
-	writer := bytes.NewBuffer(nil)
-	gzipWriter := gzip.NewWriter(writer)
-	_, err := gzipWriter.Write(content)
-	if err != nil {
-		return content, err
-	}
-	err = gzipWriter.Close()
-	if err != nil {
-		return content, err
-	}
-	compressed := writer.Bytes()
-	return compressed, nil
 }
 
 func (l *lastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
