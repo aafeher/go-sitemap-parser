@@ -1251,6 +1251,26 @@ func TestS_parseRobotsTXT(t *testing.T) {
 			input:  "Sitemap: https://example.com\nSitemap: https://example.com",
 			output: 2,
 		},
+		{
+			name:   "robots.txt with CRLF line endings",
+			input:  "User-agent: *\r\nDisallow: /\r\nSitemap: https://example.com\r\n",
+			output: 1,
+		},
+		{
+			name:   "robots.txt with lowercase sitemap directive",
+			input:  "sitemap: https://example.com/lower",
+			output: 1,
+		},
+		{
+			name:   "robots.txt with mixed case sitemap directive",
+			input:  "SITEMAP: https://example.com/upper\nSiteMap: https://example.com/mixed",
+			output: 2,
+		},
+		{
+			name:   "robots.txt with empty sitemap value",
+			input:  "Sitemap: ",
+			output: 0,
+		},
 	}
 
 	for _, test := range tests {
@@ -1260,6 +1280,11 @@ func TestS_parseRobotsTXT(t *testing.T) {
 
 			if len(s.robotsTxtSitemapURLs) != test.output {
 				t.Errorf("Input %s: expected %d, got %d", test.input, test.output, len(s.robotsTxtSitemapURLs))
+			}
+			for i, u := range s.robotsTxtSitemapURLs {
+				if strings.ContainsRune(u, '\r') {
+					t.Errorf("robotsTxtSitemapURLs[%d] contains \\r: %q", i, u)
+				}
 			}
 		})
 	}

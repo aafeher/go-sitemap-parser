@@ -355,17 +355,20 @@ func (s *S) setContent(urlContent *string) (string, error) {
 }
 
 // parseRobotsTXT retrieves the sitemap URLs from the provided robots.txt content.
-// It splits the content into lines and checks for lines beginning with "Sitemap: ".
+// It splits the content into lines and checks for lines beginning with "Sitemap: " (case-insensitive).
 // If a line matches, it extracts the URL and adds it to the robotsTxtSitemapURLs slice.
 // The method does not return any values, but it updates the robotsTxtSitemapURLs field of the S struct.
 func (s *S) parseRobotsTXT(robotsTXTContent string) {
 	lines := strings.Split(robotsTXTContent, "\n")
 	for _, line := range lines {
-		if !strings.HasPrefix(line, "Sitemap: ") {
+		line = strings.TrimRight(line, "\r")
+		if len(line) < 9 || !strings.EqualFold(line[:8], "sitemap:") {
 			continue
 		}
-		url := strings.Split(line, "Sitemap: ")[1]
-		s.robotsTxtSitemapURLs = append(s.robotsTxtSitemapURLs, url)
+		url := strings.TrimSpace(line[8:])
+		if url != "" {
+			s.robotsTxtSitemapURLs = append(s.robotsTxtSitemapURLs, url)
+		}
 	}
 }
 
