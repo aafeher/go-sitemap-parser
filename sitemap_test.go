@@ -80,7 +80,7 @@ func TestS_SetUserAgent(t *testing.T) {
 func TestS_SetFetchTimeout(t *testing.T) {
 	tests := []struct {
 		name    string
-		timeout uint8
+		timeout uint16
 	}{
 		{
 			name:    "PositiveTimeout",
@@ -89,6 +89,10 @@ func TestS_SetFetchTimeout(t *testing.T) {
 		{
 			name:    "ZeroTimeout",
 			timeout: 0,
+		},
+		{
+			name:    "LargeTimeout",
+			timeout: 600,
 		},
 	}
 	for _, test := range tests {

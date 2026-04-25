@@ -39,7 +39,7 @@ type (
 
 	// config is a structure that holds configuration settings.
 	// It contains a userAgent field of type string, which represents the User-Agent header value for HTTP requests.
-	// The fetchTimeout field of type uint8 represents the timeout value (in seconds) for fetching data.
+	// The fetchTimeout field of type uint16 represents the timeout value (in seconds) for fetching data.
 	// The multiThread field of type bool determines whether to use multi-threading for fetching URLs.
 	// The follow field is a slice of strings that contains regular expressions to match URLs to follow.
 	// The followRegexes field is a slice of *regexp.Regexp that stores the compiled regular expressions for the follow field.
@@ -47,7 +47,7 @@ type (
 	// The rulesRegexes field is a slice of *regexp.Regexp that stores the compiled regular expressions for the rules field.
 	config struct {
 		userAgent       string
-		fetchTimeout    uint8
+		fetchTimeout    uint16
 		maxResponseSize int64
 		maxDepth        int
 		multiThread     bool
@@ -153,9 +153,9 @@ func (s *S) SetUserAgent(userAgent string) *S {
 
 // SetFetchTimeout sets the fetch timeout for the Sitemap Parser.
 // The fetch timeout determines how long the parser will wait for an HTTP request to complete.
-// It should be specified in seconds as an uint8 value.
+// It should be specified in seconds as a uint16 value.
 // The function returns a pointer to the S structure to allow method chaining.
-func (s *S) SetFetchTimeout(fetchTimeout uint8) *S {
+func (s *S) SetFetchTimeout(fetchTimeout uint16) *S {
 	s.cfg.fetchTimeout = fetchTimeout
 
 	return s
