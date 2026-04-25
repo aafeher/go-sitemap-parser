@@ -76,7 +76,7 @@ type (
 	URL struct {
 		Loc        string         `xml:"loc"`
 		LastMod    *lastModTime   `xml:"lastmod"`
-		ChangeFreq *urlChangeFreq `xml:"changefreq"`
+		ChangeFreq *URLChangeFreq `xml:"changefreq"`
 		Priority   *float32       `xml:"priority"`
 	}
 
@@ -86,30 +86,30 @@ type (
 
 	// URLChangeFreq represents the frequency at which a URL should be crawled and indexed.
 	// Possible values are: "always", "hourly", "daily", "weekly", "monthly", "yearly", and "never".
-	urlChangeFreq string
+	URLChangeFreq string
 )
 
 const (
-	// changeFreqAlways is a constant representing the "always" value for URLChangeFreq.
-	changeFreqAlways urlChangeFreq = "always"
+	// ChangeFreqAlways represents the "always" value for URLChangeFreq.
+	ChangeFreqAlways URLChangeFreq = "always"
 
-	// changeFreqHourly is a constant representing the "hourly" value for URLChangeFreq.
-	changeFreqHourly urlChangeFreq = "hourly"
+	// ChangeFreqHourly represents the "hourly" value for URLChangeFreq.
+	ChangeFreqHourly URLChangeFreq = "hourly"
 
-	// changeFreqDaily is a constant representing the "daily" value for URLChangeFreq.
-	changeFreqDaily urlChangeFreq = "daily"
+	// ChangeFreqDaily represents the "daily" value for URLChangeFreq.
+	ChangeFreqDaily URLChangeFreq = "daily"
 
-	// changeFreqWeekly is a constant representing the "weekly" value for URLChangeFreq.
-	changeFreqWeekly urlChangeFreq = "weekly"
+	// ChangeFreqWeekly represents the "weekly" value for URLChangeFreq.
+	ChangeFreqWeekly URLChangeFreq = "weekly"
 
-	// changeFreqMonthly is a constant representing the "monthly" value for URLChangeFreq.
-	changeFreqMonthly urlChangeFreq = "monthly"
+	// ChangeFreqMonthly represents the "monthly" value for URLChangeFreq.
+	ChangeFreqMonthly URLChangeFreq = "monthly"
 
-	// changeFreqYearly is a constant representing the "yearly" value for URLChangeFreq.
-	changeFreqYearly urlChangeFreq = "yearly"
+	// ChangeFreqYearly represents the "yearly" value for URLChangeFreq.
+	ChangeFreqYearly URLChangeFreq = "yearly"
 
-	// changeFreqNever is a constant representing the "never" value for URLChangeFreq.
-	changeFreqNever urlChangeFreq = "never"
+	// ChangeFreqNever represents the "never" value for URLChangeFreq.
+	ChangeFreqNever URLChangeFreq = "never"
 )
 
 // New creates a new instance of the S structure.

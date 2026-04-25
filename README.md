@@ -197,7 +197,7 @@ urls := s.GetURLs()
 Each `URL` struct contains the following fields:
 - `Loc` (`string`) — the URL location
 - `LastMod` (`*lastModTime`) — last modification time (embeds `time.Time`), may be `nil`
-- `ChangeFreq` (`*urlChangeFreq`) — change frequency hint (`"always"`, `"hourly"`, `"daily"`, `"weekly"`, `"monthly"`, `"yearly"`, `"never"`), may be `nil`
+- `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`
 - `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`
 
 #### GetURLCount
