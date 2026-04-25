@@ -46,13 +46,14 @@ type (
 	// The rules field is a slice of strings that contains regular expressions to match URLs to include.
 	// The rulesRegexes field is a slice of *regexp.Regexp that stores the compiled regular expressions for the rules field.
 	config struct {
-		userAgent     string
-		fetchTimeout  uint8
-		multiThread   bool
-		follow        []string
-		followRegexes []*regexp.Regexp
-		rules         []string
-		rulesRegexes  []*regexp.Regexp
+		userAgent       string
+		fetchTimeout    uint8
+		maxResponseSize int64
+		multiThread     bool
+		follow          []string
+		followRegexes   []*regexp.Regexp
+		rules           []string
+		rulesRegexes    []*regexp.Regexp
 	}
 
 	// sitemapIndex is a structure of <sitemapindex>
@@ -129,11 +130,12 @@ func New() *S {
 // This method does not return any value.
 func (s *S) setConfigDefaults() {
 	s.cfg = config{
-		userAgent:    "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
-		fetchTimeout: 3,
-		multiThread:  true,
-		follow:       []string{},
-		rules:        []string{},
+		userAgent:       "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
+		fetchTimeout:    3,
+		maxResponseSize: 50 * 1024 * 1024, // 50 MB per sitemaps.org spec
+		multiThread:     true,
+		follow:          []string{},
+		rules:           []string{},
 	}
 }
 
@@ -162,6 +164,16 @@ func (s *S) SetFetchTimeout(fetchTimeout uint8) *S {
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMultiThread(multiThread bool) *S {
 	s.cfg.multiThread = multiThread
+
+	return s
+}
+
+// SetMaxResponseSize sets the maximum allowed HTTP response size in bytes.
+// Responses exceeding this limit will be truncated and may cause parsing errors.
+// The default is 50 MB, matching the sitemaps.org protocol limit.
+// The function returns a pointer to the S structure to allow method chaining.
+func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
+	s.cfg.maxResponseSize = maxResponseSize
 
 	return s
 }
@@ -401,9 +413,13 @@ func (s *S) fetch(url string) ([]byte, error) {
 		return nil, fmt.Errorf("received HTTP status %d", response.StatusCode)
 	}
 
-	_, err = io.Copy(&body, response.Body)
+	_, err = io.Copy(&body, io.LimitReader(response.Body, s.cfg.maxResponseSize+1))
 	if err != nil {
 		return nil, err
+	}
+
+	if int64(body.Len()) > s.cfg.maxResponseSize {
+		return nil, fmt.Errorf("response size exceeds limit of %d bytes", s.cfg.maxResponseSize)
 	}
 
 	return body.Bytes(), nil

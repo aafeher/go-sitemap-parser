@@ -27,11 +27,12 @@ func TestS_setConfigDefaults(t *testing.T) {
 			name: "default config",
 			s:    &S{},
 			want: config{
-				userAgent:    "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
-				fetchTimeout: 3,
-				multiThread:  true,
-				follow:       []string{},
-				rules:        []string{},
+				userAgent:       "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
+				fetchTimeout:    3,
+				maxResponseSize: 50 * 1024 * 1024,
+				multiThread:     true,
+				follow:          []string{},
+				rules:           []string{},
 			},
 		},
 	}
@@ -120,6 +121,31 @@ func TestS_SetMultiThread(t *testing.T) {
 			s.SetMultiThread(test.multiThread)
 			if s.cfg.multiThread != test.multiThread {
 				t.Errorf("expected %v, got %v", test.multiThread, s.cfg.multiThread)
+			}
+		})
+	}
+}
+
+func TestS_SetMaxResponseSize(t *testing.T) {
+	tests := []struct {
+		name string
+		size int64
+	}{
+		{
+			name: "SmallLimit",
+			size: 1024,
+		},
+		{
+			name: "LargeLimit",
+			size: 100 * 1024 * 1024,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := New()
+			s.SetMaxResponseSize(test.size)
+			if s.cfg.maxResponseSize != test.size {
+				t.Errorf("expected %v, got %v", test.size, s.cfg.maxResponseSize)
 			}
 		})
 	}
@@ -1173,9 +1199,9 @@ func TestS_setContent(t *testing.T) {
 		{
 			name: "setContent_with_urlContent",
 			setup: func() *S {
-				return &S{
-					mainURL: fmt.Sprintf("%s/example", server.URL),
-				}
+				s := New()
+				s.mainURL = fmt.Sprintf("%s/example", server.URL)
+				return s
 			},
 			attrURLContent: pointerOfString("URL Content"),
 			wantURLContent: "URL Content",
@@ -1184,9 +1210,9 @@ func TestS_setContent(t *testing.T) {
 		{
 			name: "setContent_without_urlContent",
 			setup: func() *S {
-				return &S{
-					mainURL: fmt.Sprintf("%s/example", server.URL),
-				}
+				s := New()
+				s.mainURL = fmt.Sprintf("%s/example", server.URL)
+				return s
 			},
 			attrURLContent: nil,
 			wantURLContent: "example content\n",
@@ -1195,9 +1221,9 @@ func TestS_setContent(t *testing.T) {
 		{
 			name: "setContent_without_urlContent_with_invalid_mainURL",
 			setup: func() *S {
-				return &S{
-					mainURL: fmt.Sprintf("%s/404", server.URL),
-				}
+				s := New()
+				s.mainURL = fmt.Sprintf("%s/404", server.URL)
+				return s
 			},
 			attrURLContent: nil,
 			wantURLContent: "",
@@ -1294,7 +1320,7 @@ func TestS_fetch(t *testing.T) {
 	server := testServer()
 	defer server.Close()
 
-	s := S{cfg: config{fetchTimeout: 3}}
+	s := S{cfg: config{fetchTimeout: 3, maxResponseSize: 50 * 1024 * 1024}}
 	type fields struct {
 		cfg config
 	}
@@ -1330,7 +1356,7 @@ func TestS_fetch(t *testing.T) {
 		},
 		{
 			name:    "Timeout URL",
-			fields:  fields{config{fetchTimeout: 0}},
+			fields:  fields{config{fetchTimeout: 0, maxResponseSize: 50 * 1024 * 1024}},
 			url:     fmt.Sprintf("%s/sitemap-01.xml", server.URL),
 			wantErr: false,
 		},
@@ -1347,6 +1373,33 @@ func TestS_fetch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestS_fetch_ResponseSizeLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bytes.Repeat([]byte("A"), 1024))
+	}))
+	defer server.Close()
+
+	t.Run("within limit", func(t *testing.T) {
+		s := New().SetMaxResponseSize(2048)
+		_, err := s.fetch(server.URL)
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+
+	t.Run("exceeds limit", func(t *testing.T) {
+		s := New().SetMaxResponseSize(512)
+		_, err := s.fetch(server.URL)
+		if err == nil {
+			t.Error("expected error for oversized response, got nil")
+		}
+		if err != nil && !strings.Contains(err.Error(), "response size exceeds limit") {
+			t.Errorf("expected size limit error, got: %v", err)
+		}
+	})
 }
 
 func TestS_fetch_NewRequestError(t *testing.T) {
@@ -1480,7 +1533,7 @@ func TestS_parseAndFetchUrlsMultiThread(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3}, errs: []error{}}
+			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3, maxResponseSize: 50 * 1024 * 1024}, errs: []error{}}
 			s.parseAndFetchUrlsMultiThread(test.locations)
 
 			if len(s.urls) != int(test.urlsCount) {
@@ -1535,7 +1588,7 @@ func TestS_parseAndFetchUrlsSequential(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3}, errs: []error{}}
+			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3, maxResponseSize: 50 * 1024 * 1024}, errs: []error{}}
 			s.parseAndFetchUrlsSequential(test.locations)
 
 			if len(s.urls) != int(test.urlsCount) {
@@ -1902,6 +1955,7 @@ func TestLastModTime_UnmarshalXML(t *testing.T) {
 func configsEqual(c1, c2 config) bool {
 	return c1.fetchTimeout == c2.fetchTimeout &&
 		c1.userAgent == c2.userAgent &&
+		c1.maxResponseSize == c2.maxResponseSize &&
 		c1.multiThread == c2.multiThread &&
 		reflect.DeepEqual(c1.follow, c2.follow) &&
 		reflect.DeepEqual(c1.rules, c2.rules)

@@ -39,6 +39,7 @@ s := sitemap.New()
 
  - userAgent: `"go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)"`
  - fetchTimeout: `3` seconds
+ - maxResponseSize: `52428800` (50 MB)
  - multiThread: `true`
 
 ### Overwrite defaults
@@ -67,6 +68,19 @@ s = s.SetFetchTimeout(10)
 ... or ...
 ```go
 s := sitemap.New().SetFetchTimeout(10)
+```
+
+#### Max response size
+
+To set the maximum allowed HTTP response size, use the `SetMaxResponseSize()` function. It should be specified in bytes as an **int64** value. The default is 50 MB, matching the [sitemaps.org protocol](http://www.sitemaps.org/protocol.html) limit. Responses exceeding this limit will result in an error.
+
+```go
+s := sitemap.New()
+s = s.SetMaxResponseSize(10 * 1024 * 1024) // 10 MB
+```
+... or ...
+```go
+s := sitemap.New().SetMaxResponseSize(10 * 1024 * 1024) // 10 MB
 ```
 
 #### Multi-threading
