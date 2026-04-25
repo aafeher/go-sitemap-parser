@@ -45,6 +45,7 @@ s := sitemap.New()
  - userAgent: `"go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)"`
  - fetchTimeout: `3` seconds
  - maxResponseSize: `52428800` (50 MB)
+ - maxDepth: `10`
  - multiThread: `true`
 
 ### Overwrite defaults
@@ -86,6 +87,19 @@ s = s.SetMaxResponseSize(10 * 1024 * 1024) // 10 MB
 ... or ...
 ```go
 s := sitemap.New().SetMaxResponseSize(10 * 1024 * 1024) // 10 MB
+```
+
+#### Max depth
+
+To set the maximum recursion depth for following sitemap indexes, use the `SetMaxDepth()` function. A sitemap index may reference other sitemap indexes; this limits how many levels deep the parser will follow. The default is 10.
+
+```go
+s := sitemap.New()
+s = s.SetMaxDepth(5)
+```
+... or ...
+```go
+s := sitemap.New().SetMaxDepth(5)
 ```
 
 #### Multi-threading

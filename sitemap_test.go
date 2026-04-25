@@ -30,6 +30,7 @@ func TestS_setConfigDefaults(t *testing.T) {
 				userAgent:       "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
 				fetchTimeout:    3,
 				maxResponseSize: 50 * 1024 * 1024,
+				maxDepth:        10,
 				multiThread:     true,
 				follow:          []string{},
 				rules:           []string{},
@@ -146,6 +147,31 @@ func TestS_SetMaxResponseSize(t *testing.T) {
 			s.SetMaxResponseSize(test.size)
 			if s.cfg.maxResponseSize != test.size {
 				t.Errorf("expected %v, got %v", test.size, s.cfg.maxResponseSize)
+			}
+		})
+	}
+}
+
+func TestS_SetMaxDepth(t *testing.T) {
+	tests := []struct {
+		name  string
+		depth int
+	}{
+		{
+			name:  "ShallowDepth",
+			depth: 1,
+		},
+		{
+			name:  "DeepDepth",
+			depth: 50,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := New()
+			s.SetMaxDepth(test.depth)
+			if s.cfg.maxDepth != test.depth {
+				t.Errorf("expected %v, got %v", test.depth, s.cfg.maxDepth)
 			}
 		})
 	}
@@ -1533,8 +1559,8 @@ func TestS_parseAndFetchUrlsMultiThread(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3, maxResponseSize: 50 * 1024 * 1024}, errs: []error{}}
-			s.parseAndFetchUrlsMultiThread(test.locations)
+			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3, maxResponseSize: 50 * 1024 * 1024, maxDepth: 10}, errs: []error{}}
+			s.parseAndFetchUrlsMultiThread(test.locations, 0)
 
 			if len(s.urls) != int(test.urlsCount) {
 				t.Errorf("expected %d, got %d", test.urlsCount, len(s.urls))
@@ -1588,8 +1614,8 @@ func TestS_parseAndFetchUrlsSequential(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3, maxResponseSize: 50 * 1024 * 1024}, errs: []error{}}
-			s.parseAndFetchUrlsSequential(test.locations)
+			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3, maxResponseSize: 50 * 1024 * 1024, maxDepth: 10}, errs: []error{}}
+			s.parseAndFetchUrlsSequential(test.locations, 0)
 
 			if len(s.urls) != int(test.urlsCount) {
 				t.Errorf("expected %d, got %d", test.urlsCount, len(s.urls))
@@ -1599,6 +1625,44 @@ func TestS_parseAndFetchUrlsSequential(t *testing.T) {
 				t.Errorf("expected %d, got %d", test.errsCount, len(s.errs))
 			}
 		})
+	}
+}
+
+func TestS_parseAndFetchUrlsMultiThread_MaxDepth(t *testing.T) {
+	server := testServer()
+	defer server.Close()
+
+	s := New().SetMaxDepth(0)
+	locations := []string{fmt.Sprintf("%s/sitemapindex-1.xml", server.URL)}
+	s.parseAndFetchUrlsMultiThread(locations, 0)
+
+	if len(s.urls) != 0 {
+		t.Errorf("expected 0 URLs at depth limit, got %d", len(s.urls))
+	}
+	if s.GetErrorsCount() != 1 {
+		t.Errorf("expected 1 depth error, got %d", s.GetErrorsCount())
+	}
+	if !strings.Contains(s.GetErrors()[0].Error(), "max recursion depth") {
+		t.Errorf("expected max recursion depth error, got: %v", s.GetErrors()[0])
+	}
+}
+
+func TestS_parseAndFetchUrlsSequential_MaxDepth(t *testing.T) {
+	server := testServer()
+	defer server.Close()
+
+	s := New().SetMaxDepth(0).SetMultiThread(false)
+	locations := []string{fmt.Sprintf("%s/sitemapindex-1.xml", server.URL)}
+	s.parseAndFetchUrlsSequential(locations, 0)
+
+	if len(s.urls) != 0 {
+		t.Errorf("expected 0 URLs at depth limit, got %d", len(s.urls))
+	}
+	if s.GetErrorsCount() != 1 {
+		t.Errorf("expected 1 depth error, got %d", s.GetErrorsCount())
+	}
+	if !strings.Contains(s.GetErrors()[0].Error(), "max recursion depth") {
+		t.Errorf("expected max recursion depth error, got: %v", s.GetErrors()[0])
 	}
 }
 
@@ -1956,6 +2020,7 @@ func configsEqual(c1, c2 config) bool {
 	return c1.fetchTimeout == c2.fetchTimeout &&
 		c1.userAgent == c2.userAgent &&
 		c1.maxResponseSize == c2.maxResponseSize &&
+		c1.maxDepth == c2.maxDepth &&
 		c1.multiThread == c2.multiThread &&
 		reflect.DeepEqual(c1.follow, c2.follow) &&
 		reflect.DeepEqual(c1.rules, c2.rules)

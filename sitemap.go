@@ -49,6 +49,7 @@ type (
 		userAgent       string
 		fetchTimeout    uint8
 		maxResponseSize int64
+		maxDepth        int
 		multiThread     bool
 		follow          []string
 		followRegexes   []*regexp.Regexp
@@ -133,6 +134,7 @@ func (s *S) setConfigDefaults() {
 		userAgent:       "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
 		fetchTimeout:    3,
 		maxResponseSize: 50 * 1024 * 1024, // 50 MB per sitemaps.org spec
+		maxDepth:        10,
 		multiThread:     true,
 		follow:          []string{},
 		rules:           []string{},
@@ -174,6 +176,16 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
 	s.cfg.maxResponseSize = maxResponseSize
+
+	return s
+}
+
+// SetMaxDepth sets the maximum recursion depth for following sitemap indexes.
+// A sitemap index may reference other sitemap indexes; this limits how many levels deep
+// the parser will follow. The default is 10.
+// The function returns a pointer to the S structure to allow method chaining.
+func (s *S) SetMaxDepth(maxDepth int) *S {
+	s.cfg.maxDepth = maxDepth
 
 	return s
 }
@@ -268,9 +280,9 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 				s.mu.Unlock()
 
 				if s.cfg.multiThread {
-					s.parseAndFetchUrlsMultiThread(locations)
+					s.parseAndFetchUrlsMultiThread(locations, 0)
 				} else {
-					s.parseAndFetchUrlsSequential(locations)
+					s.parseAndFetchUrlsSequential(locations, 0)
 				}
 			}()
 		}
@@ -278,9 +290,9 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 		mainURLContent := s.checkAndUnzipContent([]byte(s.mainURLContent))
 		s.mainURLContent = string(mainURLContent)
 		if s.cfg.multiThread {
-			s.parseAndFetchUrlsMultiThread(s.parse(s.mainURL, s.mainURLContent))
+			s.parseAndFetchUrlsMultiThread(s.parse(s.mainURL, s.mainURLContent), 0)
 		} else {
-			s.parseAndFetchUrlsSequential(s.parse(s.mainURL, s.mainURLContent))
+			s.parseAndFetchUrlsSequential(s.parse(s.mainURL, s.mainURLContent), 0)
 		}
 	}
 
@@ -453,7 +465,13 @@ func (s *S) checkAndUnzipContent(content []byte) []byte {
 // The fetched content is then checked and uncompressed using the checkAndUnzipContent method of the S structure.
 // Finally, the uncompressed content is passed to the parse method of the S structure.
 // This method does not return any value.
-func (s *S) parseAndFetchUrlsMultiThread(locations []string) {
+func (s *S) parseAndFetchUrlsMultiThread(locations []string, depth int) {
+	if depth >= s.cfg.maxDepth {
+		s.mu.Lock()
+		s.errs = append(s.errs, fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth))
+		s.mu.Unlock()
+		return
+	}
 	var wg sync.WaitGroup
 	for _, location := range locations {
 		wg.Add(1)
@@ -473,7 +491,7 @@ func (s *S) parseAndFetchUrlsMultiThread(locations []string) {
 			parsedLocations := s.parse(loc, string(content))
 			s.mu.Unlock()
 			if len(parsedLocations) > 0 {
-				s.parseAndFetchUrlsMultiThread(parsedLocations)
+				s.parseAndFetchUrlsMultiThread(parsedLocations, depth+1)
 			}
 		}()
 	}
@@ -486,7 +504,13 @@ func (s *S) parseAndFetchUrlsMultiThread(locations []string) {
 // The fetched content is then checked and uncompressed using the checkAndUnzipContent method of the S structure.
 // Finally, the uncompressed content is passed to the parse method of the S structure.
 // This method does not return any value.
-func (s *S) parseAndFetchUrlsSequential(locations []string) {
+func (s *S) parseAndFetchUrlsSequential(locations []string, depth int) {
+	if depth >= s.cfg.maxDepth {
+		s.mu.Lock()
+		s.errs = append(s.errs, fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth))
+		s.mu.Unlock()
+		return
+	}
 	for _, location := range locations {
 		content, err := s.fetch(location)
 		if err != nil {
@@ -500,7 +524,7 @@ func (s *S) parseAndFetchUrlsSequential(locations []string) {
 		parsedLocations := s.parse(location, string(content))
 		s.mu.Unlock()
 		if len(parsedLocations) > 0 {
-			s.parseAndFetchUrlsSequential(parsedLocations)
+			s.parseAndFetchUrlsSequential(parsedLocations, depth+1)
 		}
 	}
 }
