@@ -27,6 +27,7 @@ type (
 	// The urls field is a slice of URL structs that stores the URLs to be processed.
 	// The errs field is a slice of errors that holds any encountered errors during processing.
 	S struct {
+		mu                   sync.Mutex
 		cfg                  config
 		mainURL              string
 		mainURLContent       string
@@ -213,7 +214,6 @@ func (s *S) SetRules(regexes []string) *S {
 // It returns the S structure and nil error if the method was able to complete successfully.
 func (s *S) Parse(url string, urlContent *string) (*S, error) {
 	var err error
-	var mu sync.Mutex
 	var wg sync.WaitGroup
 
 	if len(s.errs) > 0 {
@@ -236,20 +236,23 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 			go func() {
 				defer wg.Done()
 
-				mu.Lock()
-				defer mu.Unlock()
-
 				robotsTXTSitemapContent, err := s.fetch(rTXTsmURL)
 				if err != nil {
+					s.mu.Lock()
 					s.errs = append(s.errs, err)
+					s.mu.Unlock()
 					return
 				}
+
+				s.mu.Lock()
 				robotsTXTSitemapContent = s.checkAndUnzipContent(robotsTXTSitemapContent)
+				locations := s.parse(rTXTsmURL, string(robotsTXTSitemapContent))
+				s.mu.Unlock()
 
 				if s.cfg.multiThread {
-					s.parseAndFetchUrlsMultiThread(s.parse(rTXTsmURL, string(robotsTXTSitemapContent)))
+					s.parseAndFetchUrlsMultiThread(locations)
 				} else {
-					s.parseAndFetchUrlsSequential(s.parse(rTXTsmURL, string(robotsTXTSitemapContent)))
+					s.parseAndFetchUrlsSequential(locations)
 				}
 			}()
 		}
@@ -434,11 +437,15 @@ func (s *S) parseAndFetchUrlsMultiThread(locations []string) {
 			defer wg.Done()
 			content, err := s.fetch(loc)
 			if err != nil {
+				s.mu.Lock()
 				s.errs = append(s.errs, err)
+				s.mu.Unlock()
 				return
 			}
+			s.mu.Lock()
 			content = s.checkAndUnzipContent(content)
 			parsedLocations := s.parse(loc, string(content))
+			s.mu.Unlock()
 			if len(parsedLocations) > 0 {
 				s.parseAndFetchUrlsMultiThread(parsedLocations)
 			}
@@ -457,11 +464,15 @@ func (s *S) parseAndFetchUrlsSequential(locations []string) {
 	for _, location := range locations {
 		content, err := s.fetch(location)
 		if err != nil {
+			s.mu.Lock()
 			s.errs = append(s.errs, err)
+			s.mu.Unlock()
 			continue
 		}
+		s.mu.Lock()
 		content = s.checkAndUnzipContent(content)
 		parsedLocations := s.parse(location, string(content))
+		s.mu.Unlock()
 		if len(parsedLocations) > 0 {
 			s.parseAndFetchUrlsSequential(parsedLocations)
 		}
