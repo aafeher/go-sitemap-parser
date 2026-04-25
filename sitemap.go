@@ -293,7 +293,7 @@ func (s *S) GetErrors() []error {
 
 // GetURLs returns the list of parsed URLs.
 func (s *S) GetURLs() []URL {
-	if len(s.urls) <= 0 {
+	if s == nil || len(s.urls) <= 0 {
 		return []URL{}
 	}
 	return s.urls

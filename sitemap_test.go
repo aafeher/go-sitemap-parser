@@ -1009,6 +1009,11 @@ func TestS_GetURLs(t *testing.T) {
 		want []URL
 	}{
 		{
+			name: "nil receiver",
+			s:    nil,
+			want: []URL{},
+		},
+		{
 			name: "No URLs",
 			s:    &S{},
 			want: []URL{},
