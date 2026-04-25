@@ -222,6 +222,10 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 		return s, errors.New("errors occurred before parsing, see GetErrors() for details")
 	}
 
+	s.robotsTxtSitemapURLs = nil
+	s.sitemapLocations = nil
+	s.urls = nil
+
 	s.mainURL = url
 	s.mainURLContent, err = s.setContent(urlContent)
 	if err != nil {

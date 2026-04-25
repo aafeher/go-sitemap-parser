@@ -880,6 +880,36 @@ func TestS_Parse(t *testing.T) {
 	}
 }
 
+func TestS_Parse_Reuse(t *testing.T) {
+	server := testServer()
+	defer server.Close()
+
+	s := New().SetMultiThread(false)
+
+	// First parse: sitemap with 2 URLs
+	content1 := fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <url><loc>%s/page-01</loc></url>\n    <url><loc>%s/page-02</loc></url>\n</urlset>", server.URL, server.URL)
+	_, err := s.Parse(fmt.Sprintf("%s/sitemap-02.xml", server.URL), &content1)
+	if err != nil {
+		t.Fatalf("first Parse failed: %v", err)
+	}
+	if s.GetURLCount() != 2 {
+		t.Fatalf("after first parse: expected 2 URLs, got %d", s.GetURLCount())
+	}
+
+	// Second parse: sitemap with 1 URL
+	content2 := fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <url><loc>%s/page-03</loc></url>\n</urlset>", server.URL)
+	_, err = s.Parse(fmt.Sprintf("%s/sitemap-03.xml", server.URL), &content2)
+	if err != nil {
+		t.Fatalf("second Parse failed: %v", err)
+	}
+	if s.GetURLCount() != 1 {
+		t.Errorf("after second parse: expected 1 URL, got %d", s.GetURLCount())
+	}
+	if s.GetErrorsCount() != 0 {
+		t.Errorf("after second parse: expected 0 errors, got %d", s.GetErrorsCount())
+	}
+}
+
 func TestS_GetErrorsCount(t *testing.T) {
 	tests := []struct {
 		name          string
