@@ -9,7 +9,12 @@
 A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](http://www.sitemaps.org/protocol.html).
 
 ## Features
-- Recursive parsing
+- Recursive parsing (sitemap index → sitemaps → URLs)
+- Concurrent (multi-threaded) fetching and parsing
+- Configurable follow rules to filter which sitemaps to parse
+- Configurable URL rules to filter which URLs to include
+- Configurable HTTP response size limit
+- Thread-safe
 
 ## Formats supported
 - `robots.txt`
@@ -162,6 +167,56 @@ The `Parse()` function performs concurrent parsing and fetching optimized by the
 s, err := s.Parse("https://www.sitemaps.org/sitemap.xml", nil)
 ```
 In this example, sitemap is parsed from "https://www.sitemaps.org/sitemap.xml". The function fetches the content itself, as we passed nil as the urlContent.
+
+### Results
+
+After parsing, you can retrieve the results using the following methods:
+
+#### GetURLs
+
+Returns all parsed URLs as a `[]URL` slice.
+
+```go
+urls := s.GetURLs()
+```
+
+Each `URL` struct contains the following fields:
+- `Loc` (`string`) — the URL location
+- `LastMod` (`*lastModTime`) — last modification time (embeds `time.Time`), may be `nil`
+- `ChangeFreq` (`*urlChangeFreq`) — change frequency hint (`"always"`, `"hourly"`, `"daily"`, `"weekly"`, `"monthly"`, `"yearly"`, `"never"`), may be `nil`
+- `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`
+
+#### GetURLCount
+
+Returns the number of parsed URLs.
+
+```go
+count := s.GetURLCount()
+```
+
+#### GetRandomURLs
+
+Returns a slice of `n` randomly selected URLs without duplicates.
+
+```go
+randomURLs := s.GetRandomURLs(5)
+```
+
+#### GetErrors
+
+Returns all errors encountered during parsing.
+
+```go
+errs := s.GetErrors()
+```
+
+#### GetErrorsCount
+
+Returns the number of errors encountered during parsing.
+
+```go
+errCount := s.GetErrorsCount()
+```
 
 ## Examples
 
