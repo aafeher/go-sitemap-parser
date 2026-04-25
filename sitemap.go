@@ -384,13 +384,13 @@ func (s *S) fetch(url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(response.Body)
 
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("received HTTP status %d", response.StatusCode)
 	}
-	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
-	}(response.Body)
 
 	_, err = io.Copy(&body, response.Body)
 	if err != nil {
