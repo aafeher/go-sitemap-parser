@@ -1030,6 +1030,32 @@ func TestS_GetRandomURLs(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("does not modify original urls", func(t *testing.T) {
+		urls := []URL{
+			{Loc: "http://example.com/1"},
+			{Loc: "http://example.com/2"},
+			{Loc: "http://example.com/3"},
+			{Loc: "http://example.com/4"},
+		}
+		s := &S{urls: urls}
+		originalLen := len(s.urls)
+		originalLocs := make([]string, len(s.urls))
+		for i, u := range s.urls {
+			originalLocs[i] = u.Loc
+		}
+
+		_ = s.GetRandomURLs(2)
+
+		if len(s.urls) != originalLen {
+			t.Errorf("expected urls length %d, got %d", originalLen, len(s.urls))
+		}
+		for i, u := range s.urls {
+			if u.Loc != originalLocs[i] {
+				t.Errorf("urls[%d].Loc = %q, want %q", i, u.Loc, originalLocs[i])
+			}
+		}
+	})
 }
 
 func TestS_setContent(t *testing.T) {

@@ -313,7 +313,8 @@ func (s *S) GetRandomURLs(n int) []URL {
 		return []URL{}
 	}
 
-	originalURLs := s.urls
+	originalURLs := make([]URL, len(s.urls))
+	copy(originalURLs, s.urls)
 
 	randURLs := make([]URL, 0, n)
 
