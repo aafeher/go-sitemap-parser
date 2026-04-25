@@ -171,6 +171,7 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetFollow(regexes []string) *S {
 	s.cfg.follow = regexes
+	s.cfg.followRegexes = nil
 	for _, followPattern := range s.cfg.follow {
 		re, err := regexp.Compile(followPattern)
 		if err != nil {
@@ -188,6 +189,7 @@ func (s *S) SetFollow(regexes []string) *S {
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetRules(regexes []string) *S {
 	s.cfg.rules = regexes
+	s.cfg.rulesRegexes = nil
 	for _, rulePattern := range s.cfg.rules {
 		re, err := regexp.Compile(rulePattern)
 		if err != nil {

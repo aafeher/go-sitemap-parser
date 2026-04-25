@@ -125,6 +125,72 @@ func TestS_SetMultiThread(t *testing.T) {
 	}
 }
 
+func TestS_SetFollow(t *testing.T) {
+	t.Run("single call", func(t *testing.T) {
+		s := New()
+		s.SetFollow([]string{`alpha`, `beta`})
+		if len(s.cfg.followRegexes) != 2 {
+			t.Errorf("expected 2 regexes, got %d", len(s.cfg.followRegexes))
+		}
+	})
+
+	t.Run("multiple calls replaces regexes", func(t *testing.T) {
+		s := New()
+		s.SetFollow([]string{`alpha`, `beta`})
+		s.SetFollow([]string{`gamma`})
+		if len(s.cfg.followRegexes) != 1 {
+			t.Errorf("expected 1 regex, got %d", len(s.cfg.followRegexes))
+		}
+		if s.cfg.followRegexes[0].String() != "gamma" {
+			t.Errorf("expected regex 'gamma', got %q", s.cfg.followRegexes[0].String())
+		}
+	})
+
+	t.Run("invalid regex appends error", func(t *testing.T) {
+		s := New()
+		s.SetFollow([]string{`(`})
+		if len(s.cfg.followRegexes) != 0 {
+			t.Errorf("expected 0 regexes, got %d", len(s.cfg.followRegexes))
+		}
+		if len(s.errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(s.errs))
+		}
+	})
+}
+
+func TestS_SetRules(t *testing.T) {
+	t.Run("single call", func(t *testing.T) {
+		s := New()
+		s.SetRules([]string{`page`, `post`})
+		if len(s.cfg.rulesRegexes) != 2 {
+			t.Errorf("expected 2 regexes, got %d", len(s.cfg.rulesRegexes))
+		}
+	})
+
+	t.Run("multiple calls replaces regexes", func(t *testing.T) {
+		s := New()
+		s.SetRules([]string{`page`, `post`})
+		s.SetRules([]string{`article`})
+		if len(s.cfg.rulesRegexes) != 1 {
+			t.Errorf("expected 1 regex, got %d", len(s.cfg.rulesRegexes))
+		}
+		if s.cfg.rulesRegexes[0].String() != "article" {
+			t.Errorf("expected regex 'article', got %q", s.cfg.rulesRegexes[0].String())
+		}
+	})
+
+	t.Run("invalid regex appends error", func(t *testing.T) {
+		s := New()
+		s.SetRules([]string{`*a`})
+		if len(s.cfg.rulesRegexes) != 0 {
+			t.Errorf("expected 0 regexes, got %d", len(s.cfg.rulesRegexes))
+		}
+		if len(s.errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(s.errs))
+		}
+	})
+}
+
 func TestS_Parse(t *testing.T) {
 	server := testServer()
 	defer server.Close()
