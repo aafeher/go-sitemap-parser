@@ -682,12 +682,11 @@ func (s *S) parse(url string, content string) []string {
 	return sitemapLocationsAdded
 }
 
-// parseSitemapIndex parses the sitemap index data and returns a SitemapIndex object and an error.
+// parseSitemapIndex parses the sitemap index data and returns a sitemapIndex object and an error.
 // The data parameter contains the XML data of the sitemap index.
 // If the data is empty, it returns an error with the message "sitemapindex is empty".
-// It uses the xml.Unmarshal function to unmarshal the XML data into a SitemapIndex object.
-// The unmarshalling result is stored in the sitemapIndex variable.
-// It returns the sitemapIndex object and any unmarshalling error that occurred.
+// It uses an xml.Decoder with charset support to decode the XML data into a sitemapIndex object.
+// It returns the sitemapIndex object and any decoding error that occurred.
 func (s *S) parseSitemapIndex(data string) (sitemapIndex, error) {
 	var smIndex sitemapIndex
 
@@ -705,8 +704,8 @@ func (s *S) parseSitemapIndex(data string) (sitemapIndex, error) {
 
 // parseURLSet takes a string of XML data representing a sitemap and parses it into a URLSet.
 // If the data is empty, it returns an error with the message "sitemap is empty".
-// It uses the xml.Unmarshal function to unmarshal the XML data into the URLSet struct.
-// If there is an error during unmarshalling, it returns the empty URLSet and the unmarshal error.
+// It uses an xml.Decoder with charset support to decode the XML data into the URLSet struct.
+// If there is an error during decoding, it returns the empty URLSet and the decode error.
 // Otherwise, it returns the parsed URLSet and nil error.
 func (s *S) parseURLSet(data string) (URLSet, error) {
 	var urlSet URLSet
