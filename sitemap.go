@@ -377,9 +377,9 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 					s.mu.Unlock()
 					return
 				}
-				defer s.releaseSlot()
 
 				robotsTXTSitemapContent, err := s.fetch(ctx, rTXTsmURL)
+				s.releaseSlot()
 				if err != nil {
 					s.mu.Lock()
 					s.errs = append(s.errs, err)

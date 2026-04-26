@@ -2778,6 +2778,35 @@ func TestS_ParseContext_MaxConcurrency_RobotsTXT_CtxCancel(t *testing.T) {
 	}
 }
 
+func TestS_ParseContext_RobotsTXT_Deadlock(t *testing.T) {
+	// This test reproduces the deadlock scenario where a robots.txt sitemap
+	// points to a sitemap index, and maxConcurrency is 1. The initial fetch
+	// in the robots.txt goroutine must release its semaphore slot before
+	// recursively calling parseAndFetchUrlsMultiThread, otherwise the nested
+	// goroutines will block forever waiting for the single slot.
+	server := testServer()
+	defer server.Close()
+
+	robots := fmt.Sprintf("Sitemap: %s/sitemapindex-1.xml\n", server.URL)
+	s := New().SetMaxConcurrency(1)
+
+	// Use a timeout to detect the deadlock.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.ParseContext(ctx, server.URL+"/robots.txt", &robots)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			t.Fatal("deadlock detected: parsing timed out")
+		}
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if s.GetURLCount() == 0 {
+		t.Error("expected URLs to be parsed, but got 0")
+	}
+}
+
 func configsEqual(c1, c2 config) bool {
 	return c1.fetchTimeout == c2.fetchTimeout &&
 		c1.userAgent == c2.userAgent &&
