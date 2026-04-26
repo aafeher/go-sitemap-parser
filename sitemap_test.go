@@ -989,7 +989,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("EOF"), errors.New("EOF")},
+			errs:                 []error{fmt.Errorf("unrecognized sitemap format (root element: %q)", "")},
 		},
 		{
 			name:                 "sitemapindex.xml.gz empty file",
@@ -1001,7 +1001,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("sitemapindex is empty"), errors.New("sitemap is empty")},
+			errs:                 []error{errors.New("sitemap content is empty")},
 		},
 		{
 			name:                 "sitemapindex.xml.gz",
@@ -1068,7 +1068,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("sitemapindex is empty"), errors.New("sitemap is empty")},
+			errs:                 []error{errors.New("sitemap content is empty")},
 		},
 		{
 			name:                 "sitemap.xml.gz",
@@ -1106,7 +1106,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("EOF"), errors.New("EOF")},
+			errs:                 []error{fmt.Errorf("unrecognized sitemap format (root element: %q)", "")},
 		},
 		{
 			name:                 "sitemapindex.xml empty content",
@@ -1119,7 +1119,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("EOF"), errors.New("EOF")},
+			errs:                 []error{fmt.Errorf("unrecognized sitemap format (root element: %q)", "")},
 		},
 		{
 			name:                 "sitemapindex.xml",
@@ -1266,7 +1266,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("EOF"), errors.New("EOF")},
+			errs:                 []error{fmt.Errorf("unrecognized sitemap format (root element: %q)", "")},
 		},
 		{
 			name:                 "sitemap.xml empty content",
@@ -1279,7 +1279,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("EOF"), errors.New("EOF")},
+			errs:                 []error{fmt.Errorf("unrecognized sitemap format (root element: %q)", "")},
 		},
 		{
 			name:                 "sitemap.xml",
@@ -2134,7 +2134,23 @@ func TestS_parse(t *testing.T) {
 			content:                    "invalid content",
 			sitemapLocationsAddedCount: 0,
 			urlsCount:                  0,
-			errsCount:                  2,
+			errsCount:                  1,
+		},
+		{
+			name:                       "malformed sitemapindex XML",
+			url:                        fmt.Sprintf("%s/sitemapindex.xml", server.URL),
+			content:                    "<sitemapindex><broken",
+			sitemapLocationsAddedCount: 0,
+			urlsCount:                  0,
+			errsCount:                  1,
+		},
+		{
+			name:                       "malformed urlset XML",
+			url:                        fmt.Sprintf("%s/sitemap.xml", server.URL),
+			content:                    "<urlset><broken",
+			sitemapLocationsAddedCount: 0,
+			urlsCount:                  0,
+			errsCount:                  1,
 		},
 	}
 

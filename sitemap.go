@@ -575,20 +575,41 @@ func (s *S) parseAndFetchUrlsSequential(locations []string, depth int) {
 	}
 }
 
+// detectRootElement reads the first XML start element from the content
+// to determine the document type without fully parsing it.
+// Returns the local name of the root element, or an empty string if detection fails.
+func detectRootElement(content string) string {
+	decoder := xml.NewDecoder(bytes.NewReader([]byte(content)))
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return ""
+		}
+		if se, ok := token.(xml.StartElement); ok {
+			return se.Name.Local
+		}
+	}
+}
+
 // parse parses the provided URL and its content.
-// It determines whether the content is a sitemap index or a sitemap.
+// It determines whether the content is a sitemap index or a sitemap by inspecting
+// the root XML element, then only invokes the appropriate parser.
 // If it is a sitemap index, it adds the URLs from the sitemap index to the sitemap locations.
 // If it is a sitemap, it adds the URLs from the sitemap to the URL list.
 // Parsing errors are added to the error list.
 // It returns a slice of sitemap locations that were added.
 func (s *S) parse(url string, content string) []string {
-	smIndex, errSitemapIndex := s.parseSitemapIndex(content)
-	urlSet, errURLSet := s.parseURLSet(content)
-
 	var sitemapLocationsAdded []string
 
-	if smIndex.Sitemap != nil {
-		// SitemapIndex
+	rootElement := detectRootElement(content)
+
+	switch rootElement {
+	case "sitemapindex":
+		smIndex, err := s.parseSitemapIndex(content)
+		if err != nil {
+			s.errs = append(s.errs, err)
+			return sitemapLocationsAdded
+		}
 		s.sitemapLocations = append(s.sitemapLocations, url)
 		for _, sitemapIndexSitemap := range smIndex.Sitemap {
 			sitemapIndexSitemap.Loc = strings.TrimSpace(sitemapIndexSitemap.Loc)
@@ -616,8 +637,13 @@ func (s *S) parse(url string, content string) []string {
 			sitemapLocationsAdded = append(sitemapLocationsAdded, sitemapIndexSitemap.Loc)
 			s.sitemapLocations = append(s.sitemapLocations, sitemapIndexSitemap.Loc)
 		}
-	} else if len(urlSet.URL) > 0 {
-		// URLSet
+
+	case "urlset":
+		urlSet, err := s.parseURLSet(content)
+		if err != nil {
+			s.errs = append(s.errs, err)
+			return sitemapLocationsAdded
+		}
 		for _, urlSetURL := range urlSet.URL {
 			urlSetURL.Loc = strings.TrimSpace(urlSetURL.Loc)
 			resolvedLoc, err := s.resolveAndValidateLoc(urlSetURL.Loc, url)
@@ -643,13 +669,14 @@ func (s *S) parse(url string, content string) []string {
 			}
 			s.urls = append(s.urls, urlSetURL)
 		}
-	}
 
-	if errSitemapIndex != nil && len(urlSet.URL) == 0 {
-		s.errs = append(s.errs, errSitemapIndex)
-	}
-	if errURLSet != nil && smIndex.Sitemap == nil {
-		s.errs = append(s.errs, errURLSet)
+	default:
+		// Unknown root element: report a single error
+		if len(content) == 0 {
+			s.errs = append(s.errs, fmt.Errorf("sitemap content is empty"))
+		} else {
+			s.errs = append(s.errs, fmt.Errorf("unrecognized sitemap format (root element: %q)", rootElement))
+		}
 	}
 
 	return sitemapLocationsAdded
