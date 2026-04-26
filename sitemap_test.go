@@ -2393,6 +2393,18 @@ func TestLastModTime_UnmarshalXML(t *testing.T) {
 			want:     time.Time{},
 			wantErr:  true,
 		},
+		{
+			name:     "Empty element",
+			xmlInput: "<lastmod></lastmod>",
+			want:     time.Time{},
+			wantErr:  false,
+		},
+		{
+			name:     "Whitespace only",
+			xmlInput: "<lastmod>   </lastmod>",
+			want:     time.Time{},
+			wantErr:  false,
+		},
 	}
 
 	for _, tt := range tests {

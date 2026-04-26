@@ -821,14 +821,20 @@ func (l *lastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error
 
 	v = strings.TrimSpace(v)
 
-	var parsedTime time.Time
+	// An empty <lastmod> element (or one containing only whitespace) is common
+	// in real-world sitemaps. Treat it as "not set" rather than an error: leave
+	// the zero value in place and let the caller decide how to interpret it.
+	if v == "" {
+		return nil
+	}
+
 	for _, format := range formats {
-		parsedTime, err = time.Parse(format, v)
-		if err == nil {
+		parsedTime, parseErr := time.Parse(format, v)
+		if parseErr == nil {
 			*l = lastModTime{parsedTime}
 			return nil
 		}
 	}
 
-	return err
+	return fmt.Errorf("unsupported lastmod format: %q", v)
 }
