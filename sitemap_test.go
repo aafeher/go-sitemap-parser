@@ -155,6 +155,30 @@ func TestS_SetMaxResponseSize(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("ZeroValue", func(t *testing.T) {
+		s := New()
+		defaultSize := s.cfg.maxResponseSize
+		s.SetMaxResponseSize(0)
+		if s.cfg.maxResponseSize != defaultSize {
+			t.Errorf("expected default %v to be preserved, got %v", defaultSize, s.cfg.maxResponseSize)
+		}
+		if len(s.errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(s.errs))
+		}
+	})
+
+	t.Run("NegativeValue", func(t *testing.T) {
+		s := New()
+		defaultSize := s.cfg.maxResponseSize
+		s.SetMaxResponseSize(-1)
+		if s.cfg.maxResponseSize != defaultSize {
+			t.Errorf("expected default %v to be preserved, got %v", defaultSize, s.cfg.maxResponseSize)
+		}
+		if len(s.errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(s.errs))
+		}
+	})
 }
 
 func TestS_SetMaxDepth(t *testing.T) {
@@ -180,6 +204,30 @@ func TestS_SetMaxDepth(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("ZeroValue", func(t *testing.T) {
+		s := New()
+		defaultDepth := s.cfg.maxDepth
+		s.SetMaxDepth(0)
+		if s.cfg.maxDepth != defaultDepth {
+			t.Errorf("expected default %v to be preserved, got %v", defaultDepth, s.cfg.maxDepth)
+		}
+		if len(s.errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(s.errs))
+		}
+	})
+
+	t.Run("NegativeValue", func(t *testing.T) {
+		s := New()
+		defaultDepth := s.cfg.maxDepth
+		s.SetMaxDepth(-5)
+		if s.cfg.maxDepth != defaultDepth {
+			t.Errorf("expected default %v to be preserved, got %v", defaultDepth, s.cfg.maxDepth)
+		}
+		if len(s.errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(s.errs))
+		}
+	})
 }
 
 func TestS_SetFollow(t *testing.T) {
@@ -2018,9 +2066,9 @@ func TestS_parseAndFetchUrlsMultiThread_MaxDepth(t *testing.T) {
 	server := testServer()
 	defer server.Close()
 
-	s := New().SetMaxDepth(0)
+	s := New().SetMaxDepth(1)
 	locations := []string{fmt.Sprintf("%s/sitemapindex-1.xml", server.URL)}
-	s.parseAndFetchUrlsMultiThread(locations, 0)
+	s.parseAndFetchUrlsMultiThread(locations, 1)
 
 	if len(s.urls) != 0 {
 		t.Errorf("expected 0 URLs at depth limit, got %d", len(s.urls))
@@ -2037,9 +2085,9 @@ func TestS_parseAndFetchUrlsSequential_MaxDepth(t *testing.T) {
 	server := testServer()
 	defer server.Close()
 
-	s := New().SetMaxDepth(0).SetMultiThread(false)
+	s := New().SetMaxDepth(1).SetMultiThread(false)
 	locations := []string{fmt.Sprintf("%s/sitemapindex-1.xml", server.URL)}
-	s.parseAndFetchUrlsSequential(locations, 0)
+	s.parseAndFetchUrlsSequential(locations, 1)
 
 	if len(s.urls) != 0 {
 		t.Errorf("expected 0 URLs at depth limit, got %d", len(s.urls))

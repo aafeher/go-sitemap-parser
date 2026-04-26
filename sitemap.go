@@ -176,8 +176,13 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 // SetMaxResponseSize sets the maximum allowed HTTP response size in bytes.
 // Responses exceeding this limit will be truncated and may cause parsing errors.
 // The default is 50 MB, matching the sitemaps.org protocol limit.
+// The value must be greater than 0; invalid values are ignored and an error is recorded.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
+	if maxResponseSize <= 0 {
+		s.errs = append(s.errs, fmt.Errorf("maxResponseSize must be greater than 0, got %d", maxResponseSize))
+		return s
+	}
 	s.cfg.maxResponseSize = maxResponseSize
 
 	return s
@@ -186,8 +191,13 @@ func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
 // SetMaxDepth sets the maximum recursion depth for following sitemap indexes.
 // A sitemap index may reference other sitemap indexes; this limits how many levels deep
 // the parser will follow. The default is 10.
+// The value must be greater than 0; invalid values are ignored and an error is recorded.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxDepth(maxDepth int) *S {
+	if maxDepth <= 0 {
+		s.errs = append(s.errs, fmt.Errorf("maxDepth must be greater than 0, got %d", maxDepth))
+		return s
+	}
 	s.cfg.maxDepth = maxDepth
 
 	return s
