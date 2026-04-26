@@ -39,6 +39,11 @@ type (
 		sitemapLocations     []string
 		urls                 []URL
 		errs                 []error
+		// sem is a per-Parse-call semaphore that bounds the number of
+		// concurrently running fetch goroutines when cfg.maxConcurrency > 0.
+		// It is created at the start of ParseContext and is nil when
+		// concurrency is unlimited.
+		sem chan struct{}
 	}
 
 	// config is a structure that holds configuration settings.
@@ -54,6 +59,7 @@ type (
 		fetchTimeout    uint16
 		maxResponseSize int64
 		maxDepth        int
+		maxConcurrency  int
 		multiThread     bool
 		strict          bool
 		follow          []string
@@ -140,6 +146,7 @@ func (s *S) setConfigDefaults() {
 		fetchTimeout:    3,
 		maxResponseSize: 50 * 1024 * 1024, // 50 MB per sitemaps.org spec
 		maxDepth:        10,
+		maxConcurrency:  0, // 0 = unlimited (backward compatible)
 		multiThread:     true,
 		follow:          []string{},
 		rules:           []string{},
@@ -201,6 +208,25 @@ func (s *S) SetMaxDepth(maxDepth int) *S {
 		return s
 	}
 	s.cfg.maxDepth = maxDepth
+
+	return s
+}
+
+// SetMaxConcurrency sets the maximum number of concurrent fetch goroutines used
+// when multi-threaded parsing is enabled. A value of 0 (the default) means
+// unlimited concurrency, preserving the historical behaviour. A positive value
+// caps the number of in-flight HTTP fetches across the recursive sitemap-index
+// traversal, which is recommended for very large sitemap indexes to avoid
+// goroutine and connection blow-up.
+// The value must be greater than or equal to 0; negative values are ignored
+// and an error is recorded.
+// The function returns a pointer to the S structure to allow method chaining.
+func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
+	if maxConcurrency < 0 {
+		s.errs = append(s.errs, fmt.Errorf("maxConcurrency must be >= 0, got %d", maxConcurrency))
+		return s
+	}
+	s.cfg.maxConcurrency = maxConcurrency
 
 	return s
 }
@@ -321,6 +347,12 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	s.sitemapLocations = nil
 	s.urls = nil
 
+	if s.cfg.maxConcurrency > 0 {
+		s.sem = make(chan struct{}, s.cfg.maxConcurrency)
+	} else {
+		s.sem = nil
+	}
+
 	s.mainURL = url
 	s.mainURLContent, err = s.setContent(ctx, urlContent)
 	if err != nil {
@@ -337,12 +369,15 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 			go func() {
 				defer wg.Done()
 
-				if ctx.Err() != nil {
+				// acquireSlot also honours ctx cancellation, so a single check
+				// here covers both the unlimited-concurrency and bounded paths.
+				if err := s.acquireSlot(ctx); err != nil {
 					s.mu.Lock()
-					s.errs = append(s.errs, ctx.Err())
+					s.errs = append(s.errs, err)
 					s.mu.Unlock()
 					return
 				}
+				defer s.releaseSlot()
 
 				robotsTXTSitemapContent, err := s.fetch(ctx, rTXTsmURL)
 				if err != nil {
@@ -495,6 +530,34 @@ func (s *S) parseRobotsTXT(robotsTXTContent string) {
 	}
 }
 
+// acquireSlot blocks until a concurrency slot is available, or returns the
+// context error if ctx is cancelled while waiting. When the semaphore is nil
+// (unlimited concurrency) it still honours ctx so that callers receive a
+// deterministic cancellation error.
+func (s *S) acquireSlot(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.sem == nil {
+		return nil
+	}
+	select {
+	case s.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releaseSlot frees a previously acquired concurrency slot. It is a no-op when
+// the semaphore is nil.
+func (s *S) releaseSlot() {
+	if s.sem == nil {
+		return
+	}
+	<-s.sem
+}
+
 // fetch retrieves the content of the specified URL using an HTTP GET request.
 // It returns the content as a []byte and an error if there was a problem fetching the URL.
 // The HTTP status must be 200 (OK) for the request to be successful.
@@ -587,10 +650,16 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 		loc := location
 		go func() {
 			defer wg.Done()
-			if ctx.Err() != nil {
+			// acquireSlot also honours ctx cancellation, so a single check
+			// here covers both the unlimited-concurrency and bounded paths.
+			if err := s.acquireSlot(ctx); err != nil {
+				s.mu.Lock()
+				s.errs = append(s.errs, err)
+				s.mu.Unlock()
 				return
 			}
 			content, err := s.fetch(ctx, loc)
+			s.releaseSlot()
 			if err != nil {
 				s.mu.Lock()
 				s.errs = append(s.errs, err)

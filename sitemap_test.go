@@ -2629,36 +2629,26 @@ func TestS_parseAndFetchUrlsMultiThread_PreCancelled(t *testing.T) {
 	s.parseAndFetchUrlsMultiThread(ctx, []string{"http://127.0.0.1:1/a", "http://127.0.0.1:1/b"}, 0)
 }
 
-func TestS_parseAndFetchUrlsMultiThread_GoroutineCancel(t *testing.T) {
-	// Covers the per-goroutine early `if ctx.Err() != nil { return }` branch
-	// in parseAndFetchUrlsMultiThread. Since the spawning loop also checks
-	// ctx.Err(), the only way to hit the in-goroutine guard is a real race
-	// between spawn and cancel. We run a tight loop until the deadline so
-	// the scheduler reliably interleaves the cancel with goroutine startup.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
-	}))
-	defer server.Close()
+func TestS_parseAndFetchUrlsMultiThread_AcquireSlotCancel(t *testing.T) {
+	// Covers the acquireSlot ctx-cancel error branch inside the goroutine
+	// of parseAndFetchUrlsMultiThread. We pre-saturate the semaphore so the
+	// goroutine must block, then cancel the context. The loop-level
+	// ctx.Err() break is bypassed by using a context that becomes cancelled
+	// only after the goroutine has been spawned.
+	s := New().SetMaxConcurrency(1)
+	s.sem = make(chan struct{}, 1)
+	s.sem <- struct{}{} // saturate
 
-	const n = 500
-	locations := make([]string, n)
-	for i := range locations {
-		locations[i] = fmt.Sprintf("%s/loc-%d", server.URL, i)
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithCancel(context.Background())
-		s := New().SetFetchTimeout(30)
+	s.parseAndFetchUrlsMultiThread(ctx, []string{"http://127.0.0.1:1/a"}, 0)
 
-		// Cancel after a tiny delay so the loop has a chance to spawn
-		// some goroutines before the cancellation propagates.
-		go func() {
-			time.Sleep(100 * time.Microsecond)
-			cancel()
-		}()
-
-		s.parseAndFetchUrlsMultiThread(ctx, locations, 0)
+	if len(s.errs) == 0 {
+		t.Error("expected at least one error from cancelled acquireSlot")
 	}
 }
 
@@ -2685,11 +2675,115 @@ func TestS_Parse_BackwardCompatible(t *testing.T) {
 	}
 }
 
+func TestS_SetMaxConcurrency(t *testing.T) {
+	t.Run("Positive", func(t *testing.T) {
+		s := New().SetMaxConcurrency(4)
+		if s.cfg.maxConcurrency != 4 {
+			t.Errorf("expected 4, got %d", s.cfg.maxConcurrency)
+		}
+		if len(s.errs) != 0 {
+			t.Errorf("expected no errors, got %d", len(s.errs))
+		}
+	})
+	t.Run("Zero", func(t *testing.T) {
+		s := New().SetMaxConcurrency(0)
+		if s.cfg.maxConcurrency != 0 {
+			t.Errorf("expected 0 (unlimited), got %d", s.cfg.maxConcurrency)
+		}
+		if len(s.errs) != 0 {
+			t.Errorf("expected no errors, got %d", len(s.errs))
+		}
+	})
+	t.Run("Negative", func(t *testing.T) {
+		s := New().SetMaxConcurrency(-1)
+		if s.cfg.maxConcurrency != 0 {
+			t.Errorf("expected default 0 to be preserved, got %d", s.cfg.maxConcurrency)
+		}
+		if len(s.errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(s.errs))
+		}
+	})
+}
+
+func TestS_acquireSlot_NilSem(t *testing.T) {
+	s := New() // sem is nil by default
+	if err := s.acquireSlot(context.Background()); err != nil {
+		t.Errorf("expected nil error with nil sem, got %v", err)
+	}
+	s.releaseSlot() // must be a no-op with nil sem
+}
+
+func TestS_acquireSlot_AcquireAndRelease(t *testing.T) {
+	s := New()
+	s.sem = make(chan struct{}, 2)
+	if err := s.acquireSlot(context.Background()); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if err := s.acquireSlot(context.Background()); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(s.sem) != 2 {
+		t.Errorf("expected sem fully occupied, got %d", len(s.sem))
+	}
+	s.releaseSlot()
+	s.releaseSlot()
+	if len(s.sem) != 0 {
+		t.Errorf("expected sem empty, got %d", len(s.sem))
+	}
+}
+
+func TestS_acquireSlot_CtxCancel(t *testing.T) {
+	s := New()
+	s.sem = make(chan struct{}, 1)
+	// Saturate the semaphore so the next acquire must block.
+	s.sem <- struct{}{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := s.acquireSlot(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestS_ParseContext_MaxConcurrency_Bounded(t *testing.T) {
+	// Verify that parsing succeeds normally with a small concurrency cap.
+	server := testServer()
+	defer server.Close()
+
+	s := New().SetMaxConcurrency(2)
+	if _, err := s.ParseContext(context.Background(), server.URL+"/sitemapindex-1.xml", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s.GetURLCount() == 0 {
+		t.Error("expected URLs, got 0")
+	}
+	if cap(s.sem) != 2 {
+		t.Errorf("expected sem cap 2, got %d", cap(s.sem))
+	}
+}
+
+func TestS_ParseContext_MaxConcurrency_RobotsTXT_CtxCancel(t *testing.T) {
+	// Pre-cancelled ctx + maxConcurrency=1 + a saturated semaphore forces
+	// the robots.txt goroutine onto the acquireSlot ctx-cancel branch.
+	robots := "Sitemap: http://127.0.0.1:1/sitemap.xml\n"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s := New().SetMaxConcurrency(1)
+	if _, err := s.ParseContext(ctx, "http://example.com/robots.txt", &robots); err == nil {
+		t.Fatal("expected ctx error")
+	}
+}
+
 func configsEqual(c1, c2 config) bool {
 	return c1.fetchTimeout == c2.fetchTimeout &&
 		c1.userAgent == c2.userAgent &&
 		c1.maxResponseSize == c2.maxResponseSize &&
 		c1.maxDepth == c2.maxDepth &&
+		c1.maxConcurrency == c2.maxConcurrency &&
 		c1.multiThread == c2.multiThread &&
 		reflect.DeepEqual(c1.follow, c2.follow) &&
 		reflect.DeepEqual(c1.rules, c2.rules)

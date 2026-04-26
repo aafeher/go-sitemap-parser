@@ -48,6 +48,7 @@ s := sitemap.New()
  - fetchTimeout: `3` seconds
  - maxResponseSize: `52428800` (50 MB)
  - maxDepth: `10`
+ - maxConcurrency: `0` (unlimited)
  - multiThread: `true`
  - strict: `false`
 
@@ -104,6 +105,27 @@ s = s.SetMaxDepth(5)
 ```go
 s := sitemap.New().SetMaxDepth(5)
 ```
+
+#### Max concurrency
+
+When multi-threaded parsing is enabled, the parser spawns one goroutine per sitemap location and per `robots.txt` sitemap directive. For very large sitemap indexes this can lead to a large number of concurrent goroutines and HTTP connections. To bound the maximum number of in-flight fetches across the whole `Parse()` / `ParseContext()` call, use the `SetMaxConcurrency()` function.
+
+The value is an `int`:
+- `0` (default): unlimited concurrency, preserving the historical behaviour.
+- a positive value: at most that many concurrent fetches will run at any time.
+
+Negative values are rejected and an error is recorded in `GetErrors()`.
+
+```go
+s := sitemap.New()
+s = s.SetMaxConcurrency(8)
+```
+... or ...
+```go
+s := sitemap.New().SetMaxConcurrency(8)
+```
+
+Cancelling the supplied `context.Context` while goroutines are queued for a slot causes them to return immediately with the context error, just like an in-flight fetch.
 
 #### Multi-threading
 
