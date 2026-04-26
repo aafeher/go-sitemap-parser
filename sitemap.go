@@ -6,7 +6,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"golang.org/x/net/html/charset"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -15,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/html/charset"
 )
 
 type (
@@ -769,20 +770,29 @@ func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
 
 // unzip decompresses the given content using gzip compression.
 // It returns the uncompressed content and any error encountered during decompression.
-// If an error occurs and it is not `io.ErrUnexpectedEOF`, the original content is returned.
+// If the gzip header is invalid, the original content is returned together with the error.
+// If decompression fails mid-stream (e.g. truncated/corrupted gzip data), the partially
+// decompressed bytes are returned together with the error so the caller can decide how to react.
+// In all error cases a non-nil error is returned; callers must not silently use the data.
 func unzip(content []byte) ([]byte, error) {
 	reader, err := gzip.NewReader(bytes.NewReader(content))
 	if err != nil {
 		return content, err
 	}
+	// Disable multistream support: many real-world sitemap servers (and the test
+	// harness in this package) append a trailing newline or other padding after
+	// the gzip footer. Without this, gzip.Reader would try to parse a second
+	// member and fail with io.ErrUnexpectedEOF, even though the actual payload
+	// was decompressed correctly.
+	reader.Multistream(false)
 
 	defer func(reader *gzip.Reader) {
 		_ = reader.Close()
 	}(reader)
 
 	uncompressed, err := io.ReadAll(reader)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return content, err
+	if err != nil {
+		return uncompressed, fmt.Errorf("gzip decompression failed: %w", err)
 	}
 
 	return uncompressed, nil

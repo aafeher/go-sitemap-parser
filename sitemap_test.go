@@ -985,7 +985,7 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString("error: gzip: invalid checksum\n"),
+			mainURLContent:       pointerOfString("error: gzip decompression failed: gzip: invalid checksum\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
