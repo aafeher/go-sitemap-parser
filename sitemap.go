@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"golang.org/x/net/html/charset"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	neturl "net/url"
 	"regexp"
@@ -399,7 +399,7 @@ func (s *S) GetRandomURLs(n int) []URL {
 			break
 		}
 
-		index := rand.Intn(len(originalURLs))
+		index := rand.IntN(len(originalURLs))
 		randURLs = append(randURLs, originalURLs[index])
 
 		// Remove the selected URL from the original list to avoid duplicates
