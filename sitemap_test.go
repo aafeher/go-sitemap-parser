@@ -13,6 +13,7 @@ import (
 	"regexp/syntax"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -964,6 +965,26 @@ func TestS_Parse_Reuse(t *testing.T) {
 	if s.GetErrorsCount() != 0 {
 		t.Errorf("after second parse: expected 0 errors, got %d", s.GetErrorsCount())
 	}
+}
+
+func TestS_Parse_ConcurrentSafety(t *testing.T) {
+	server := testServer()
+	defer server.Close()
+
+	s := New()
+
+	content := fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <url><loc>%s/page-01</loc></url>\n    <url><loc>%s/page-02</loc></url>\n</urlset>", server.URL, server.URL)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := content
+			_, _ = s.Parse(fmt.Sprintf("%s/sitemap.xml", server.URL), &c)
+		}()
+	}
+	wg.Wait()
 }
 
 func TestS_GetErrorsCount(t *testing.T) {

@@ -27,6 +27,7 @@ type (
 	// The urls field is a slice of URL structs that stores the URLs to be processed.
 	// The errs field is a slice of errors that holds any encountered errors during processing.
 	S struct {
+		parseMu              sync.Mutex
 		mu                   sync.Mutex
 		cfg                  config
 		mainURL              string
@@ -239,6 +240,9 @@ func (s *S) SetRules(regexes []string) *S {
 // After all URLs are fetched and parsed, the method waits for all goroutines to complete using wg.Wait().
 // It returns the S structure and nil error if the method was able to complete successfully.
 func (s *S) Parse(url string, urlContent *string) (*S, error) {
+	s.parseMu.Lock()
+	defer s.parseMu.Unlock()
+
 	var err error
 	var wg sync.WaitGroup
 
