@@ -248,6 +248,293 @@ func TestS_SetRules(t *testing.T) {
 	})
 }
 
+func TestS_SetStrict(t *testing.T) {
+	t.Run("default is false", func(t *testing.T) {
+		s := New()
+		if s.cfg.strict {
+			t.Error("expected strict to be false by default")
+		}
+	})
+
+	t.Run("set to true", func(t *testing.T) {
+		s := New()
+		result := s.SetStrict(true)
+		if !s.cfg.strict {
+			t.Error("expected strict to be true")
+		}
+		if result != s {
+			t.Error("expected method chaining to return same instance")
+		}
+	})
+
+	t.Run("set to false", func(t *testing.T) {
+		s := New()
+		s.SetStrict(true)
+		s.SetStrict(false)
+		if s.cfg.strict {
+			t.Error("expected strict to be false")
+		}
+	})
+}
+
+func TestS_resolveAndValidateLoc(t *testing.T) {
+	baseURL := "https://example.com/sitemaps/index.xml"
+
+	t.Run("tolerant absolute URL", func(t *testing.T) {
+		s := New()
+		resolved, err := s.resolveAndValidateLoc("https://example.com/page1", baseURL)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if resolved != "https://example.com/page1" {
+			t.Errorf("expected https://example.com/page1, got %s", resolved)
+		}
+	})
+
+	t.Run("tolerant relative URL with leading slash", func(t *testing.T) {
+		s := New()
+		resolved, err := s.resolveAndValidateLoc("/products/page1.html", baseURL)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if resolved != "https://example.com/products/page1.html" {
+			t.Errorf("expected https://example.com/products/page1.html, got %s", resolved)
+		}
+	})
+
+	t.Run("tolerant relative URL without leading slash", func(t *testing.T) {
+		s := New()
+		resolved, err := s.resolveAndValidateLoc("page2.html", baseURL)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if resolved != "https://example.com/sitemaps/page2.html" {
+			t.Errorf("expected https://example.com/sitemaps/page2.html, got %s", resolved)
+		}
+	})
+
+	t.Run("tolerant ftp URL rejected", func(t *testing.T) {
+		s := New()
+		_, err := s.resolveAndValidateLoc("ftp://example.com/file", baseURL)
+		if err == nil {
+			t.Error("expected error for ftp URL in tolerant mode")
+		}
+	})
+
+	t.Run("tolerant unparseable loc", func(t *testing.T) {
+		s := New()
+		_, err := s.resolveAndValidateLoc("%%", baseURL)
+		if err == nil {
+			t.Error("expected error for unparseable URL")
+		}
+	})
+
+	t.Run("tolerant unparseable base URL", func(t *testing.T) {
+		s := New()
+		_, err := s.resolveAndValidateLoc("/page", "%%")
+		if err == nil {
+			t.Error("expected error for unparseable base URL")
+		}
+	})
+
+	t.Run("strict valid absolute URL", func(t *testing.T) {
+		s := New().SetStrict(true)
+		resolved, err := s.resolveAndValidateLoc("https://example.com/page1", baseURL)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if resolved != "https://example.com/page1" {
+			t.Errorf("expected https://example.com/page1, got %s", resolved)
+		}
+	})
+
+	t.Run("strict rejects relative URL", func(t *testing.T) {
+		s := New().SetStrict(true)
+		_, err := s.resolveAndValidateLoc("/products/page1.html", baseURL)
+		if err == nil {
+			t.Error("expected error for relative URL in strict mode")
+		}
+	})
+
+	t.Run("strict rejects ftp scheme", func(t *testing.T) {
+		s := New().SetStrict(true)
+		_, err := s.resolveAndValidateLoc("ftp://example.com/file", baseURL)
+		if err == nil {
+			t.Error("expected error for ftp URL in strict mode")
+		}
+	})
+
+	t.Run("strict rejects different host", func(t *testing.T) {
+		s := New().SetStrict(true)
+		_, err := s.resolveAndValidateLoc("https://other.com/page", baseURL)
+		if err == nil {
+			t.Error("expected error for different host in strict mode")
+		}
+	})
+
+	t.Run("strict rejects different protocol", func(t *testing.T) {
+		s := New().SetStrict(true)
+		_, err := s.resolveAndValidateLoc("http://example.com/page", baseURL)
+		if err == nil {
+			t.Error("expected error for different protocol in strict mode")
+		}
+	})
+
+	t.Run("strict rejects URL exceeding 2048 chars", func(t *testing.T) {
+		s := New().SetStrict(true)
+		longPath := strings.Repeat("a", 2049-len("https://example.com/"))
+		longURL := "https://example.com/" + longPath
+		_, err := s.resolveAndValidateLoc(longURL, baseURL)
+		if err == nil {
+			t.Error("expected error for URL exceeding 2048 characters")
+		}
+	})
+
+	t.Run("strict accepts URL at exactly 2048 chars", func(t *testing.T) {
+		s := New().SetStrict(true)
+		longPath := strings.Repeat("a", 2048-len("https://example.com/"))
+		longURL := "https://example.com/" + longPath
+		_, err := s.resolveAndValidateLoc(longURL, baseURL)
+		if err != nil {
+			t.Errorf("unexpected error for URL at exactly 2048 characters: %v", err)
+		}
+	})
+
+	t.Run("strict rejects missing host", func(t *testing.T) {
+		s := New().SetStrict(true)
+		_, err := s.resolveAndValidateLoc("https:///path", baseURL)
+		if err == nil {
+			t.Error("expected error for URL with missing host in strict mode")
+		}
+	})
+}
+
+func TestS_Parse_TolerantRelativeURLs(t *testing.T) {
+	server := testServer()
+	defer server.Close()
+
+	t.Run("tolerant resolves relative loc in urlset", func(t *testing.T) {
+		s := New()
+		content := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>/page-01</loc></url>
+    <url><loc>/page-02</loc></url>
+</urlset>`
+		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 2 {
+			t.Fatalf("expected 2 URLs, got %d", s.GetURLCount())
+		}
+		for _, u := range s.GetURLs() {
+			if !strings.HasPrefix(u.Loc, server.URL) {
+				t.Errorf("expected resolved URL starting with %s, got %s", server.URL, u.Loc)
+			}
+		}
+	})
+
+	t.Run("tolerant resolves relative loc in sitemapindex", func(t *testing.T) {
+		s := New().SetMultiThread(false)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap><loc>/sitemap-02.xml</loc></sitemap>
+</sitemapindex>`)
+		sitemapURL := fmt.Sprintf("%s/sitemapindex.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 2 {
+			t.Fatalf("expected 2 URLs from resolved sitemap index, got %d", s.GetURLCount())
+		}
+	})
+}
+
+func TestS_Parse_StrictMode(t *testing.T) {
+	server := testServer()
+	defer server.Close()
+
+	t.Run("strict rejects relative loc in urlset", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>/page-01</loc></url>
+    <url><loc>/page-02</loc></url>
+</urlset>`
+		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 0 {
+			t.Errorf("expected 0 URLs in strict mode, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 2 {
+			t.Errorf("expected 2 errors in strict mode, got %d", s.GetErrorsCount())
+		}
+	})
+
+	t.Run("strict rejects cross-host loc", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://other-domain.com/page-01</loc></url>
+</urlset>`
+		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 0 {
+			t.Errorf("expected 0 URLs, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 1 {
+			t.Errorf("expected 1 error, got %d", s.GetErrorsCount())
+		}
+	})
+
+	t.Run("strict rejects relative loc in sitemapindex", func(t *testing.T) {
+		s := New().SetStrict(true).SetMultiThread(false)
+		content := `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap><loc>/sub-sitemap.xml</loc></sitemap>
+</sitemapindex>`
+		sitemapURL := fmt.Sprintf("%s/sitemapindex.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 0 {
+			t.Errorf("expected 0 URLs, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 1 {
+			t.Errorf("expected 1 error, got %d", s.GetErrorsCount())
+		}
+	})
+
+	t.Run("strict accepts same-host absolute URLs", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>%s/page-01</loc></url>
+    <url><loc>%s/page-02</loc></url>
+</urlset>`, server.URL, server.URL)
+		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 2 {
+			t.Errorf("expected 2 URLs, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors, got %d", s.GetErrorsCount())
+		}
+	})
+}
+
 func TestS_Parse(t *testing.T) {
 	server := testServer()
 	defer server.Close()
@@ -277,22 +564,93 @@ func TestS_Parse(t *testing.T) {
 		errs                 []error
 	}{
 		{
-			name:                 "invalid url",
-			url:                  "invalid_url",
+			name:                 "unparseable url",
+			url:                  "%%",
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			err:                  pointerOfString("Get \"invalid_url\": unsupported protocol scheme \"\""),
+			err:                  pointerOfString("invalid URL: parse \"%%\": invalid URL escape \"%%\""),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
-				&url.Error{
-					Op:  "Get",
-					URL: "invalid_url",
-					Err: errors.New("unsupported protocol scheme \"\""),
-				},
+				fmt.Errorf("invalid URL: %w", &url.Error{Op: "parse", URL: "%%", Err: url.EscapeError("%%")}),
+			},
+		},
+		{
+			name:                 "invalid url",
+			url:                  "invalid_url",
+			multiThread:          true,
+			follow:               []string{},
+			rules:                []string{},
+			err:                  pointerOfString("invalid URL scheme \"\": only http and https are supported"),
+			mainURLContent:       pointerOfString(""),
+			robotsTxtSitemapURLs: nil,
+			sitemapLocations:     nil,
+			urls:                 nil,
+			errs: []error{
+				fmt.Errorf("invalid URL scheme %q: only http and https are supported", ""),
+			},
+		},
+		{
+			name:                 "empty url",
+			url:                  "",
+			multiThread:          true,
+			follow:               []string{},
+			rules:                []string{},
+			err:                  pointerOfString("invalid URL scheme \"\": only http and https are supported"),
+			mainURLContent:       pointerOfString(""),
+			robotsTxtSitemapURLs: nil,
+			sitemapLocations:     nil,
+			urls:                 nil,
+			errs: []error{
+				fmt.Errorf("invalid URL scheme %q: only http and https are supported", ""),
+			},
+		},
+		{
+			name:                 "relative url",
+			url:                  "/just/a/path",
+			multiThread:          true,
+			follow:               []string{},
+			rules:                []string{},
+			err:                  pointerOfString("invalid URL scheme \"\": only http and https are supported"),
+			mainURLContent:       pointerOfString(""),
+			robotsTxtSitemapURLs: nil,
+			sitemapLocations:     nil,
+			urls:                 nil,
+			errs: []error{
+				fmt.Errorf("invalid URL scheme %q: only http and https are supported", ""),
+			},
+		},
+		{
+			name:                 "missing host",
+			url:                  "http://",
+			multiThread:          true,
+			follow:               []string{},
+			rules:                []string{},
+			err:                  pointerOfString("invalid URL: missing host"),
+			mainURLContent:       pointerOfString(""),
+			robotsTxtSitemapURLs: nil,
+			sitemapLocations:     nil,
+			urls:                 nil,
+			errs: []error{
+				fmt.Errorf("invalid URL: missing host"),
+			},
+		},
+		{
+			name:                 "ftp url",
+			url:                  "ftp://example.com/sitemap.xml",
+			multiThread:          true,
+			follow:               []string{},
+			rules:                []string{},
+			err:                  pointerOfString("invalid URL scheme \"ftp\": only http and https are supported"),
+			mainURLContent:       pointerOfString(""),
+			robotsTxtSitemapURLs: nil,
+			sitemapLocations:     nil,
+			urls:                 nil,
+			errs: []error{
+				fmt.Errorf("invalid URL scheme %q: only http and https are supported", "ftp"),
 			},
 		},
 		{
@@ -914,8 +1272,11 @@ func TestS_Parse(t *testing.T) {
 			if sitemap == nil {
 				t.Fatal("Expected not nil object, but got nil")
 			}
-			if sitemap.mainURL != test.url {
-				t.Fatalf("Expected URL to be %s, but got %s", test.url, sitemap.mainURL)
+
+			if err == nil {
+				if sitemap.mainURL != test.url {
+					t.Fatalf("Expected URL to be %s, but got %s", test.url, sitemap.mainURL)
+				}
 			}
 
 			if !reflect.DeepEqual(sitemap.mainURLContent, *test.mainURLContent) {

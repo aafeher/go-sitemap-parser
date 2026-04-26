@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	neturl "net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -52,6 +53,7 @@ type (
 		maxResponseSize int64
 		maxDepth        int
 		multiThread     bool
+		strict          bool
 		follow          []string
 		followRegexes   []*regexp.Regexp
 		rules           []string
@@ -226,6 +228,18 @@ func (s *S) SetRules(regexes []string) *S {
 	return s
 }
 
+// SetStrict enables or disables strict mode for URL validation.
+// In strict mode, all URLs in sitemap <loc> elements must be absolute HTTP(S) URLs
+// on the same host and protocol as the sitemap file, and must not exceed 2048 characters,
+// as required by the sitemaps.org specification.
+// In tolerant mode (default), relative URLs are resolved against the parent sitemap URL.
+// The function returns a pointer to the S structure to allow method chaining.
+func (s *S) SetStrict(strict bool) *S {
+	s.cfg.strict = strict
+
+	return s
+}
+
 // Parse is a method of the S structure. It parses the given URL and its content.
 // If the S object has any errors, it returns an error with the message "errors occurred before parsing, see GetErrors() for details".
 // It sets the mainURL field to the given URL and the mainURLContent field to the given URL content.
@@ -248,6 +262,24 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 
 	if len(s.errs) > 0 {
 		return s, errors.New("errors occurred before parsing, see GetErrors() for details")
+	}
+
+	if urlContent == nil {
+		parsedURL, err := neturl.Parse(url)
+		if err != nil {
+			s.errs = append(s.errs, fmt.Errorf("invalid URL: %w", err))
+			return s, s.errs[len(s.errs)-1]
+		}
+		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+			err := fmt.Errorf("invalid URL scheme %q: only http and https are supported", parsedURL.Scheme)
+			s.errs = append(s.errs, err)
+			return s, err
+		}
+		if parsedURL.Host == "" {
+			err := fmt.Errorf("invalid URL: missing host")
+			s.errs = append(s.errs, err)
+			return s, err
+		}
 	}
 
 	s.robotsTxtSitemapURLs = nil
@@ -550,6 +582,12 @@ func (s *S) parse(url string, content string) []string {
 		s.sitemapLocations = append(s.sitemapLocations, url)
 		for _, sitemapIndexSitemap := range smIndex.Sitemap {
 			sitemapIndexSitemap.Loc = strings.TrimSpace(sitemapIndexSitemap.Loc)
+			resolvedLoc, err := s.resolveAndValidateLoc(sitemapIndexSitemap.Loc, url)
+			if err != nil {
+				s.errs = append(s.errs, err)
+				continue
+			}
+			sitemapIndexSitemap.Loc = resolvedLoc
 			// Check if the sitemapIndexSitemap.Loc matches any of the regular expressions in s.cfg.followRegexes.
 			matches := false
 			if len(s.cfg.followRegexes) > 0 {
@@ -572,6 +610,12 @@ func (s *S) parse(url string, content string) []string {
 		// URLSet
 		for _, urlSetURL := range urlSet.URL {
 			urlSetURL.Loc = strings.TrimSpace(urlSetURL.Loc)
+			resolvedLoc, err := s.resolveAndValidateLoc(urlSetURL.Loc, url)
+			if err != nil {
+				s.errs = append(s.errs, err)
+				continue
+			}
+			urlSetURL.Loc = resolvedLoc
 			// Check if the urlSetURL.Loc matches any of the regular expressions in s.cfg.rulesRegexes.
 			matches := false
 			if len(s.cfg.rulesRegexes) > 0 {
@@ -638,6 +682,53 @@ func (s *S) parseURLSet(data string) (URLSet, error) {
 
 	err := decoder.Decode(&urlSet)
 	return urlSet, err
+}
+
+// maxLocLength is the maximum URL length allowed in a sitemap <loc> element per the sitemaps.org specification.
+const maxLocLength = 2048
+
+// resolveAndValidateLoc resolves and validates a <loc> URL found in a sitemap.
+// In tolerant mode (strict=false), relative URLs are resolved against baseURL.
+// In strict mode (strict=true), URLs must be absolute HTTP(S), on the same host
+// and protocol as baseURL, and no longer than 2048 characters.
+// Returns the resolved URL string and an error if validation fails.
+func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
+	base, err := neturl.Parse(baseURL)
+	if err != nil {
+		return loc, fmt.Errorf("invalid base URL %q: %w", baseURL, err)
+	}
+
+	parsed, err := neturl.Parse(loc)
+	if err != nil {
+		return loc, fmt.Errorf("invalid URL %q: %w", loc, err)
+	}
+
+	if s.cfg.strict {
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return loc, fmt.Errorf("strict mode: URL %q has unsupported scheme %q", loc, parsed.Scheme)
+		}
+		if parsed.Host == "" {
+			return loc, fmt.Errorf("strict mode: URL %q is missing host", loc)
+		}
+		if parsed.Scheme != base.Scheme {
+			return loc, fmt.Errorf("strict mode: URL %q has scheme %q, expected %q (same as sitemap)", loc, parsed.Scheme, base.Scheme)
+		}
+		if parsed.Host != base.Host {
+			return loc, fmt.Errorf("strict mode: URL %q has host %q, expected %q (same as sitemap)", loc, parsed.Host, base.Host)
+		}
+		if len(loc) > maxLocLength {
+			return loc, fmt.Errorf("strict mode: URL exceeds %d characters (%d)", maxLocLength, len(loc))
+		}
+		return loc, nil
+	}
+
+	// Tolerant mode: resolve relative URLs against the base
+	resolved := base.ResolveReference(parsed)
+	if resolved.Scheme != "http" && resolved.Scheme != "https" {
+		return loc, fmt.Errorf("resolved URL %q has unsupported scheme %q", resolved.String(), resolved.Scheme)
+	}
+
+	return resolved.String(), nil
 }
 
 // unzip decompresses the given content using gzip compression.

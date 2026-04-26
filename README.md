@@ -14,6 +14,8 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Configurable follow rules to filter which sitemaps to parse
 - Configurable URL rules to filter which URLs to include
 - Configurable HTTP response size limit
+- Tolerant mode (default): resolves relative URLs in `<loc>` elements
+- Strict mode: validates URLs per the sitemaps.org specification
 - Thread-safe
 
 ## Formats supported
@@ -47,6 +49,7 @@ s := sitemap.New()
  - maxResponseSize: `52428800` (50 MB)
  - maxDepth: `10`
  - multiThread: `true`
+ - strict: `false`
 
 ### Overwrite defaults
 
@@ -156,6 +159,26 @@ s := sitemap.New().SetRules([]string{
 	`product/`,
 	`category/`,
 })
+```
+
+#### Strict mode
+
+By default, the parser operates in **tolerant mode**: relative URLs found in `<loc>` elements are automatically resolved against the parent sitemap URL. This handles real-world sitemaps that may not fully comply with the specification.
+
+To enable **strict mode**, use the `SetStrict()` function. In strict mode, all `<loc>` URLs are validated per the [sitemaps.org protocol](http://www.sitemaps.org/protocol.html):
+- Must be absolute HTTP or HTTPS URLs
+- Must use the same host and protocol as the sitemap file
+- Must not exceed 2,048 characters
+
+URLs that fail validation are skipped and reported via `GetErrors()`.
+
+```go
+s := sitemap.New()
+s = s.SetStrict(true)
+```
+... or ...
+```go
+s := sitemap.New().SetStrict(true)
 ```
 
 #### Chaining methods
