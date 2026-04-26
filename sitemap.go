@@ -426,17 +426,33 @@ func (s *S) setContent(urlContent *string) (string, error) {
 }
 
 // parseRobotsTXT retrieves the sitemap URLs from the provided robots.txt content.
-// It splits the content into lines and checks for lines beginning with "Sitemap: " (case-insensitive).
-// If a line matches, it extracts the URL and adds it to the robotsTxtSitemapURLs slice.
+// It splits the content into lines and checks for lines beginning with "Sitemap:"
+// (case-insensitive). UTF-8 BOM at the beginning of the file is stripped, lines
+// starting with "#" are treated as comments and skipped, and any inline comment
+// (text following an unescaped "#") is removed before extracting the URL.
+// If a valid URL is found, it is appended to the robotsTxtSitemapURLs slice.
 // The method does not return any values, but it updates the robotsTxtSitemapURLs field of the S struct.
 func (s *S) parseRobotsTXT(robotsTXTContent string) {
-	lines := strings.Split(robotsTXTContent, "\n")
-	for _, line := range lines {
+	// Strip UTF-8 BOM if present at the very beginning of the file.
+	robotsTXTContent = strings.TrimPrefix(robotsTXTContent, "\ufeff")
+
+	for line := range strings.SplitSeq(robotsTXTContent, "\n") {
 		line = strings.TrimRight(line, "\r")
-		if len(line) < 9 || !strings.EqualFold(line[:8], "sitemap:") {
+		// Trim leading whitespace so that indented directives are still recognised.
+		line = strings.TrimLeft(line, " \t")
+		// Skip blank lines and full-line comments.
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		url := strings.TrimSpace(line[8:])
+		if len(line) < 8 || !strings.EqualFold(line[:8], "sitemap:") {
+			continue
+		}
+		value := line[8:]
+		// Strip inline comments: anything after a "#" is considered a comment.
+		if idx := strings.IndexByte(value, '#'); idx >= 0 {
+			value = value[:idx]
+		}
+		url := strings.TrimSpace(value)
 		if url != "" {
 			s.robotsTxtSitemapURLs = append(s.robotsTxtSitemapURLs, url)
 		}

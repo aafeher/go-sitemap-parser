@@ -1757,6 +1757,41 @@ func TestS_parseRobotsTXT(t *testing.T) {
 			input:  "Sitemap: ",
 			output: 0,
 		},
+		{
+			name:   "robots.txt with full-line comment",
+			input:  "# Sitemap: https://example.com/commented\nSitemap: https://example.com/real",
+			output: 1,
+		},
+		{
+			name:   "robots.txt with inline comment after sitemap",
+			input:  "Sitemap: https://example.com/real # primary sitemap",
+			output: 1,
+		},
+		{
+			name:   "robots.txt with UTF-8 BOM",
+			input:  "\ufeffSitemap: https://example.com/bom",
+			output: 1,
+		},
+		{
+			name:   "robots.txt with leading whitespace before directive",
+			input:  "   Sitemap: https://example.com/indented",
+			output: 1,
+		},
+		{
+			name:   "robots.txt with short non-sitemap line",
+			input:  "User: x\nSitemap: https://example.com/ok",
+			output: 1,
+		},
+		{
+			name:   "robots.txt with blank lines",
+			input:  "\n\nSitemap: https://example.com/ok\n\n",
+			output: 1,
+		},
+		{
+			name:   "robots.txt with only inline comment value",
+			input:  "Sitemap: # only comment",
+			output: 0,
+		},
 	}
 
 	for _, test := range tests {
