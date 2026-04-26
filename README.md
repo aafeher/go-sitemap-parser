@@ -205,6 +205,28 @@ s, err := s.Parse("https://www.sitemaps.org/sitemap.xml", nil)
 ```
 In this example, sitemap is parsed from "https://www.sitemaps.org/sitemap.xml". The function fetches the content itself, as we passed nil as the urlContent.
 
+### Parse with context
+
+For new code, prefer `ParseContext()` so that callers can propagate cancellation
+and deadlines to every HTTP request issued by the parser (the initial fetch as
+well as the recursive sitemap-index/urlset fetches). The legacy `Parse()` is a
+backward-compatible wrapper around `ParseContext()` that uses
+`context.Background()`.
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+s, err := sitemap.New().ParseContext(ctx, "https://www.sitemaps.org/sitemap.xml", nil)
+```
+
+Cancelling `ctx` aborts in-flight downloads and prevents new ones from starting.
+Already-parsed URLs accumulated before cancellation remain available via
+`GetURLs()`; the cancellation cause is also recorded in the error list and
+returned by `ParseContext`.
+
+See [`examples/context`](examples/context/main.go) for a runnable example.
+
 ### Results
 
 After parsing, you can retrieve the results using the following methods:

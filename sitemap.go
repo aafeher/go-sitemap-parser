@@ -3,6 +3,7 @@ package sitemap
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -252,21 +253,44 @@ func (s *S) SetStrict(strict bool) *S {
 }
 
 // Parse is a method of the S structure. It parses the given URL and its content.
-// If the S object has any errors, it returns an error with the message "errors occurred before parsing, see GetErrors() for details".
-// It sets the mainURL field to the given URL and the mainURLContent field to the given URL content.
-// It returns an error if there was an error setting the content.
-// If the URL ends with "/robots.txt", it parses the robots.txt file and fetches URLs from the sitemap files mentioned in the robots.txt.
-// The URLs are fetched concurrently using goroutines and the wait group wg.
-// If there was an error fetching a sitemap file, the error is appended to the errs field.
-// The fetched content is checked and unzipped if necessary.
-// The fetched sitemap file URLs are parsed and fetched.
-// If the URL does not end with "/robots.txt", the mainURLContent is checked and unzipped if necessary.
-// The mainURLContent is then parsed and fetched.
-// After all URLs are fetched and parsed, the method waits for all goroutines to complete using wg.Wait().
-// It returns the S structure and nil error if the method was able to complete successfully.
+//
+// Parse is a backward-compatible wrapper around ParseContext that uses
+// context.Background(). For new code, prefer ParseContext so that callers
+// can propagate cancellation and deadlines.
+//
+// If the S object has any errors, it returns an error with the message
+// "errors occurred before parsing, see GetErrors() for details".
+// It sets the mainURL field to the given URL and the mainURLContent field to
+// the given URL content. It returns an error if there was an error setting
+// the content.
+// If the URL ends with "/robots.txt", it parses the robots.txt file and
+// fetches URLs from the sitemap files mentioned in the robots.txt.
+// If the URL does not end with "/robots.txt", the mainURLContent is checked
+// and unzipped if necessary, then parsed and fetched.
+// It returns the S structure and nil error if the method was able to complete
+// successfully.
 func (s *S) Parse(url string, urlContent *string) (*S, error) {
+	return s.ParseContext(context.Background(), url, urlContent)
+}
+
+// ParseContext parses the given URL and its content, honoring the supplied
+// context for cancellation and deadlines.
+//
+// The context is propagated through every HTTP request issued by the parser
+// (both the initial fetch and the recursive sitemap-index/urlset fetches),
+// so cancelling ctx aborts in-flight downloads and prevents new ones from
+// starting. Already-parsed URLs accumulated in s.urls before cancellation
+// remain available via GetURLs(); the cancellation cause is recorded in the
+// error list and is also returned by ParseContext.
+//
+// All other semantics match Parse.
+func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*S, error) {
 	s.parseMu.Lock()
 	defer s.parseMu.Unlock()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	var err error
 	var wg sync.WaitGroup
@@ -298,7 +322,7 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 	s.urls = nil
 
 	s.mainURL = url
-	s.mainURLContent, err = s.setContent(urlContent)
+	s.mainURLContent, err = s.setContent(ctx, urlContent)
 	if err != nil {
 		s.errs = append(s.errs, err)
 		return s, err
@@ -313,7 +337,14 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 			go func() {
 				defer wg.Done()
 
-				robotsTXTSitemapContent, err := s.fetch(rTXTsmURL)
+				if ctx.Err() != nil {
+					s.mu.Lock()
+					s.errs = append(s.errs, ctx.Err())
+					s.mu.Unlock()
+					return
+				}
+
+				robotsTXTSitemapContent, err := s.fetch(ctx, rTXTsmURL)
 				if err != nil {
 					s.mu.Lock()
 					s.errs = append(s.errs, err)
@@ -327,9 +358,9 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 				s.mu.Unlock()
 
 				if s.cfg.multiThread {
-					s.parseAndFetchUrlsMultiThread(locations, 0)
+					s.parseAndFetchUrlsMultiThread(ctx, locations, 0)
 				} else {
-					s.parseAndFetchUrlsSequential(locations, 0)
+					s.parseAndFetchUrlsSequential(ctx, locations, 0)
 				}
 			}()
 		}
@@ -337,13 +368,17 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 		mainURLContent := s.checkAndUnzipContent([]byte(s.mainURLContent))
 		s.mainURLContent = string(mainURLContent)
 		if s.cfg.multiThread {
-			s.parseAndFetchUrlsMultiThread(s.parse(s.mainURL, s.mainURLContent), 0)
+			s.parseAndFetchUrlsMultiThread(ctx, s.parse(s.mainURL, s.mainURLContent), 0)
 		} else {
-			s.parseAndFetchUrlsSequential(s.parse(s.mainURL, s.mainURLContent), 0)
+			s.parseAndFetchUrlsSequential(ctx, s.parse(s.mainURL, s.mainURLContent), 0)
 		}
 	}
 
 	wg.Wait()
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return s, ctxErr
+	}
 
 	return s, nil
 }
@@ -413,11 +448,12 @@ func (s *S) GetRandomURLs(n int) []URL {
 
 // setContent extracts the main URL content or returns the provided URL content if not nil.
 // It returns the extracted content as a string or an error if there was a problem fetching the content.
-func (s *S) setContent(urlContent *string) (string, error) {
+// The supplied context is propagated to the underlying HTTP request when fetching is required.
+func (s *S) setContent(ctx context.Context, urlContent *string) (string, error) {
 	if urlContent != nil {
 		return *urlContent, nil
 	}
-	mainURLContent, err := s.fetch(s.mainURL)
+	mainURLContent, err := s.fetch(ctx, s.mainURL)
 
 	if err != nil {
 		return "", err
@@ -463,13 +499,19 @@ func (s *S) parseRobotsTXT(robotsTXTContent string) {
 // It returns the content as a []byte and an error if there was a problem fetching the URL.
 // The HTTP status must be 200 (OK) for the request to be successful.
 // The response body is automatically closed after reading using a defer statement.
-func (s *S) fetch(url string) ([]byte, error) {
+// The supplied context is attached to the HTTP request, so cancelling it aborts
+// the in-flight transfer.
+func (s *S) fetch(ctx context.Context, url string) ([]byte, error) {
 	var body bytes.Buffer
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	client := &http.Client{
 		Timeout: time.Duration(s.cfg.fetchTimeout) * time.Second,
 	}
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -528,7 +570,7 @@ func (s *S) checkAndUnzipContent(content []byte) []byte {
 // The fetched content is then checked and uncompressed using the checkAndUnzipContent method of the S structure.
 // Finally, the uncompressed content is passed to the parse method of the S structure.
 // This method does not return any value.
-func (s *S) parseAndFetchUrlsMultiThread(locations []string, depth int) {
+func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string, depth int) {
 	if depth >= s.cfg.maxDepth {
 		s.mu.Lock()
 		s.errs = append(s.errs, fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth))
@@ -537,12 +579,18 @@ func (s *S) parseAndFetchUrlsMultiThread(locations []string, depth int) {
 	}
 	var wg sync.WaitGroup
 	for _, location := range locations {
+		if ctx.Err() != nil {
+			break
+		}
 		wg.Add(1)
 
 		loc := location
 		go func() {
 			defer wg.Done()
-			content, err := s.fetch(loc)
+			if ctx.Err() != nil {
+				return
+			}
+			content, err := s.fetch(ctx, loc)
 			if err != nil {
 				s.mu.Lock()
 				s.errs = append(s.errs, err)
@@ -554,7 +602,7 @@ func (s *S) parseAndFetchUrlsMultiThread(locations []string, depth int) {
 			parsedLocations := s.parse(loc, string(content))
 			s.mu.Unlock()
 			if len(parsedLocations) > 0 {
-				s.parseAndFetchUrlsMultiThread(parsedLocations, depth+1)
+				s.parseAndFetchUrlsMultiThread(ctx, parsedLocations, depth+1)
 			}
 		}()
 	}
@@ -567,7 +615,7 @@ func (s *S) parseAndFetchUrlsMultiThread(locations []string, depth int) {
 // The fetched content is then checked and uncompressed using the checkAndUnzipContent method of the S structure.
 // Finally, the uncompressed content is passed to the parse method of the S structure.
 // This method does not return any value.
-func (s *S) parseAndFetchUrlsSequential(locations []string, depth int) {
+func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string, depth int) {
 	if depth >= s.cfg.maxDepth {
 		s.mu.Lock()
 		s.errs = append(s.errs, fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth))
@@ -575,7 +623,10 @@ func (s *S) parseAndFetchUrlsSequential(locations []string, depth int) {
 		return
 	}
 	for _, location := range locations {
-		content, err := s.fetch(location)
+		if ctx.Err() != nil {
+			return
+		}
+		content, err := s.fetch(ctx, location)
 		if err != nil {
 			s.mu.Lock()
 			s.errs = append(s.errs, err)
@@ -587,7 +638,7 @@ func (s *S) parseAndFetchUrlsSequential(locations []string, depth int) {
 		parsedLocations := s.parse(location, string(content))
 		s.mu.Unlock()
 		if len(parsedLocations) > 0 {
-			s.parseAndFetchUrlsSequential(parsedLocations, depth+1)
+			s.parseAndFetchUrlsSequential(ctx, parsedLocations, depth+1)
 		}
 	}
 }

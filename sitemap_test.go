@@ -3,6 +3,7 @@ package sitemap
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -1694,7 +1695,7 @@ func TestS_setContent(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			s := test.setup()
-			retURLContent, err := s.setContent(test.attrURLContent)
+			retURLContent, err := s.setContent(context.Background(), test.attrURLContent)
 			if retURLContent != test.wantURLContent {
 				t.Errorf("unexpected urlContent: got %v, want %v", retURLContent, test.wantURLContent)
 			}
@@ -1861,7 +1862,7 @@ func TestS_fetch(t *testing.T) {
 			s := &S{
 				cfg: test.fields.cfg,
 			}
-			_, err := s.fetch(test.url)
+			_, err := s.fetch(context.Background(), test.url)
 			if (err != nil) != test.wantErr {
 				t.Errorf("fetch() error = %v, wantErr %v", err, test.wantErr)
 				return
@@ -1879,7 +1880,7 @@ func TestS_fetch_ResponseSizeLimit(t *testing.T) {
 
 	t.Run("within limit", func(t *testing.T) {
 		s := New().SetMaxResponseSize(2048)
-		_, err := s.fetch(server.URL)
+		_, err := s.fetch(context.Background(), server.URL)
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
@@ -1887,7 +1888,7 @@ func TestS_fetch_ResponseSizeLimit(t *testing.T) {
 
 	t.Run("exceeds limit", func(t *testing.T) {
 		s := New().SetMaxResponseSize(512)
-		_, err := s.fetch(server.URL)
+		_, err := s.fetch(context.Background(), server.URL)
 		if err == nil {
 			t.Error("expected error for oversized response, got nil")
 		}
@@ -1900,7 +1901,7 @@ func TestS_fetch_ResponseSizeLimit(t *testing.T) {
 func TestS_fetch_NewRequestError(t *testing.T) {
 	e := New()
 
-	_, err := e.fetch("://invalid-url")
+	_, err := e.fetch(context.Background(), "://invalid-url")
 	if err == nil {
 		t.Error("expected error for invalid URL but got none")
 	}
@@ -1928,7 +1929,7 @@ func TestS_fetch_IOCopyError(t *testing.T) {
 	e := New()
 	e.SetFetchTimeout(1)
 
-	_, err := e.fetch(server.URL)
+	_, err := e.fetch(context.Background(), server.URL)
 	if err == nil {
 		t.Error("expected io.Copy error but got none")
 	}
@@ -2029,7 +2030,7 @@ func TestS_parseAndFetchUrlsMultiThread(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3, maxResponseSize: 50 * 1024 * 1024, maxDepth: 10}, errs: []error{}}
-			s.parseAndFetchUrlsMultiThread(test.locations, 0)
+			s.parseAndFetchUrlsMultiThread(context.Background(), test.locations, 0)
 
 			if len(s.urls) != int(test.urlsCount) {
 				t.Errorf("expected %d, got %d", test.urlsCount, len(s.urls))
@@ -2084,7 +2085,7 @@ func TestS_parseAndFetchUrlsSequential(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3, maxResponseSize: 50 * 1024 * 1024, maxDepth: 10}, errs: []error{}}
-			s.parseAndFetchUrlsSequential(test.locations, 0)
+			s.parseAndFetchUrlsSequential(context.Background(), test.locations, 0)
 
 			if len(s.urls) != int(test.urlsCount) {
 				t.Errorf("expected %d, got %d", test.urlsCount, len(s.urls))
@@ -2103,7 +2104,7 @@ func TestS_parseAndFetchUrlsMultiThread_MaxDepth(t *testing.T) {
 
 	s := New().SetMaxDepth(1)
 	locations := []string{fmt.Sprintf("%s/sitemapindex-1.xml", server.URL)}
-	s.parseAndFetchUrlsMultiThread(locations, 1)
+	s.parseAndFetchUrlsMultiThread(context.Background(), locations, 1)
 
 	if len(s.urls) != 0 {
 		t.Errorf("expected 0 URLs at depth limit, got %d", len(s.urls))
@@ -2122,7 +2123,7 @@ func TestS_parseAndFetchUrlsSequential_MaxDepth(t *testing.T) {
 
 	s := New().SetMaxDepth(1).SetMultiThread(false)
 	locations := []string{fmt.Sprintf("%s/sitemapindex-1.xml", server.URL)}
-	s.parseAndFetchUrlsSequential(locations, 1)
+	s.parseAndFetchUrlsSequential(context.Background(), locations, 1)
 
 	if len(s.urls) != 0 {
 		t.Errorf("expected 0 URLs at depth limit, got %d", len(s.urls))
@@ -2512,6 +2513,177 @@ func TestLastModTime_UnmarshalXML(t *testing.T) {
 //		})
 //	}
 //}
+
+func TestS_fetch_ContextCancel(t *testing.T) {
+	// Server that blocks until the client gives up. We use a channel that
+	// is never written to, so the handler waits for the request context to
+	// be cancelled.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	s := New().SetFetchTimeout(30) // long timeout: only ctx can abort the call
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel shortly after the request starts.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := s.fetch(ctx, server.URL)
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestS_ParseContext_Cancel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	s := New().SetFetchTimeout(30)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := s.ParseContext(ctx, server.URL+"/sitemapindex-1.xml", nil)
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestS_fetch_NilContext(t *testing.T) {
+	// Covers the `if ctx == nil { ctx = context.Background() }` branch in fetch.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	s := New()
+	//nolint:staticcheck // intentionally passing nil to exercise the defensive branch
+	body, err := s.fetch(nil, server.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(body) != "ok" {
+		t.Errorf("unexpected body: %q", string(body))
+	}
+}
+
+func TestS_ParseContext_NilContext(t *testing.T) {
+	// Covers the `if ctx == nil { ctx = context.Background() }` branch in ParseContext.
+	server := testServer()
+	defer server.Close()
+
+	s := New()
+	//nolint:staticcheck // intentionally passing nil to exercise the defensive branch
+	if _, err := s.ParseContext(nil, server.URL+"/sitemap-01.xml", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s.GetURLCount() == 0 {
+		t.Error("expected URLs to be parsed, got 0")
+	}
+}
+
+func TestS_ParseContext_PreCancelled_RobotsTXT(t *testing.T) {
+	// Covers:
+	//   - the early `ctx.Err()` check inside the robots.txt goroutine
+	//   - the final `if ctxErr := ctx.Err(); ctxErr != nil { return s, ctxErr }`
+	// We pre-supply the robots.txt body via urlContent so setContent does not
+	// perform an HTTP fetch (which would fail before reaching the goroutine).
+	robots := "Sitemap: http://127.0.0.1:1/sitemap.xml\n"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+
+	s := New()
+	_, err := s.ParseContext(ctx, "http://example.com/robots.txt", &robots)
+	if err == nil {
+		t.Fatal("expected context error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestS_parseAndFetchUrlsMultiThread_PreCancelled(t *testing.T) {
+	// Covers the loop-level `if ctx.Err() != nil { break }` branch in
+	// parseAndFetchUrlsMultiThread.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s := New()
+	s.parseAndFetchUrlsMultiThread(ctx, []string{"http://127.0.0.1:1/a", "http://127.0.0.1:1/b"}, 0)
+}
+
+func TestS_parseAndFetchUrlsMultiThread_GoroutineCancel(t *testing.T) {
+	// Covers the per-goroutine early `if ctx.Err() != nil { return }` branch
+	// in parseAndFetchUrlsMultiThread. Since the spawning loop also checks
+	// ctx.Err(), the only way to hit the in-goroutine guard is a real race
+	// between spawn and cancel. We run a tight loop until the deadline so
+	// the scheduler reliably interleaves the cancel with goroutine startup.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	const n = 500
+	locations := make([]string, n)
+	for i := range locations {
+		locations[i] = fmt.Sprintf("%s/loc-%d", server.URL, i)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithCancel(context.Background())
+		s := New().SetFetchTimeout(30)
+
+		// Cancel after a tiny delay so the loop has a chance to spawn
+		// some goroutines before the cancellation propagates.
+		go func() {
+			time.Sleep(100 * time.Microsecond)
+			cancel()
+		}()
+
+		s.parseAndFetchUrlsMultiThread(ctx, locations, 0)
+	}
+}
+
+func TestS_parseAndFetchUrlsSequential_PreCancelled(t *testing.T) {
+	// Covers the early ctx.Err() return in parseAndFetchUrlsSequential.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s := New()
+	s.parseAndFetchUrlsSequential(ctx, []string{"http://127.0.0.1:1/a"}, 0)
+}
+
+func TestS_Parse_BackwardCompatible(t *testing.T) {
+	// The legacy Parse signature must keep working unchanged.
+	server := testServer()
+	defer server.Close()
+
+	s := New()
+	if _, err := s.Parse(server.URL+"/sitemap-01.xml", nil); err != nil {
+		t.Fatalf("unexpected error from Parse: %v", err)
+	}
+	if s.GetURLCount() == 0 {
+		t.Error("expected URLs to be parsed via Parse, got 0")
+	}
+}
 
 func configsEqual(c1, c2 config) bool {
 	return c1.fetchTimeout == c2.fetchTimeout &&
