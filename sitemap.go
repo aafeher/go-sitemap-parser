@@ -158,6 +158,8 @@ func (s *S) setConfigDefaults() {
 // It should be a string representing the user agent header value.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetUserAgent(userAgent string) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cfg.userAgent = userAgent
 
 	return s
@@ -168,6 +170,8 @@ func (s *S) SetUserAgent(userAgent string) *S {
 // It should be specified in seconds as a uint16 value.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetFetchTimeout(fetchTimeout uint16) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cfg.fetchTimeout = fetchTimeout
 
 	return s
@@ -177,6 +181,8 @@ func (s *S) SetFetchTimeout(fetchTimeout uint16) *S {
 // The multi-threading flag determines whether the parser should fetch URLs concurrently using goroutines.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMultiThread(multiThread bool) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cfg.multiThread = multiThread
 
 	return s
@@ -188,6 +194,8 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 // The value must be greater than 0; invalid values are ignored and an error is recorded.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if maxResponseSize <= 0 {
 		s.errs = append(s.errs, fmt.Errorf("maxResponseSize must be greater than 0, got %d", maxResponseSize))
 		return s
@@ -203,6 +211,8 @@ func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
 // The value must be greater than 0; invalid values are ignored and an error is recorded.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxDepth(maxDepth int) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if maxDepth <= 0 {
 		s.errs = append(s.errs, fmt.Errorf("maxDepth must be greater than 0, got %d", maxDepth))
 		return s
@@ -222,6 +232,8 @@ func (s *S) SetMaxDepth(maxDepth int) *S {
 // and an error is recorded.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if maxConcurrency < 0 {
 		s.errs = append(s.errs, fmt.Errorf("maxConcurrency must be >= 0, got %d", maxConcurrency))
 		return s
@@ -235,6 +247,8 @@ func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
 // Any errors encountered during compilation are appended to the error list in the struct.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetFollow(regexes []string) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cfg.follow = regexes
 	s.cfg.followRegexes = nil
 	for _, followPattern := range s.cfg.follow {
@@ -253,6 +267,8 @@ func (s *S) SetFollow(regexes []string) *S {
 // Any errors encountered during compilation are appended to the error list in the struct.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetRules(regexes []string) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cfg.rules = regexes
 	s.cfg.rulesRegexes = nil
 	for _, rulePattern := range s.cfg.rules {
@@ -273,6 +289,8 @@ func (s *S) SetRules(regexes []string) *S {
 // In tolerant mode (default), relative URLs are resolved against the parent sitemap URL.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetStrict(strict bool) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cfg.strict = strict
 
 	return s
@@ -321,7 +339,9 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	var err error
 	var wg sync.WaitGroup
 
+	s.mu.Lock()
 	if len(s.errs) > 0 {
+		s.mu.Unlock()
 		return s, errors.New("errors occurred before parsing, see GetErrors() for details")
 	}
 
@@ -329,16 +349,19 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 		parsedURL, err := neturl.Parse(url)
 		if err != nil {
 			s.errs = append(s.errs, fmt.Errorf("invalid URL: %w", err))
+			s.mu.Unlock()
 			return s, s.errs[len(s.errs)-1]
 		}
 		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
 			err := fmt.Errorf("invalid URL scheme %q: only http and https are supported", parsedURL.Scheme)
 			s.errs = append(s.errs, err)
+			s.mu.Unlock()
 			return s, err
 		}
 		if parsedURL.Host == "" {
 			err := fmt.Errorf("invalid URL: missing host")
 			s.errs = append(s.errs, err)
+			s.mu.Unlock()
 			return s, err
 		}
 	}
@@ -346,23 +369,28 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	s.robotsTxtSitemapURLs = nil
 	s.sitemapLocations = nil
 	s.urls = nil
+	s.errs = nil
 
 	if s.cfg.maxConcurrency > 0 {
 		s.sem = make(chan struct{}, s.cfg.maxConcurrency)
 	} else {
 		s.sem = nil
 	}
+	s.mu.Unlock()
 
 	s.mainURL = url
 	s.mainURLContent, err = s.setContent(ctx, urlContent)
 	if err != nil {
+		s.mu.Lock()
 		s.errs = append(s.errs, err)
+		s.mu.Unlock()
 		return s, err
 	}
 
 	if strings.HasSuffix(s.mainURL, "/robots.txt") {
 		s.parseRobotsTXT(s.mainURLContent)
 
+		s.mu.Lock()
 		for _, robotsTXTSitemapURL := range s.robotsTxtSitemapURLs {
 			wg.Add(1)
 			rTXTsmURL := robotsTXTSitemapURL
@@ -399,13 +427,18 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 				}
 			}()
 		}
+		s.mu.Unlock()
 	} else {
+		s.mu.Lock()
 		mainURLContent := s.checkAndUnzipContent([]byte(s.mainURLContent))
 		s.mainURLContent = string(mainURLContent)
+		locations := s.parse(s.mainURL, s.mainURLContent)
+		s.mu.Unlock()
+
 		if s.cfg.multiThread {
-			s.parseAndFetchUrlsMultiThread(ctx, s.parse(s.mainURL, s.mainURLContent), 0)
+			s.parseAndFetchUrlsMultiThread(ctx, locations, 0)
 		} else {
-			s.parseAndFetchUrlsSequential(ctx, s.parse(s.mainURL, s.mainURLContent), 0)
+			s.parseAndFetchUrlsSequential(ctx, locations, 0)
 		}
 	}
 
@@ -422,6 +455,8 @@ func (s *S) GetErrorsCount() int64 {
 	if s == nil {
 		return 0
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return int64(len(s.errs))
 }
 
@@ -429,12 +464,19 @@ func (s *S) GetErrors() []error {
 	if s == nil {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.errs
 }
 
 // GetURLs returns the list of parsed URLs.
 func (s *S) GetURLs() []URL {
-	if s == nil || len(s.urls) <= 0 {
+	if s == nil {
+		return []URL{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.urls) <= 0 {
 		return []URL{}
 	}
 	return s.urls
@@ -445,6 +487,8 @@ func (s *S) GetURLCount() int64 {
 	if s == nil {
 		return 0
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(s.urls) <= 0 {
 		return 0
 	}
@@ -460,8 +504,10 @@ func (s *S) GetRandomURLs(n int) []URL {
 		return []URL{}
 	}
 
+	s.mu.Lock()
 	originalURLs := make([]URL, len(s.urls))
 	copy(originalURLs, s.urls)
+	s.mu.Unlock()
 
 	randURLs := make([]URL, 0, n)
 
@@ -571,15 +617,21 @@ func (s *S) fetch(ctx context.Context, url string) ([]byte, error) {
 		ctx = context.Background()
 	}
 
+	s.mu.Lock()
+	fetchTimeout := s.cfg.fetchTimeout
+	userAgent := s.cfg.userAgent
+	maxResponseSize := s.cfg.maxResponseSize
+	s.mu.Unlock()
+
 	client := &http.Client{
-		Timeout: time.Duration(s.cfg.fetchTimeout) * time.Second,
+		Timeout: time.Duration(fetchTimeout) * time.Second,
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Set("User-Agent", s.cfg.userAgent)
+	req.Header.Set("User-Agent", userAgent)
 
 	response, err := client.Do(req)
 	if err != nil {
@@ -593,13 +645,13 @@ func (s *S) fetch(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("received HTTP status %d", response.StatusCode)
 	}
 
-	_, err = io.Copy(&body, io.LimitReader(response.Body, s.cfg.maxResponseSize+1))
+	_, err = io.Copy(&body, io.LimitReader(response.Body, maxResponseSize+1))
 	if err != nil {
 		return nil, err
 	}
 
-	if int64(body.Len()) > s.cfg.maxResponseSize {
-		return nil, fmt.Errorf("response size exceeds limit of %d bytes", s.cfg.maxResponseSize)
+	if int64(body.Len()) > maxResponseSize {
+		return nil, fmt.Errorf("response size exceeds limit of %d bytes", maxResponseSize)
 	}
 
 	return body.Bytes(), nil
