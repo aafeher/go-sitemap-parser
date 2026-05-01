@@ -486,10 +486,10 @@ func TestS_Parse_TolerantRelativeURLs(t *testing.T) {
 
 	t.Run("tolerant resolves relative loc in sitemapindex", func(t *testing.T) {
 		s := New().SetMultiThread(false)
-		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+		content := `<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <sitemap><loc>/sitemap-02.xml</loc></sitemap>
-</sitemapindex>`)
+</sitemapindex>`
 		sitemapURL := fmt.Sprintf("%s/sitemapindex.xml", server.URL)
 		_, err := s.Parse(sitemapURL, &content)
 		if err != nil {
@@ -1539,7 +1539,7 @@ func TestS_GetErrorsCount(t *testing.T) {
 			errorsOccured: 3,
 			s: func(s *S) *S {
 				for i := 0; i < 3; i++ {
-					s.errs = append(s.errs, errors.New(fmt.Sprintf("Dummy error %d", i)))
+					s.errs = append(s.errs, fmt.Errorf("Dummy error %d", i))
 				}
 				return s
 			}(New()),
@@ -2939,10 +2939,6 @@ func pointerOfString(str string) *string {
 
 func pointerOfFloat32(number float32) *float32 {
 	return &number
-}
-
-func pointerOfTime(t time.Time) *time.Time {
-	return &t
 }
 
 func pointerOfLastModTime(lmt lastModTime) *lastModTime {

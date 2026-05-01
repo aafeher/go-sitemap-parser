@@ -35,7 +35,7 @@ func TestTestServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET failed: %v", err)
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 		if res.StatusCode != http.StatusNotFound {
 			t.Errorf("expected status %d; got %d", http.StatusNotFound, res.StatusCode)
 		}
@@ -46,7 +46,7 @@ func TestTestServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET failed: %v", err)
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 		body, err := io.ReadAll(res.Body)
 		if err != nil {
 			t.Fatalf("Failed to read response body: %v", err)
@@ -62,7 +62,7 @@ func TestTestServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET failed: %v", err)
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 		if res.StatusCode != http.StatusNotFound {
 			t.Errorf("expected status %d; got %d", http.StatusNotFound, res.StatusCode)
 		}
@@ -73,7 +73,7 @@ func TestTestServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET failed: %v", err)
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 		body, err := io.ReadAll(res.Body)
 		if err != nil {
 			t.Fatalf("Failed to read response body: %v", err)
@@ -90,7 +90,7 @@ func TestTestServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET failed: %v", err)
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 		body, err := io.ReadAll(res.Body)
 		if err != nil {
 			t.Fatalf("Failed to read response body: %v", err)
@@ -112,7 +112,7 @@ func TestTestServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET failed: %v", err)
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 		body, err := io.ReadAll(res.Body)
 		if err != nil {
 			t.Fatalf("Failed to read response body: %v", err)
@@ -138,7 +138,7 @@ func TestTestServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET failed: %v", err)
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		body, err := io.ReadAll(res.Body)
 		if err != nil {
@@ -166,7 +166,7 @@ func TestZip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create gzip reader: %v", err)
 		}
-		defer r.Close()
+		defer func() { _ = r.Close() }()
 		uncompressed, err := io.ReadAll(r)
 		if err != nil {
 			t.Fatalf("failed to read uncompressed data: %v", err)

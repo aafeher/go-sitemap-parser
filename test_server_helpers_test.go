@@ -48,7 +48,7 @@ func testServer() *httptest.Server {
 				_, _ = fmt.Fprintf(w, "error: %v\n", err)
 				return
 			}
-			strRes = strings.Replace(string(resUncompressed), "HOST", r.Host, -1)
+			strRes = strings.ReplaceAll(string(resUncompressed), "HOST", r.Host)
 
 			resCompressed, err := zipFunc([]byte(strRes), nil)
 			if err != nil {
@@ -57,7 +57,7 @@ func testServer() *httptest.Server {
 			}
 			strRes = string(resCompressed)
 		} else {
-			strRes = strings.Replace(strRes, "HOST", r.Host, -1)
+			strRes = strings.ReplaceAll(strRes, "HOST", r.Host)
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, strRes)
