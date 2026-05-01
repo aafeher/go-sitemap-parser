@@ -1206,7 +1206,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("unrecognized sitemap format (root element: %q)", "")},
+			errs:                 []error{fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty-corrupted.xml.gz", server.URL), "")},
 		},
 		{
 			name:                 "sitemapindex.xml.gz empty file",
@@ -1218,7 +1218,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("sitemap content is empty")},
+			errs:                 []error{fmt.Errorf("sitemap content is empty at %q", fmt.Sprintf("%s/sitemapindex-empty.xml.gz", server.URL))},
 		},
 		{
 			name:                 "sitemapindex.xml.gz",
@@ -1285,7 +1285,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("sitemap content is empty")},
+			errs:                 []error{fmt.Errorf("sitemap content is empty at %q", fmt.Sprintf("%s/sitemap-empty.xml.gz", server.URL))},
 		},
 		{
 			name:                 "sitemap.xml.gz",
@@ -1323,7 +1323,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("unrecognized sitemap format (root element: %q)", "")},
+			errs:                 []error{fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")},
 		},
 		{
 			name:                 "sitemapindex.xml empty content",
@@ -1336,7 +1336,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("unrecognized sitemap format (root element: %q)", "")},
+			errs:                 []error{fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")},
 		},
 		{
 			name:                 "sitemapindex.xml",
@@ -1483,7 +1483,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("unrecognized sitemap format (root element: %q)", "")},
+			errs:                 []error{fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")},
 		},
 		{
 			name:                 "sitemap.xml empty content",
@@ -1496,7 +1496,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("unrecognized sitemap format (root element: %q)", "")},
+			errs:                 []error{fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")},
 		},
 		{
 			name:                 "sitemap.xml",

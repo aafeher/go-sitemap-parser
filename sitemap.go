@@ -806,7 +806,7 @@ func (s *S) parse(url string, content string) []string {
 	case "sitemapindex":
 		smIndex, err := s.parseSitemapIndex(content)
 		if err != nil {
-			s.errs = append(s.errs, err)
+			s.errs = append(s.errs, fmt.Errorf("failed to parse sitemapindex at %q: %w", url, err))
 			return sitemapLocationsAdded
 		}
 		s.sitemapLocations = append(s.sitemapLocations, url)
@@ -840,7 +840,7 @@ func (s *S) parse(url string, content string) []string {
 	case "urlset":
 		urlSet, err := s.parseURLSet(content)
 		if err != nil {
-			s.errs = append(s.errs, err)
+			s.errs = append(s.errs, fmt.Errorf("failed to parse urlset at %q: %w", url, err))
 			return sitemapLocationsAdded
 		}
 		for _, urlSetURL := range urlSet.URL {
@@ -876,9 +876,9 @@ func (s *S) parse(url string, content string) []string {
 	default:
 		// Unknown root element: report a single error
 		if len(content) == 0 {
-			s.errs = append(s.errs, fmt.Errorf("sitemap content is empty"))
+			s.errs = append(s.errs, fmt.Errorf("sitemap content is empty at %q", url))
 		} else {
-			s.errs = append(s.errs, fmt.Errorf("unrecognized sitemap format (root element: %q)", rootElement))
+			s.errs = append(s.errs, fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", url, rootElement))
 		}
 	}
 
