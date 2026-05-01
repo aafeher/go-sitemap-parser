@@ -945,9 +945,10 @@ func (s *S) validatePriority(priority *float32) error {
 }
 
 // resolveAndValidateLoc resolves and validates a <loc> URL found in a sitemap.
-// In tolerant mode (strict=false), relative URLs are resolved against baseURL.
-// In strict mode (strict=true), URLs must be absolute HTTP(S), on the same host
-// and protocol as baseURL, and no longer than 2048 characters.
+// In both modes, URLs must not exceed 2048 characters (sitemaps.org specification).
+// In tolerant mode (strict=false), relative URLs are resolved against baseURL before the length check.
+// In strict mode (strict=true), URLs must additionally be absolute HTTP(S), on the same host
+// and protocol as baseURL.
 // Returns the resolved URL string and an error if validation fails.
 func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
 	base, err := neturl.Parse(baseURL)
@@ -974,7 +975,7 @@ func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
 			return loc, fmt.Errorf("strict mode: URL %q has host %q, expected %q (same as sitemap)", loc, parsed.Host, base.Host)
 		}
 		if len(loc) > maxLocLength {
-			return loc, fmt.Errorf("strict mode: URL exceeds %d characters (%d)", maxLocLength, len(loc))
+			return loc, fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(loc))
 		}
 		return loc, nil
 	}
@@ -984,8 +985,12 @@ func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
 	if resolved.Scheme != "http" && resolved.Scheme != "https" {
 		return loc, fmt.Errorf("resolved URL %q has unsupported scheme %q", resolved.String(), resolved.Scheme)
 	}
+	resolvedStr := resolved.String()
+	if len(resolvedStr) > maxLocLength {
+		return loc, fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(resolvedStr))
+	}
 
-	return resolved.String(), nil
+	return resolvedStr, nil
 }
 
 // unzip decompresses the given content using gzip compression.

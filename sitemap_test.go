@@ -528,6 +528,35 @@ func TestS_resolveAndValidateLoc(t *testing.T) {
 			t.Error("expected error for URL with missing host in strict mode")
 		}
 	})
+
+	t.Run("tolerant rejects resolved URL exceeding 2048 chars", func(t *testing.T) {
+		s := New()
+		longPath := strings.Repeat("a", 2049-len("https://example.com/"))
+		longURL := "https://example.com/" + longPath
+		_, err := s.resolveAndValidateLoc(longURL, baseURL)
+		if err == nil {
+			t.Error("expected error for resolved URL exceeding 2048 characters in tolerant mode")
+		}
+	})
+
+	t.Run("tolerant accepts resolved URL at exactly 2048 chars", func(t *testing.T) {
+		s := New()
+		longPath := strings.Repeat("a", 2048-len("https://example.com/"))
+		longURL := "https://example.com/" + longPath
+		_, err := s.resolveAndValidateLoc(longURL, baseURL)
+		if err != nil {
+			t.Errorf("unexpected error for resolved URL at exactly 2048 characters: %v", err)
+		}
+	})
+
+	t.Run("tolerant rejects relative URL that resolves beyond 2048 chars", func(t *testing.T) {
+		s := New()
+		longPath := "/" + strings.Repeat("a", 2049-len("https://example.com/"))
+		_, err := s.resolveAndValidateLoc(longPath, baseURL)
+		if err == nil {
+			t.Error("expected error for relative URL resolving to more than 2048 characters")
+		}
+	})
 }
 
 func TestS_Parse_TolerantRelativeURLs(t *testing.T) {
