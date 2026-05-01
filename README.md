@@ -146,6 +146,7 @@ s := sitemap.New().SetMultiThread(false)
 To set the follow rules, use the `SetFollow()` function. It should be specified a `[]string` value.
 It is a list of regular expressions. When parsing a sitemap index, only sitemaps with a `loc` that matches one of these expressions will be followed and parsed.
 If no follow rules are provided, all sitemaps in the index are followed.
+Patterns longer than 1,000 characters are rejected and reported via `GetErrors()`.
 
 ```go
 s := sitemap.New()
@@ -167,6 +168,7 @@ s := sitemap.New().SetFollow([]string{
 To set the URL rules, use the `SetRules()` function. It should be specified a `[]string` value.
 It is a list of regular expressions. Only URLs that match one of these expressions will be included in the final result.
 If no rules are provided, all URLs found are included.
+Patterns longer than 1,000 characters are rejected and reported via `GetErrors()`.
 
 ```go
 s := sitemap.New()

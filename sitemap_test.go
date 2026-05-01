@@ -262,6 +262,42 @@ func TestS_SetFollow(t *testing.T) {
 			t.Errorf("expected 1 error, got %d", len(s.errs))
 		}
 	})
+
+	t.Run("pattern at max length is accepted", func(t *testing.T) {
+		s := New()
+		pattern := strings.Repeat("a", maxRegexPatternLength)
+		s.SetFollow([]string{pattern})
+		if len(s.cfg.followRegexes) != 1 {
+			t.Errorf("expected 1 regex, got %d", len(s.cfg.followRegexes))
+		}
+		if len(s.errs) != 0 {
+			t.Errorf("expected 0 errors, got %d", len(s.errs))
+		}
+	})
+
+	t.Run("pattern exceeding max length is rejected", func(t *testing.T) {
+		s := New()
+		pattern := strings.Repeat("a", maxRegexPatternLength+1)
+		s.SetFollow([]string{pattern})
+		if len(s.cfg.followRegexes) != 0 {
+			t.Errorf("expected 0 regexes, got %d", len(s.cfg.followRegexes))
+		}
+		if len(s.errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(s.errs))
+		}
+	})
+
+	t.Run("valid and oversized patterns: only valid compiled", func(t *testing.T) {
+		s := New()
+		long := strings.Repeat("a", maxRegexPatternLength+1)
+		s.SetFollow([]string{`alpha`, long, `beta`})
+		if len(s.cfg.followRegexes) != 2 {
+			t.Errorf("expected 2 regexes, got %d", len(s.cfg.followRegexes))
+		}
+		if len(s.errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(s.errs))
+		}
+	})
 }
 
 func TestS_SetRules(t *testing.T) {
@@ -290,6 +326,42 @@ func TestS_SetRules(t *testing.T) {
 		s.SetRules([]string{`*a`})
 		if len(s.cfg.rulesRegexes) != 0 {
 			t.Errorf("expected 0 regexes, got %d", len(s.cfg.rulesRegexes))
+		}
+		if len(s.errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(s.errs))
+		}
+	})
+
+	t.Run("pattern at max length is accepted", func(t *testing.T) {
+		s := New()
+		pattern := strings.Repeat("a", maxRegexPatternLength)
+		s.SetRules([]string{pattern})
+		if len(s.cfg.rulesRegexes) != 1 {
+			t.Errorf("expected 1 regex, got %d", len(s.cfg.rulesRegexes))
+		}
+		if len(s.errs) != 0 {
+			t.Errorf("expected 0 errors, got %d", len(s.errs))
+		}
+	})
+
+	t.Run("pattern exceeding max length is rejected", func(t *testing.T) {
+		s := New()
+		pattern := strings.Repeat("a", maxRegexPatternLength+1)
+		s.SetRules([]string{pattern})
+		if len(s.cfg.rulesRegexes) != 0 {
+			t.Errorf("expected 0 regexes, got %d", len(s.cfg.rulesRegexes))
+		}
+		if len(s.errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(s.errs))
+		}
+	})
+
+	t.Run("valid and oversized patterns: only valid compiled", func(t *testing.T) {
+		s := New()
+		long := strings.Repeat("a", maxRegexPatternLength+1)
+		s.SetRules([]string{`page`, long, `post`})
+		if len(s.cfg.rulesRegexes) != 2 {
+			t.Errorf("expected 2 regexes, got %d", len(s.cfg.rulesRegexes))
 		}
 		if len(s.errs) != 1 {
 			t.Errorf("expected 1 error, got %d", len(s.errs))

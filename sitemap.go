@@ -244,6 +244,7 @@ func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
 }
 
 // SetFollow sets the follow patterns using the provided list of regex strings and compiles them into regex objects.
+// Patterns longer than maxRegexPatternLength characters are rejected with an error.
 // Any errors encountered during compilation are appended to the error list in the struct.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetFollow(regexes []string) *S {
@@ -252,6 +253,10 @@ func (s *S) SetFollow(regexes []string) *S {
 	s.cfg.follow = regexes
 	s.cfg.followRegexes = nil
 	for _, followPattern := range s.cfg.follow {
+		if len(followPattern) > maxRegexPatternLength {
+			s.errs = append(s.errs, fmt.Errorf("follow pattern exceeds maximum length of %d characters (%d)", maxRegexPatternLength, len(followPattern)))
+			continue
+		}
 		re, err := regexp.Compile(followPattern)
 		if err != nil {
 			s.errs = append(s.errs, err)
@@ -264,6 +269,7 @@ func (s *S) SetFollow(regexes []string) *S {
 }
 
 // SetRules sets the rules patterns using the provided list of regex strings and compiles them into regex objects.
+// Patterns longer than maxRegexPatternLength characters are rejected with an error.
 // Any errors encountered during compilation are appended to the error list in the struct.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetRules(regexes []string) *S {
@@ -272,6 +278,10 @@ func (s *S) SetRules(regexes []string) *S {
 	s.cfg.rules = regexes
 	s.cfg.rulesRegexes = nil
 	for _, rulePattern := range s.cfg.rules {
+		if len(rulePattern) > maxRegexPatternLength {
+			s.errs = append(s.errs, fmt.Errorf("rules pattern exceeds maximum length of %d characters (%d)", maxRegexPatternLength, len(rulePattern)))
+			continue
+		}
 		re, err := regexp.Compile(rulePattern)
 		if err != nil {
 			s.errs = append(s.errs, err)
@@ -915,6 +925,11 @@ func (s *S) parseURLSet(data string) (URLSet, error) {
 
 // maxLocLength is the maximum URL length allowed in a sitemap <loc> element per the sitemaps.org specification.
 const maxLocLength = 2048
+
+// maxRegexPatternLength is the maximum allowed length of a regex pattern string passed to SetFollow or SetRules.
+// Go's regexp package uses RE2 semantics and is therefore not vulnerable to catastrophic backtracking,
+// but arbitrarily long patterns can still produce large compiled automata and consume significant memory.
+const maxRegexPatternLength = 1000
 
 // validatePriority validates the <priority> value of a URL entry.
 // In strict mode, the value must be between 0.0 and 1.0 inclusive per the sitemaps.org specification.
