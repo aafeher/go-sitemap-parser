@@ -33,6 +33,7 @@ func TestS_setConfigDefaults(t *testing.T) {
 				fetchTimeout:    3,
 				maxResponseSize: 50 * 1024 * 1024,
 				maxDepth:        10,
+				maxConcurrency:  defaultMaxConcurrency,
 				multiThread:     true,
 				follow:          []string{},
 				rules:           []string{},
@@ -3006,6 +3007,12 @@ func TestS_Parse_BackwardCompatible(t *testing.T) {
 }
 
 func TestS_SetMaxConcurrency(t *testing.T) {
+	t.Run("default is defaultMaxConcurrency", func(t *testing.T) {
+		s := New()
+		if s.cfg.maxConcurrency != defaultMaxConcurrency {
+			t.Errorf("expected default %d, got %d", defaultMaxConcurrency, s.cfg.maxConcurrency)
+		}
+	})
 	t.Run("Positive", func(t *testing.T) {
 		s := New().SetMaxConcurrency(4)
 		if s.cfg.maxConcurrency != 4 {
@@ -3015,7 +3022,7 @@ func TestS_SetMaxConcurrency(t *testing.T) {
 			t.Errorf("expected no errors, got %d", len(s.errs))
 		}
 	})
-	t.Run("Zero", func(t *testing.T) {
+	t.Run("Zero sets unlimited", func(t *testing.T) {
 		s := New().SetMaxConcurrency(0)
 		if s.cfg.maxConcurrency != 0 {
 			t.Errorf("expected 0 (unlimited), got %d", s.cfg.maxConcurrency)
@@ -3026,8 +3033,8 @@ func TestS_SetMaxConcurrency(t *testing.T) {
 	})
 	t.Run("Negative", func(t *testing.T) {
 		s := New().SetMaxConcurrency(-1)
-		if s.cfg.maxConcurrency != 0 {
-			t.Errorf("expected default 0 to be preserved, got %d", s.cfg.maxConcurrency)
+		if s.cfg.maxConcurrency != defaultMaxConcurrency {
+			t.Errorf("expected default %d to be preserved, got %d", defaultMaxConcurrency, s.cfg.maxConcurrency)
 		}
 		if len(s.errs) != 1 {
 			t.Errorf("expected 1 error, got %d", len(s.errs))
@@ -3041,6 +3048,20 @@ func TestS_acquireSlot_NilSem(t *testing.T) {
 		t.Errorf("expected nil error with nil sem, got %v", err)
 	}
 	s.releaseSlot() // must be a no-op with nil sem
+}
+
+func TestS_ParseContext_UnlimitedConcurrency(t *testing.T) {
+	// SetMaxConcurrency(0) restores unlimited concurrency (sem == nil during Parse).
+	server := testServer()
+	defer server.Close()
+
+	s := New().SetMaxConcurrency(0)
+	if _, err := s.ParseContext(context.Background(), server.URL+"/sitemapindex-1.xml", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s.GetURLCount() == 0 {
+		t.Error("expected URLs, got 0")
+	}
 }
 
 func TestS_acquireSlot_AcquireAndRelease(t *testing.T) {

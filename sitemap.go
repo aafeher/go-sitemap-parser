@@ -150,7 +150,7 @@ func (s *S) setConfigDefaults() {
 		fetchTimeout:    3,
 		maxResponseSize: 50 * 1024 * 1024, // 50 MB per sitemaps.org spec
 		maxDepth:        10,
-		maxConcurrency:  0, // 0 = unlimited (backward compatible)
+		maxConcurrency:  defaultMaxConcurrency,
 		multiThread:     true,
 		follow:          []string{},
 		rules:           []string{},
@@ -965,6 +965,11 @@ const maxLocLength = 2048
 // Go's regexp package uses RE2 semantics and is therefore not vulnerable to catastrophic backtracking,
 // but arbitrarily long patterns can still produce large compiled automata and consume significant memory.
 const maxRegexPatternLength = 1000
+
+// defaultMaxConcurrency is the default maximum number of concurrent HTTP fetches per Parse call.
+// Limiting concurrency by default prevents unbounded goroutine and connection growth when parsing
+// large sitemap indexes. Pass 0 to SetMaxConcurrency to restore unlimited concurrency.
+const defaultMaxConcurrency = 16
 
 // validatePriority validates the <priority> value of a URL entry.
 // In strict mode, the value must be between 0.0 and 1.0 inclusive per the sitemaps.org specification.
