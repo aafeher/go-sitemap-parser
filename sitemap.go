@@ -37,8 +37,12 @@ type (
 		mainURLContent       string
 		robotsTxtSitemapURLs []string
 		sitemapLocations     []string
-		urls                 []URL
-		errs                 []error
+		// fetchedURLs tracks sitemap URLs already fetched in the current Parse
+		// call to prevent duplicate HTTP requests when the same URL is referenced
+		// from multiple sitemap indexes or robots.txt directives.
+		fetchedURLs map[string]struct{}
+		urls        []URL
+		errs        []error
 		// sem is a per-Parse-call semaphore that bounds the number of
 		// concurrently running fetch goroutines when cfg.maxConcurrency > 0.
 		// It is created at the start of ParseContext and is nil when
@@ -378,6 +382,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 
 	s.robotsTxtSitemapURLs = nil
 	s.sitemapLocations = nil
+	s.fetchedURLs = make(map[string]struct{})
 	s.urls = nil
 	s.errs = nil
 
@@ -402,6 +407,9 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 
 		s.mu.Lock()
 		for _, robotsTXTSitemapURL := range s.robotsTxtSitemapURLs {
+			if !s.markFetched(robotsTXTSitemapURL) {
+				continue
+			}
 			wg.Add(1)
 			rTXTsmURL := robotsTXTSitemapURL
 			go func() {
@@ -688,6 +696,21 @@ func (s *S) checkAndUnzipContent(content []byte) []byte {
 	return content
 }
 
+// markFetched marks url as fetched and returns true if it was not yet seen.
+// Returns false if the URL was already fetched (duplicate). Must be called with s.mu held.
+// If fetchedURLs has not been initialised (e.g. in direct unit tests), the URL is always
+// considered new and the map is lazily initialised.
+func (s *S) markFetched(url string) bool {
+	if s.fetchedURLs == nil {
+		s.fetchedURLs = make(map[string]struct{})
+	}
+	if _, seen := s.fetchedURLs[url]; seen {
+		return false
+	}
+	s.fetchedURLs[url] = struct{}{}
+	return true
+}
+
 // parseAndFetchUrlsMultiThread concurrently parses and fetches the URLs specified in the "locations" parameter.
 // It uses a sync.WaitGroup to wait for all fetch operations to complete.
 // For each location, it starts a goroutine that fetches the content using the fetch method of the S structure.
@@ -707,6 +730,12 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 		if ctx.Err() != nil {
 			break
 		}
+		s.mu.Lock()
+		if !s.markFetched(location) {
+			s.mu.Unlock()
+			continue
+		}
+		s.mu.Unlock()
 		wg.Add(1)
 
 		loc := location
@@ -757,6 +786,12 @@ func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string,
 		if ctx.Err() != nil {
 			return
 		}
+		s.mu.Lock()
+		if !s.markFetched(location) {
+			s.mu.Unlock()
+			continue
+		}
+		s.mu.Unlock()
 		content, err := s.fetch(ctx, location)
 		if err != nil {
 			s.mu.Lock()

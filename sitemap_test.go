@@ -559,6 +559,120 @@ func TestS_resolveAndValidateLoc(t *testing.T) {
 	})
 }
 
+func TestS_Parse_Deduplication(t *testing.T) {
+	var fetchCount int
+	var mu sync.Mutex
+
+	urlsetContent := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://example.com/page-01</loc></url>
+</urlset>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		fetchCount++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = fmt.Fprint(w, urlsetContent)
+	}))
+	defer srv.Close()
+
+	t.Run("duplicate sitemap URL in sitemapindex fetched only once", func(t *testing.T) {
+		mu.Lock()
+		fetchCount = 0
+		mu.Unlock()
+
+		sitemapURL := srv.URL + "/sitemap.xml"
+		indexContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap><loc>%s</loc></sitemap>
+    <sitemap><loc>%s</loc></sitemap>
+    <sitemap><loc>%s</loc></sitemap>
+</sitemapindex>`, sitemapURL, sitemapURL, sitemapURL)
+
+		indexURL := srv.URL + "/sitemapindex.xml"
+		s := New().SetMultiThread(false)
+		_, err := s.Parse(indexURL, &indexContent)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		mu.Lock()
+		got := fetchCount
+		mu.Unlock()
+
+		if got != 1 {
+			t.Errorf("expected sitemap URL to be fetched exactly once, got %d fetches", got)
+		}
+		if s.GetURLCount() != 1 {
+			t.Errorf("expected 1 URL, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
+		}
+	})
+
+	t.Run("duplicate sitemap URL in robots.txt fetched only once", func(t *testing.T) {
+		mu.Lock()
+		fetchCount = 0
+		mu.Unlock()
+
+		sitemapURL := srv.URL + "/sitemap.xml"
+		robotsTxt := fmt.Sprintf("User-agent: *\nSitemap: %s\nSitemap: %s\nSitemap: %s\n",
+			sitemapURL, sitemapURL, sitemapURL)
+
+		robotsURL := srv.URL + "/robots.txt"
+		s := New()
+		_, err := s.Parse(robotsURL, &robotsTxt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		mu.Lock()
+		got := fetchCount
+		mu.Unlock()
+
+		if got != 1 {
+			t.Errorf("expected sitemap URL to be fetched exactly once from robots.txt, got %d fetches", got)
+		}
+		if s.GetURLCount() != 1 {
+			t.Errorf("expected 1 URL, got %d", s.GetURLCount())
+		}
+	})
+
+	t.Run("duplicate sitemap URL in sitemapindex fetched only once (multi-thread)", func(t *testing.T) {
+		mu.Lock()
+		fetchCount = 0
+		mu.Unlock()
+
+		sitemapURL := srv.URL + "/sitemap.xml"
+		indexContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap><loc>%s</loc></sitemap>
+    <sitemap><loc>%s</loc></sitemap>
+    <sitemap><loc>%s</loc></sitemap>
+</sitemapindex>`, sitemapURL, sitemapURL, sitemapURL)
+
+		indexURL := srv.URL + "/sitemapindex.xml"
+		s := New().SetMultiThread(true)
+		_, err := s.Parse(indexURL, &indexContent)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		mu.Lock()
+		got := fetchCount
+		mu.Unlock()
+
+		if got != 1 {
+			t.Errorf("expected sitemap URL to be fetched exactly once, got %d fetches", got)
+		}
+		if s.GetURLCount() != 1 {
+			t.Errorf("expected 1 URL, got %d", s.GetURLCount())
+		}
+	})
+}
+
 func TestS_Parse_TolerantRelativeURLs(t *testing.T) {
 	server := testServer()
 	defer server.Close()
@@ -2221,7 +2335,7 @@ func TestS_parseAndFetchUrlsMultiThread(t *testing.T) {
 				"",
 			},
 			urlsCount: 0,
-			errsCount: 2,
+			errsCount: 1, // duplicate URL is deduplicated; only one fetch attempt is made
 		},
 		{
 			name: "invalidURLs",
@@ -2276,7 +2390,7 @@ func TestS_parseAndFetchUrlsSequential(t *testing.T) {
 				"",
 			},
 			urlsCount: 0,
-			errsCount: 2,
+			errsCount: 1, // duplicate URL is deduplicated; only one fetch attempt is made
 		},
 		{
 			name: "invalidURLs",
