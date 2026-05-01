@@ -218,6 +218,17 @@ In both cases, the functions return a pointer to the main object of the package,
 s := sitemap.New().SetUserAgent("YourUserAgent").SetFetchTimeout(10)
 ```
 
+### Thread safety
+
+All public methods on `*S` are safe to call from multiple goroutines. Internal state (configuration, collected URLs, errors) is protected by a mutex.
+
+However, two important constraints apply:
+
+- **Concurrent `Parse()` / `ParseContext()` calls on the same instance are serialised.** A second call blocks until the first completes. If you need to parse multiple sitemaps concurrently, create a separate `*S` instance per goroutine with `New()`.
+- **Configure before parsing.** Calling a `Set*` method while `Parse()` is running on the same instance is safe (the write is mutex-protected), but the outcome is non-deterministic — the new value may or may not be picked up mid-parse. Set all options before calling `Parse()`.
+
+**Deadlock note:** when `SetMaxConcurrency` is used together with a `robots.txt` entry that lists multiple sitemaps, the semaphore slot is released immediately after each HTTP fetch and before the recursive parse step. This prevents goroutines from holding a slot while waiting for a child fetch slot, which would otherwise deadlock.
+
 ### Parse
 
 Once you have properly initialized and configured your instance, you can parse sitemaps using the `Parse()` function.
