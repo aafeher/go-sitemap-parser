@@ -582,6 +582,121 @@ func TestS_Parse_StrictMode(t *testing.T) {
 			t.Errorf("expected 0 errors, got %d", s.GetErrorsCount())
 		}
 	})
+
+	t.Run("strict rejects priority below 0.0", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>%s/page-01</loc><priority>-0.1</priority></url>
+</urlset>`, server.URL)
+		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 0 {
+			t.Errorf("expected 0 URLs, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 1 {
+			t.Errorf("expected 1 error, got %d", s.GetErrorsCount())
+		}
+	})
+
+	t.Run("strict rejects priority above 1.0", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>%s/page-01</loc><priority>1.1</priority></url>
+</urlset>`, server.URL)
+		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 0 {
+			t.Errorf("expected 0 URLs, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 1 {
+			t.Errorf("expected 1 error, got %d", s.GetErrorsCount())
+		}
+	})
+
+	t.Run("strict accepts priority at 0.0", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>%s/page-01</loc><priority>0.0</priority></url>
+</urlset>`, server.URL)
+		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 1 {
+			t.Errorf("expected 1 URL, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors, got %d", s.GetErrorsCount())
+		}
+	})
+
+	t.Run("strict accepts priority at 1.0", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>%s/page-01</loc><priority>1.0</priority></url>
+</urlset>`, server.URL)
+		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 1 {
+			t.Errorf("expected 1 URL, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors, got %d", s.GetErrorsCount())
+		}
+	})
+
+	t.Run("strict accepts URL without priority", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>%s/page-01</loc></url>
+</urlset>`, server.URL)
+		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 1 {
+			t.Errorf("expected 1 URL, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors, got %d", s.GetErrorsCount())
+		}
+	})
+
+	t.Run("tolerant accepts out-of-range priority", func(t *testing.T) {
+		s := New()
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>%s/page-01</loc><priority>-0.5</priority></url>
+    <url><loc>%s/page-02</loc><priority>1.5</priority></url>
+</urlset>`, server.URL, server.URL)
+		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 2 {
+			t.Errorf("expected 2 URLs in tolerant mode, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors in tolerant mode, got %d", s.GetErrorsCount())
+		}
+	})
 }
 
 func TestS_Parse(t *testing.T) {

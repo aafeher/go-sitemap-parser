@@ -841,6 +841,10 @@ func (s *S) parse(url string, content string) []string {
 				continue
 			}
 			urlSetURL.Loc = resolvedLoc
+			if err := s.validatePriority(urlSetURL.Priority); err != nil {
+				s.errs = append(s.errs, err)
+				continue
+			}
 			// Check if the urlSetURL.Loc matches any of the regular expressions in s.cfg.rulesRegexes.
 			matches := false
 			if len(s.cfg.rulesRegexes) > 0 {
@@ -911,6 +915,19 @@ func (s *S) parseURLSet(data string) (URLSet, error) {
 
 // maxLocLength is the maximum URL length allowed in a sitemap <loc> element per the sitemaps.org specification.
 const maxLocLength = 2048
+
+// validatePriority validates the <priority> value of a URL entry.
+// In strict mode, the value must be between 0.0 and 1.0 inclusive per the sitemaps.org specification.
+// In tolerant mode, any value is accepted and nil is returned.
+func (s *S) validatePriority(priority *float32) error {
+	if !s.cfg.strict || priority == nil {
+		return nil
+	}
+	if *priority < 0.0 || *priority > 1.0 {
+		return fmt.Errorf("strict mode: priority %g is out of range [0.0, 1.0]", *priority)
+	}
+	return nil
+}
 
 // resolveAndValidateLoc resolves and validates a <loc> URL found in a sitemap.
 // In tolerant mode (strict=false), relative URLs are resolved against baseURL.

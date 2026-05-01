@@ -187,12 +187,15 @@ s := sitemap.New().SetRules([]string{
 
 By default, the parser operates in **tolerant mode**: relative URLs found in `<loc>` elements are automatically resolved against the parent sitemap URL. This handles real-world sitemaps that may not fully comply with the specification.
 
-To enable **strict mode**, use the `SetStrict()` function. In strict mode, all `<loc>` URLs are validated per the [sitemaps.org protocol](http://www.sitemaps.org/protocol.html):
-- Must be absolute HTTP or HTTPS URLs
-- Must use the same host and protocol as the sitemap file
-- Must not exceed 2,048 characters
+To enable **strict mode**, use the `SetStrict()` function. In strict mode, all URL entries are validated per the [sitemaps.org protocol](http://www.sitemaps.org/protocol.html):
+- `<loc>` must be an absolute HTTP or HTTPS URL
+- `<loc>` must use the same host and protocol as the sitemap file
+- `<loc>` must not exceed 2,048 characters
+- `<priority>` must be between `0.0` and `1.0` inclusive (if present)
 
-URLs that fail validation are skipped and reported via `GetErrors()`.
+Entries that fail validation are skipped and reported via `GetErrors()`.
+
+In **tolerant mode** (the default), relative `<loc>` URLs are resolved against the parent sitemap URL and `<priority>` values outside `[0.0, 1.0]` are accepted as-is.
 
 ```go
 s := sitemap.New()
