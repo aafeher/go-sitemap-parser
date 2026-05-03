@@ -255,6 +255,31 @@ In both cases, the functions return a pointer to the main object of the package,
 s := sitemap.New().SetUserAgent("YourUserAgent").SetFetchTimeout(10)
 ```
 
+### Read configuration
+
+Each configuration setting can be read back via a corresponding `Get*` method. All getters are thread-safe.
+
+| Getter | Return type | Description |
+|---|---|---|
+| `GetUserAgent()` | `string` | Current user agent string |
+| `GetFetchTimeout()` | `uint16` | Fetch timeout in seconds |
+| `GetMultiThread()` | `bool` | Whether multi-threaded fetching is enabled |
+| `GetMaxResponseSize()` | `int64` | Maximum HTTP response size in bytes |
+| `GetMaxDepth()` | `int` | Maximum sitemap index recursion depth |
+| `GetMaxConcurrency()` | `int` | Maximum concurrent fetches (`0` = unlimited) |
+| `GetFollow()` | `[]string` | Copy of the follow regex pattern list |
+| `GetRules()` | `[]string` | Copy of the URL filter regex pattern list |
+| `GetHTTPClient()` | `*http.Client` | Custom HTTP client, or `nil` if using the default |
+| `GetStrict()` | `bool` | Whether strict validation mode is enabled |
+
+`GetFollow()` and `GetRules()` return copies — mutating the returned slice does not affect the parser's internal state.
+
+```go
+s := sitemap.New().SetMaxConcurrency(8).SetStrict(true)
+fmt.Println(s.GetMaxConcurrency()) // 8
+fmt.Println(s.GetStrict())         // true
+```
+
 ### Thread safety
 
 All public methods on `*S` are safe to call from multiple goroutines. Internal state (configuration, collected URLs, errors) is protected by a mutex.

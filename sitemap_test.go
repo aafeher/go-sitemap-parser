@@ -485,6 +485,102 @@ func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return rt.delegate.RoundTrip(req)
 }
 
+func TestS_GetConfiguration(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		s := New()
+		if s.GetUserAgent() != "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)" {
+			t.Errorf("unexpected default user agent: %q", s.GetUserAgent())
+		}
+		if s.GetFetchTimeout() != 3 {
+			t.Errorf("unexpected default fetch timeout: %d", s.GetFetchTimeout())
+		}
+		if !s.GetMultiThread() {
+			t.Error("expected multi-thread to be true by default")
+		}
+		if s.GetMaxResponseSize() != 50*1024*1024 {
+			t.Errorf("unexpected default max response size: %d", s.GetMaxResponseSize())
+		}
+		if s.GetMaxDepth() != 10 {
+			t.Errorf("unexpected default max depth: %d", s.GetMaxDepth())
+		}
+		if s.GetMaxConcurrency() != 16 {
+			t.Errorf("unexpected default max concurrency: %d", s.GetMaxConcurrency())
+		}
+		if got := s.GetFollow(); len(got) != 0 {
+			t.Errorf("expected empty follow patterns, got %v", got)
+		}
+		if got := s.GetRules(); len(got) != 0 {
+			t.Errorf("expected empty rules patterns, got %v", got)
+		}
+		if s.GetHTTPClient() != nil {
+			t.Error("expected nil HTTP client by default")
+		}
+		if s.GetStrict() {
+			t.Error("expected strict to be false by default")
+		}
+	})
+
+	t.Run("after setters", func(t *testing.T) {
+		customClient := &http.Client{}
+		s := New().
+			SetUserAgent("TestAgent/1.0").
+			SetFetchTimeout(30).
+			SetMultiThread(false).
+			SetMaxResponseSize(1024).
+			SetMaxDepth(5).
+			SetMaxConcurrency(8).
+			SetFollow([]string{`\.xml$`}).
+			SetRules([]string{`/product/`}).
+			SetHTTPClient(customClient).
+			SetStrict(true)
+
+		if got := s.GetUserAgent(); got != "TestAgent/1.0" {
+			t.Errorf("GetUserAgent: got %q, want %q", got, "TestAgent/1.0")
+		}
+		if got := s.GetFetchTimeout(); got != 30 {
+			t.Errorf("GetFetchTimeout: got %d, want 30", got)
+		}
+		if s.GetMultiThread() {
+			t.Error("GetMultiThread: expected false")
+		}
+		if got := s.GetMaxResponseSize(); got != 1024 {
+			t.Errorf("GetMaxResponseSize: got %d, want 1024", got)
+		}
+		if got := s.GetMaxDepth(); got != 5 {
+			t.Errorf("GetMaxDepth: got %d, want 5", got)
+		}
+		if got := s.GetMaxConcurrency(); got != 8 {
+			t.Errorf("GetMaxConcurrency: got %d, want 8", got)
+		}
+		if got := s.GetFollow(); len(got) != 1 || got[0] != `\.xml$` {
+			t.Errorf("GetFollow: got %v, want [\\.xml$]", got)
+		}
+		if got := s.GetRules(); len(got) != 1 || got[0] != `/product/` {
+			t.Errorf("GetRules: got %v, want [/product/]", got)
+		}
+		if got := s.GetHTTPClient(); got != customClient {
+			t.Error("GetHTTPClient: did not return the configured client")
+		}
+		if !s.GetStrict() {
+			t.Error("GetStrict: expected true")
+		}
+	})
+
+	t.Run("GetFollow and GetRules return copies", func(t *testing.T) {
+		s := New().SetFollow([]string{`\.xml$`}).SetRules([]string{`/product/`})
+		follow := s.GetFollow()
+		follow[0] = "mutated"
+		if s.GetFollow()[0] != `\.xml$` {
+			t.Error("GetFollow: mutation of returned slice affected internal state")
+		}
+		rules := s.GetRules()
+		rules[0] = "mutated"
+		if s.GetRules()[0] != `/product/` {
+			t.Error("GetRules: mutation of returned slice affected internal state")
+		}
+	})
+}
+
 func TestImage_validateAndFilterImages(t *testing.T) {
 	t.Run("empty input returns empty", func(t *testing.T) {
 		s := New()
@@ -3170,36 +3266,36 @@ func TestS_Parse(t *testing.T) {
 			urls: nil,
 		},
 		{
-			name:        "RSS empty",
-			url:         "http://www.example.com/rss-empty.xml",
-			multiThread: true,
-			content:     pointerOfString(""),
+			name:           "RSS empty",
+			url:            "http://www.example.com/rss-empty.xml",
+			multiThread:    true,
+			content:        pointerOfString(""),
 			mainURLContent: pointerOfString(""),
-			errs:        []error{fmt.Errorf("parse \"http://www.example.com/rss-empty.xml\": sitemap content is empty")},
+			errs:           []error{fmt.Errorf("parse \"http://www.example.com/rss-empty.xml\": sitemap content is empty")},
 		},
 		{
-			name:        "Atom empty",
-			url:         "http://www.example.com/atom-empty.xml",
-			multiThread: true,
-			content:     pointerOfString(""),
+			name:           "Atom empty",
+			url:            "http://www.example.com/atom-empty.xml",
+			multiThread:    true,
+			content:        pointerOfString(""),
 			mainURLContent: pointerOfString(""),
-			errs:        []error{fmt.Errorf("parse \"http://www.example.com/atom-empty.xml\": sitemap content is empty")},
+			errs:           []error{fmt.Errorf("parse \"http://www.example.com/atom-empty.xml\": sitemap content is empty")},
 		},
 		{
-			name:        "RSS 2.0 malformed XML",
-			url:         "http://www.example.com/rss-malformed.xml",
-			multiThread: true,
-			content:     pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item>`),
+			name:           "RSS 2.0 malformed XML",
+			url:            "http://www.example.com/rss-malformed.xml",
+			multiThread:    true,
+			content:        pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item>`),
 			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item>`),
-			errs:        []error{fmt.Errorf("parse \"http://www.example.com/rss-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
+			errs:           []error{fmt.Errorf("parse \"http://www.example.com/rss-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
 		},
 		{
-			name:        "Atom 1.0 malformed XML",
-			url:         "http://www.example.com/atom-malformed.xml",
-			multiThread: true,
-			content:     pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>`),
+			name:           "Atom 1.0 malformed XML",
+			url:            "http://www.example.com/atom-malformed.xml",
+			multiThread:    true,
+			content:        pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>`),
 			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>`),
-			errs:        []error{fmt.Errorf("parse \"http://www.example.com/atom-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
+			errs:           []error{fmt.Errorf("parse \"http://www.example.com/atom-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
 		},
 		{
 			name:        "RSS 2.0 with relative URL in strict mode",

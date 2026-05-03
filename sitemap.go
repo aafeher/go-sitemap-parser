@@ -428,6 +428,81 @@ func (s *S) SetStrict(strict bool) *S {
 	return s
 }
 
+// GetUserAgent returns the current user agent string used for HTTP requests.
+func (s *S) GetUserAgent() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.userAgent
+}
+
+// GetFetchTimeout returns the current fetch timeout in seconds.
+func (s *S) GetFetchTimeout() uint16 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.fetchTimeout
+}
+
+// GetMultiThread returns whether multi-threaded fetching and parsing is enabled.
+func (s *S) GetMultiThread() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.multiThread
+}
+
+// GetMaxResponseSize returns the maximum allowed HTTP response size in bytes.
+func (s *S) GetMaxResponseSize() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.maxResponseSize
+}
+
+// GetMaxDepth returns the maximum recursion depth for following sitemap indexes.
+func (s *S) GetMaxDepth() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.maxDepth
+}
+
+// GetMaxConcurrency returns the maximum number of concurrent fetch goroutines.
+// A value of 0 means unlimited concurrency.
+func (s *S) GetMaxConcurrency() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.maxConcurrency
+}
+
+// GetFollow returns a copy of the current follow regex pattern strings.
+func (s *S) GetFollow() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]string, len(s.cfg.follow))
+	copy(result, s.cfg.follow)
+	return result
+}
+
+// GetRules returns a copy of the current URL filter regex pattern strings.
+func (s *S) GetRules() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]string, len(s.cfg.rules))
+	copy(result, s.cfg.rules)
+	return result
+}
+
+// GetHTTPClient returns the custom HTTP client, or nil if the default client behaviour is used.
+func (s *S) GetHTTPClient() *http.Client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.httpClient
+}
+
+// GetStrict returns whether strict URL validation mode is enabled.
+func (s *S) GetStrict() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.strict
+}
+
 // Parse is a method of the S structure. It parses the given URL and its content.
 //
 // Parse is a backward-compatible wrapper around ParseContext that uses
