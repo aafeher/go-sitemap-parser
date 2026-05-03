@@ -8,6 +8,8 @@
 
 A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](http://www.sitemaps.org/protocol.html).
 
+> For information on reporting security vulnerabilities, see [SECURITY.md](SECURITY.md).
+
 ## Features
 - Recursive parsing (sitemap index → sitemaps → URLs)
 - Concurrent (multi-threaded) fetching and parsing
