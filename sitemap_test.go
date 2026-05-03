@@ -891,6 +891,364 @@ func TestImage_Parse_integration(t *testing.T) {
 	})
 }
 
+func TestNews_validateNews(t *testing.T) {
+	makeDate := func(s string) *lastModTime {
+		lmt := &lastModTime{}
+		tok := xml.NewDecoder(strings.NewReader("<d>" + s + "</d>"))
+		start, _ := tok.Token()
+		_ = lmt.UnmarshalXML(tok, start.(xml.StartElement))
+		return lmt
+	}
+
+	t.Run("nil input returns nil", func(t *testing.T) {
+		s := New()
+		got, errs := s.validateNews(nil)
+		if got != nil || len(errs) != 0 {
+			t.Errorf("expected nil, nil for nil input")
+		}
+	})
+
+	t.Run("tolerant: valid news kept without errors", func(t *testing.T) {
+		s := New()
+		n := &News{
+			Publication:     NewsPublication{Name: "Example", Language: "en"},
+			PublicationDate: makeDate("2026-05-03"),
+			Title:           "Article",
+		}
+		got, errs := s.validateNews(n)
+		if got != n {
+			t.Error("expected same news pointer")
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected 0 errors in tolerant mode, got %d", len(errs))
+		}
+	})
+
+	t.Run("tolerant: missing fields produce no errors", func(t *testing.T) {
+		s := New()
+		n := &News{}
+		got, errs := s.validateNews(n)
+		if got != n {
+			t.Error("expected same news pointer")
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected 0 errors in tolerant mode, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: fully valid news kept without errors", func(t *testing.T) {
+		s := New().SetStrict(true)
+		n := &News{
+			Publication:     NewsPublication{Name: "Example", Language: "en"},
+			PublicationDate: makeDate("2026-05-03T10:00:00Z"),
+			Title:           "Article Title",
+		}
+		got, errs := s.validateNews(n)
+		if got != n {
+			t.Error("expected same news pointer")
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected 0 errors for valid news, got %d: %v", len(errs), errs)
+		}
+	})
+
+	t.Run("strict: empty title produces error", func(t *testing.T) {
+		s := New().SetStrict(true)
+		n := &News{
+			Publication:     NewsPublication{Name: "Example", Language: "en"},
+			PublicationDate: makeDate("2026-05-03"),
+			Title:           "",
+		}
+		_, errs := s.validateNews(n)
+		if len(errs) != 1 {
+			t.Errorf("expected 1 error for empty title, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: empty publication name produces error", func(t *testing.T) {
+		s := New().SetStrict(true)
+		n := &News{
+			Publication:     NewsPublication{Name: "", Language: "en"},
+			PublicationDate: makeDate("2026-05-03"),
+			Title:           "Article",
+		}
+		_, errs := s.validateNews(n)
+		if len(errs) != 1 {
+			t.Errorf("expected 1 error for empty publication name, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: empty publication language produces error", func(t *testing.T) {
+		s := New().SetStrict(true)
+		n := &News{
+			Publication:     NewsPublication{Name: "Example", Language: ""},
+			PublicationDate: makeDate("2026-05-03"),
+			Title:           "Article",
+		}
+		_, errs := s.validateNews(n)
+		if len(errs) != 1 {
+			t.Errorf("expected 1 error for empty publication language, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: nil publication date produces error", func(t *testing.T) {
+		s := New().SetStrict(true)
+		n := &News{
+			Publication:     NewsPublication{Name: "Example", Language: "en"},
+			PublicationDate: nil,
+			Title:           "Article",
+		}
+		_, errs := s.validateNews(n)
+		if len(errs) != 1 {
+			t.Errorf("expected 1 error for nil publication_date, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: all required fields missing produces four errors", func(t *testing.T) {
+		s := New().SetStrict(true)
+		n := &News{}
+		got, errs := s.validateNews(n)
+		if got != n {
+			t.Error("expected news entry to be kept despite errors")
+		}
+		if len(errs) != 4 {
+			t.Errorf("expected 4 errors (title, name, language, date), got %d", len(errs))
+		}
+	})
+}
+
+func TestNews_parseURLSet_WithNews(t *testing.T) {
+	t.Run("URL with full news entry", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+    <url>
+        <loc>https://example.com/article</loc>
+        <news:news>
+            <news:publication>
+                <news:name>Example News</news:name>
+                <news:language>en</news:language>
+            </news:publication>
+            <news:publication_date>2026-05-03T10:00:00Z</news:publication_date>
+            <news:title>Breaking: Example Article</news:title>
+        </news:news>
+    </url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		u := urlSet.URL[0]
+		if u.News == nil {
+			t.Fatal("expected News to be non-nil")
+		}
+		if u.News.Title != "Breaking: Example Article" {
+			t.Errorf("expected title %q, got %q", "Breaking: Example Article", u.News.Title)
+		}
+		if u.News.Publication.Name != "Example News" {
+			t.Errorf("expected publication name %q, got %q", "Example News", u.News.Publication.Name)
+		}
+		if u.News.Publication.Language != "en" {
+			t.Errorf("expected language %q, got %q", "en", u.News.Publication.Language)
+		}
+		if u.News.PublicationDate == nil {
+			t.Error("expected PublicationDate to be non-nil")
+		}
+	})
+
+	t.Run("URL without news has nil News field", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://example.com/page</loc></url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if urlSet.URL[0].News != nil {
+			t.Errorf("expected nil News, got non-nil")
+		}
+	})
+
+	t.Run("news element without namespace is ignored", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://example.com/page</loc>
+        <news><title>Ignored</title></news>
+    </url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if urlSet.URL[0].News != nil {
+			t.Errorf("expected nil News (no namespace), got non-nil")
+		}
+	})
+
+	t.Run("multiple URLs with mixed news presence", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+    <url>
+        <loc>https://example.com/article</loc>
+        <news:news>
+            <news:publication><news:name>N</news:name><news:language>hu</news:language></news:publication>
+            <news:publication_date>2026-05-03</news:publication_date>
+            <news:title>Article</news:title>
+        </news:news>
+    </url>
+    <url>
+        <loc>https://example.com/page</loc>
+    </url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if urlSet.URL[0].News == nil {
+			t.Error("expected News on first URL")
+		}
+		if urlSet.URL[1].News != nil {
+			t.Error("expected nil News on second URL")
+		}
+	})
+}
+
+func TestNews_Parse_integration(t *testing.T) {
+	server := testServer()
+	defer server.Close()
+
+	t.Run("fixture with news parses correctly", func(t *testing.T) {
+		s := New()
+		_, err := s.Parse(server.URL+"/sitemap-news-01.xml", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 2 {
+			t.Fatalf("expected 2 URLs, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
+		}
+
+		urls := s.GetURLs()
+		var article, plain URL
+		for _, u := range urls {
+			if strings.HasSuffix(u.Loc, "/article-1") {
+				article = u
+			} else {
+				plain = u
+			}
+		}
+
+		if article.News == nil {
+			t.Fatal("expected News on article URL")
+		}
+		if article.News.Title != "Breaking: Example Article" {
+			t.Errorf("unexpected title: %q", article.News.Title)
+		}
+		if article.News.Publication.Name != "Example News" {
+			t.Errorf("unexpected publication name: %q", article.News.Publication.Name)
+		}
+		if article.News.Publication.Language != "en" {
+			t.Errorf("unexpected language: %q", article.News.Publication.Language)
+		}
+		if article.News.PublicationDate == nil {
+			t.Error("expected non-nil PublicationDate")
+		}
+		if plain.News != nil {
+			t.Errorf("expected nil News on plain URL")
+		}
+	})
+
+	t.Run("strict: all required fields present — no errors", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+    <url>
+        <loc>%s/article</loc>
+        <news:news>
+            <news:publication>
+                <news:name>Example</news:name>
+                <news:language>en</news:language>
+            </news:publication>
+            <news:publication_date>2026-05-03T10:00:00Z</news:publication_date>
+            <news:title>Article</news:title>
+        </news:news>
+    </url>
+</urlset>`, server.URL)
+		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
+		}
+		if s.GetURLs()[0].News == nil {
+			t.Error("expected News to be set")
+		}
+	})
+
+	t.Run("strict: missing required fields produce errors, news entry kept", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+    <url>
+        <loc>%s/article</loc>
+        <news:news></news:news>
+    </url>
+</urlset>`, server.URL)
+		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetErrorsCount() != 4 {
+			t.Errorf("expected 4 errors (title, name, language, date), got %d", s.GetErrorsCount())
+		}
+		urls := s.GetURLs()
+		if len(urls) != 1 {
+			t.Errorf("expected URL to be kept despite errors, got %d URLs", len(urls))
+		}
+		if urls[0].News == nil {
+			t.Error("expected News entry to be kept despite missing fields")
+		}
+	})
+
+	t.Run("tolerant: missing fields produce no errors", func(t *testing.T) {
+		s := New()
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+    <url>
+        <loc>%s/article</loc>
+        <news:news><news:title>Only Title</news:title></news:news>
+    </url>
+</urlset>`, server.URL)
+		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors in tolerant mode, got %d", s.GetErrorsCount())
+		}
+		urls := s.GetURLs()
+		if len(urls) != 1 || urls[0].News == nil {
+			t.Error("expected URL with News in tolerant mode")
+		}
+		if urls[0].News.Title != "Only Title" {
+			t.Errorf("expected title %q, got %q", "Only Title", urls[0].News.Title)
+		}
+	})
+}
+
 func TestS_resolveAndValidateLoc(t *testing.T) {
 	baseURL := "https://example.com/sitemaps/index.xml"
 

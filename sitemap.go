@@ -98,6 +98,20 @@ type (
 		License     string `xml:"http://www.google.com/schemas/sitemap-image/1.1 license"`
 	}
 
+	// NewsPublication is a structure of <news:publication> in <news:news>.
+	NewsPublication struct {
+		Name     string `xml:"http://www.google.com/schemas/sitemap-news/0.9 name"`
+		Language string `xml:"http://www.google.com/schemas/sitemap-news/0.9 language"`
+	}
+
+	// News is a structure of <news:news> in <url>, per the Google News Sitemap extension.
+	// Reference: https://developers.google.com/search/docs/crawling-indexing/sitemaps/news-sitemap
+	News struct {
+		Publication     NewsPublication `xml:"http://www.google.com/schemas/sitemap-news/0.9 publication"`
+		PublicationDate *lastModTime    `xml:"http://www.google.com/schemas/sitemap-news/0.9 publication_date"`
+		Title           string          `xml:"http://www.google.com/schemas/sitemap-news/0.9 title"`
+	}
+
 	// URL is a structure of <url> in <urlset>
 	URL struct {
 		Loc        string         `xml:"loc"`
@@ -105,6 +119,7 @@ type (
 		ChangeFreq *URLChangeFreq `xml:"changefreq"`
 		Priority   *float32       `xml:"priority"`
 		Images     []Image        `xml:"http://www.google.com/schemas/sitemap-image/1.1 image"`
+		News       *News          `xml:"http://www.google.com/schemas/sitemap-news/0.9 news"`
 	}
 
 	lastModTime struct {
@@ -928,6 +943,9 @@ func (s *S) parse(url string, content string) []string {
 			validImages, imageErrs := s.validateAndFilterImages(urlSetURL.Images)
 			urlSetURL.Images = validImages
 			s.errs = append(s.errs, imageErrs...)
+			validNews, newsErrs := s.validateNews(urlSetURL.News)
+			urlSetURL.News = validNews
+			s.errs = append(s.errs, newsErrs...)
 			// Check if the urlSetURL.Loc matches any of the regular expressions in s.cfg.rulesRegexes.
 			matches := false
 			if len(s.cfg.rulesRegexes) > 0 {
@@ -1002,6 +1020,9 @@ const maxLocLength = 2048
 // imageNamespace is the XML namespace URI for the Google Image Sitemap extension.
 const imageNamespace = "http://www.google.com/schemas/sitemap-image/1.1"
 
+// newsNamespace is the XML namespace URI for the Google News Sitemap extension.
+const newsNamespace = "http://www.google.com/schemas/sitemap-news/0.9"
+
 // maxRegexPatternLength is the maximum allowed length of a regex pattern string passed to SetFollow or SetRules.
 // Go's regexp package uses RE2 semantics and is therefore not vulnerable to catastrophic backtracking,
 // but arbitrarily long patterns can still produce large compiled automata and consume significant memory.
@@ -1065,6 +1086,38 @@ func (s *S) validateAndFilterImages(images []Image) ([]Image, []error) {
 		valid = append(valid, img)
 	}
 	return valid, errs
+}
+
+// validateNews validates the news entry on a parsed URL in strict mode and returns
+// the entry along with any validation errors.
+//
+// In tolerant mode the entry is returned unchanged with no errors.
+// In strict mode all four fields required by the Google News Sitemap specification
+// must be present: Publication.Name, Publication.Language, PublicationDate, and Title.
+// Missing required fields are each reported as a separate error; the News entry itself
+// is kept so that callers still have access to any data that was successfully parsed.
+// A nil input is a no-op and returns nil, nil.
+func (s *S) validateNews(news *News) (*News, []error) {
+	if news == nil {
+		return nil, nil
+	}
+	if !s.cfg.strict {
+		return news, nil
+	}
+	var errs []error
+	if news.Title == "" {
+		errs = append(errs, fmt.Errorf("strict mode: news <title> is empty"))
+	}
+	if news.Publication.Name == "" {
+		errs = append(errs, fmt.Errorf("strict mode: news <publication><name> is empty"))
+	}
+	if news.Publication.Language == "" {
+		errs = append(errs, fmt.Errorf("strict mode: news <publication><language> is empty"))
+	}
+	if news.PublicationDate == nil {
+		errs = append(errs, fmt.Errorf("strict mode: news <publication_date> is missing"))
+	}
+	return news, errs
 }
 
 // resolveAndValidateLoc resolves and validates a <loc> URL found in a sitemap.

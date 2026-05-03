@@ -17,6 +17,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Tolerant mode (default): resolves relative URLs in `<loc>` elements; rejects URLs exceeding 2,048 characters after resolution
 - Strict mode: validates URLs per the sitemaps.org specification
 - Google Image Sitemap extension (`<image:image>`)
+- Google News Sitemap extension (`<news:news>`)
 - Thread-safe
 
 ## Formats supported
@@ -314,6 +315,7 @@ Each `URL` struct contains the following fields:
 - `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`
 - `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`
 - `Images` (`[]Image`) — images associated with this URL via the Google Image Sitemap extension, may be `nil`
+- `News` (`*News`) — news metadata associated with this URL via the Google News Sitemap extension, may be `nil`
 
 Each `Image` struct contains the following fields (all `string`):
 - `Loc` — image URL (required by the spec; images with an empty `Loc` are silently dropped in tolerant mode, or produce an error in strict mode)
@@ -323,6 +325,17 @@ Each `Image` struct contains the following fields (all `string`):
 - `License` — URL of the image licence (optional)
 
 See [`examples/image`](examples/image/main.go) for a runnable example.
+
+Each `News` struct contains:
+- `Publication` (`NewsPublication`) — publication metadata:
+  - `Name` (`string`) — publication name (required in strict mode)
+  - `Language` (`string`) — BCP 47 language code, e.g. `"en"` (required in strict mode)
+- `PublicationDate` (`*lastModTime`) — article publication date; embeds `time.Time`, may be `nil` if absent (required in strict mode)
+- `Title` (`string`) — article title (required in strict mode)
+
+In strict mode, all four required fields (`Title`, `Publication.Name`, `Publication.Language`, `PublicationDate`) must be present; missing fields are each reported via `GetErrors()` and the `News` entry is still included with whatever data was parsed. In tolerant mode no validation is performed.
+
+See [`examples/news`](examples/news/main.go) for a runnable example.
 
 #### GetURLCount
 

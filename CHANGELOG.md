@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-03
+
 ### Added
 - Google Image Sitemap extension support (`<image:image>`): the `URL` struct now exposes an `Images []Image` field populated from `xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"` elements. Each `Image` exposes `Loc`, `Title`, `Caption`, `GeoLocation`, and `License` fields.
 - Image validation: in tolerant mode, images with an empty `<image:loc>` are silently dropped; URLs exceeding 2,048 characters are rejected with an error. In strict mode, `<image:loc>` must additionally be a non-empty absolute HTTP(S) URL. CDN-hosted images (different host from the page URL) are permitted in both modes per the Google specification.
-- New example: [`examples/image`](examples/image/main.go)
+- Google News Sitemap extension support (`<news:news>`): the `URL` struct now exposes a `News *News` field populated from `xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"` elements. `News` exposes `Publication` (with `Name` and `Language`), `PublicationDate`, and `Title`.
+- News validation: in strict mode, all four required fields (`Title`, `Publication.Name`, `Publication.Language`, `PublicationDate`) must be present; each missing field is reported via `GetErrors()` while the `News` entry is still included. In tolerant mode no validation is performed.
+- New examples: [`examples/image`](examples/image/main.go), [`examples/news`](examples/news/main.go)
 
 ## [0.6.0] - 2026-05-03
 
@@ -140,7 +144,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each parsed `URL` exposes `Loc`, `LastMod`, `ChangeFreq`, and `Priority`
 - Method chaining (fluent interface) on all setters
 
-[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.3.0...v0.4.0
