@@ -82,14 +82,14 @@ type (
 		} `xml:"sitemap"`
 	}
 
-	// URLSet is a structure of <urlset>
-	URLSet struct {
+	// urlSet is a structure of <urlset>
+	urlSet struct {
 		XMLName xml.Name `xml:"urlset"`
 		URL     []URL    `xml:"url"`
 	}
 
-	// RSS is a structure of <rss> for RSS 2.0 feeds.
-	RSS struct {
+	// rss is a structure of <rss> for RSS 2.0 feeds.
+	rss struct {
 		XMLName xml.Name `xml:"rss"`
 		Channel struct {
 			Item []struct {
@@ -98,8 +98,8 @@ type (
 		} `xml:"channel"`
 	}
 
-	// Atom is a structure of <feed> for Atom 1.0 feeds.
-	Atom struct {
+	// atom is a structure of <feed> for Atom 1.0 feeds.
+	atom struct {
 		XMLName xml.Name `xml:"feed"`
 		Entry   []struct {
 			Link []struct {
@@ -1079,12 +1079,12 @@ func (s *S) parse(url string, content string) []string {
 		}
 
 	case "urlset":
-		urlSet, err := s.parseURLSet(content)
+		us, err := s.parseURLSet(content)
 		if err != nil {
 			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
 			return sitemapLocationsAdded
 		}
-		for _, urlSetURL := range urlSet.URL {
+		for _, urlSetURL := range us.URL {
 			urlSetURL.Loc = strings.TrimSpace(urlSetURL.Loc)
 			resolvedLoc, err := s.resolveAndValidateLoc(urlSetURL.Loc, url)
 			if err != nil {
@@ -1127,22 +1127,22 @@ func (s *S) parse(url string, content string) []string {
 		}
 
 	case "rss":
-		rss, err := s.parseRSS(content)
+		rssFeed, err := s.parseRSS(content)
 		if err != nil {
 			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
 			return sitemapLocationsAdded
 		}
-		for _, item := range rss.Channel.Item {
+		for _, item := range rssFeed.Channel.Item {
 			s.addURL(strings.TrimSpace(item.Link), url)
 		}
 
 	case "feed":
-		atom, err := s.parseAtom(content)
+		atomFeed, err := s.parseAtom(content)
 		if err != nil {
 			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
 			return sitemapLocationsAdded
 		}
-		for _, entry := range atom.Entry {
+		for _, entry := range atomFeed.Entry {
 			var loc string
 			for _, l := range entry.Link {
 				if l.Rel == "" || l.Rel == "alternate" {
@@ -1233,50 +1233,50 @@ func (s *S) parseSitemapIndex(data string) (sitemapIndex, error) {
 
 }
 
-// parseURLSet takes a string of XML data representing a sitemap and parses it into a URLSet.
+// parseURLSet takes a string of XML data representing a sitemap and parses it into a urlSet.
 // If the data is empty, it returns an error with the message "sitemap is empty".
-// It uses an xml.Decoder with charset support to decode the XML data into the URLSet struct.
-// If there is an error during decoding, it returns the empty URLSet and the decode error.
-// Otherwise, it returns the parsed URLSet and nil error.
-func (s *S) parseURLSet(data string) (URLSet, error) {
-	var urlSet URLSet
+// It uses an xml.Decoder with charset support to decode the XML data into the urlSet struct.
+// If there is an error during decoding, it returns the empty urlSet and the decode error.
+// Otherwise, it returns the parsed urlSet and nil error.
+func (s *S) parseURLSet(data string) (urlSet, error) {
+	var us urlSet
 	if len(data) == 0 {
-		return urlSet, fmt.Errorf("sitemap is empty")
+		return us, fmt.Errorf("sitemap is empty")
 	}
 
 	decoder := xml.NewDecoder(bytes.NewReader([]byte(data)))
 	decoder.CharsetReader = charset.NewReaderLabel
 
-	err := decoder.Decode(&urlSet)
-	return urlSet, err
+	err := decoder.Decode(&us)
+	return us, err
 }
 
-// parseRSS parses the RSS 2.0 data and returns an RSS object and an error.
-func (s *S) parseRSS(data string) (RSS, error) {
-	var rss RSS
+// parseRSS parses the RSS 2.0 data and returns an rss object and an error.
+func (s *S) parseRSS(data string) (rss, error) {
+	var feed rss
 	if len(data) == 0 {
-		return rss, fmt.Errorf("rss is empty")
+		return feed, fmt.Errorf("rss is empty")
 	}
 
 	decoder := xml.NewDecoder(bytes.NewReader([]byte(data)))
 	decoder.CharsetReader = charset.NewReaderLabel
 
-	err := decoder.Decode(&rss)
-	return rss, err
+	err := decoder.Decode(&feed)
+	return feed, err
 }
 
-// parseAtom parses the Atom 1.0 data and returns an Atom object and an error.
-func (s *S) parseAtom(data string) (Atom, error) {
-	var atom Atom
+// parseAtom parses the Atom 1.0 data and returns an atom object and an error.
+func (s *S) parseAtom(data string) (atom, error) {
+	var feed atom
 	if len(data) == 0 {
-		return atom, fmt.Errorf("atom is empty")
+		return feed, fmt.Errorf("atom is empty")
 	}
 
 	decoder := xml.NewDecoder(bytes.NewReader([]byte(data)))
 	decoder.CharsetReader = charset.NewReaderLabel
 
-	err := decoder.Decode(&atom)
-	return atom, err
+	err := decoder.Decode(&feed)
+	return feed, err
 }
 
 // maxLocLength is the maximum URL length allowed in a sitemap <loc> element per the sitemaps.org specification.

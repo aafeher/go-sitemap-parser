@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `SetFetchTimeout()` now rejects `0` with a `*ConfigError`; the default value is kept unchanged. Previously `0` was silently accepted but caused every HTTP request to time out immediately.
+- `URLSet`, `RSS`, and `Atom` XML parsing structs are now unexported (`urlSet`, `rss`, `atom`). These were internal implementation details used only for XML unmarshalling and were never part of the documented public API.
 
 ## [0.9.0] - 2026-05-03
 
