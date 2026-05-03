@@ -487,6 +487,410 @@ func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return rt.delegate.RoundTrip(req)
 }
 
+func TestImage_validateAndFilterImages(t *testing.T) {
+	t.Run("empty input returns empty", func(t *testing.T) {
+		s := New()
+		got, errs := s.validateAndFilterImages(nil)
+		if len(got) != 0 {
+			t.Errorf("expected 0 images, got %d", len(got))
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected 0 errors, got %d", len(errs))
+		}
+	})
+
+	t.Run("tolerant: valid image kept", func(t *testing.T) {
+		s := New()
+		imgs := []Image{{Loc: "https://example.com/photo.jpg", Title: "T"}}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 1 {
+			t.Errorf("expected 1 image, got %d", len(got))
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected 0 errors, got %d", len(errs))
+		}
+	})
+
+	t.Run("tolerant: empty loc silently dropped", func(t *testing.T) {
+		s := New()
+		imgs := []Image{{Loc: ""}}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 0 {
+			t.Errorf("expected 0 images, got %d", len(got))
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected 0 errors for empty loc in tolerant mode, got %d", len(errs))
+		}
+	})
+
+	t.Run("tolerant: loc exceeding max length rejected with error", func(t *testing.T) {
+		s := New()
+		imgs := []Image{{Loc: "http://example.com/" + strings.Repeat("a", maxLocLength)}}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 0 {
+			t.Errorf("expected 0 images, got %d", len(got))
+		}
+		if len(errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(errs))
+		}
+	})
+
+	t.Run("tolerant: non-HTTP scheme accepted", func(t *testing.T) {
+		s := New()
+		imgs := []Image{{Loc: "ftp://example.com/photo.jpg"}}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 1 {
+			t.Errorf("expected 1 image in tolerant mode, got %d", len(got))
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected 0 errors in tolerant mode, got %d", len(errs))
+		}
+	})
+
+	t.Run("tolerant: multiple images, one empty loc dropped", func(t *testing.T) {
+		s := New()
+		imgs := []Image{
+			{Loc: "https://example.com/a.jpg"},
+			{Loc: ""},
+			{Loc: "https://example.com/b.jpg"},
+		}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 2 {
+			t.Errorf("expected 2 images, got %d", len(got))
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected 0 errors, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: valid HTTP image kept", func(t *testing.T) {
+		s := New().SetStrict(true)
+		imgs := []Image{{Loc: "http://example.com/photo.jpg"}}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 1 {
+			t.Errorf("expected 1 image, got %d", len(got))
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected 0 errors, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: valid HTTPS image kept", func(t *testing.T) {
+		s := New().SetStrict(true)
+		imgs := []Image{{Loc: "https://cdn.example.com/photo.jpg"}}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 1 {
+			t.Errorf("expected 1 image, got %d", len(got))
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected 0 errors, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: empty loc produces error and is dropped", func(t *testing.T) {
+		s := New().SetStrict(true)
+		imgs := []Image{{Loc: ""}}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 0 {
+			t.Errorf("expected 0 images, got %d", len(got))
+		}
+		if len(errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: non-HTTP scheme rejected", func(t *testing.T) {
+		s := New().SetStrict(true)
+		imgs := []Image{{Loc: "ftp://example.com/photo.jpg"}}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 0 {
+			t.Errorf("expected 0 images, got %d", len(got))
+		}
+		if len(errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: loc exceeding max length rejected", func(t *testing.T) {
+		s := New().SetStrict(true)
+		imgs := []Image{{Loc: "https://example.com/" + strings.Repeat("a", maxLocLength)}}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 0 {
+			t.Errorf("expected 0 images, got %d", len(got))
+		}
+		if len(errs) != 1 {
+			t.Errorf("expected 1 error, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: unparseable URL rejected with error", func(t *testing.T) {
+		s := New().SetStrict(true)
+		imgs := []Image{{Loc: "http://example.com/path%zzinvalid"}}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 0 {
+			t.Errorf("expected 0 images, got %d", len(got))
+		}
+		if len(errs) != 1 {
+			t.Errorf("expected 1 error for unparseable URL, got %d", len(errs))
+		}
+	})
+
+	t.Run("strict: CDN host (different from page host) accepted", func(t *testing.T) {
+		s := New().SetStrict(true)
+		imgs := []Image{{Loc: "https://cdn.other-host.com/photo.jpg"}}
+		got, errs := s.validateAndFilterImages(imgs)
+		if len(got) != 1 {
+			t.Errorf("expected 1 image (CDN host allowed in strict mode), got %d", len(got))
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected 0 errors, got %d", len(errs))
+		}
+	})
+}
+
+func TestImage_parseURLSet_WithImages(t *testing.T) {
+	t.Run("URL with two images, first has all fields", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+    <url>
+        <loc>https://example.com/page</loc>
+        <image:image>
+            <image:loc>https://example.com/photo1.jpg</image:loc>
+            <image:title>First photo</image:title>
+            <image:caption>A caption</image:caption>
+            <image:geo_location>Budapest, Hungary</image:geo_location>
+            <image:license>https://creativecommons.org/licenses/by/4.0/</image:license>
+        </image:image>
+        <image:image>
+            <image:loc>https://example.com/photo2.jpg</image:loc>
+        </image:image>
+    </url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(urlSet.URL) != 1 {
+			t.Fatalf("expected 1 URL, got %d", len(urlSet.URL))
+		}
+		u := urlSet.URL[0]
+		if len(u.Images) != 2 {
+			t.Fatalf("expected 2 images, got %d", len(u.Images))
+		}
+		img := u.Images[0]
+		if img.Loc != "https://example.com/photo1.jpg" {
+			t.Errorf("expected photo1.jpg loc, got %q", img.Loc)
+		}
+		if img.Title != "First photo" {
+			t.Errorf("expected title %q, got %q", "First photo", img.Title)
+		}
+		if img.Caption != "A caption" {
+			t.Errorf("expected caption %q, got %q", "A caption", img.Caption)
+		}
+		if img.GeoLocation != "Budapest, Hungary" {
+			t.Errorf("expected geo_location %q, got %q", "Budapest, Hungary", img.GeoLocation)
+		}
+		if img.License != "https://creativecommons.org/licenses/by/4.0/" {
+			t.Errorf("expected license %q, got %q", "https://creativecommons.org/licenses/by/4.0/", img.License)
+		}
+		if u.Images[1].Loc != "https://example.com/photo2.jpg" {
+			t.Errorf("expected photo2.jpg, got %q", u.Images[1].Loc)
+		}
+		if u.Images[1].Title != "" || u.Images[1].Caption != "" {
+			t.Errorf("expected empty optional fields on second image")
+		}
+	})
+
+	t.Run("URL without images has nil Images slice", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://example.com/page</loc></url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(urlSet.URL[0].Images) != 0 {
+			t.Errorf("expected 0 images, got %d", len(urlSet.URL[0].Images))
+		}
+	})
+
+	t.Run("image element without namespace is ignored", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://example.com/page</loc>
+        <image><loc>https://example.com/photo.jpg</loc></image>
+    </url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(urlSet.URL[0].Images) != 0 {
+			t.Errorf("expected 0 images (no namespace), got %d", len(urlSet.URL[0].Images))
+		}
+	})
+
+	t.Run("multiple URLs with mixed image presence", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+    <url>
+        <loc>https://example.com/with-image</loc>
+        <image:image><image:loc>https://example.com/photo.jpg</image:loc></image:image>
+    </url>
+    <url>
+        <loc>https://example.com/without-image</loc>
+    </url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(urlSet.URL) != 2 {
+			t.Fatalf("expected 2 URLs, got %d", len(urlSet.URL))
+		}
+		if len(urlSet.URL[0].Images) != 1 {
+			t.Errorf("expected 1 image on first URL, got %d", len(urlSet.URL[0].Images))
+		}
+		if len(urlSet.URL[1].Images) != 0 {
+			t.Errorf("expected 0 images on second URL, got %d", len(urlSet.URL[1].Images))
+		}
+	})
+}
+
+func TestImage_Parse_integration(t *testing.T) {
+	server := testServer()
+	defer server.Close()
+
+	t.Run("fixture with images parses correctly", func(t *testing.T) {
+		s := New()
+		_, err := s.Parse(server.URL+"/sitemap-image-01.xml", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 2 {
+			t.Fatalf("expected 2 URLs, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
+		}
+
+		urls := s.GetURLs()
+		var pageWithImages, pageWithout URL
+		for _, u := range urls {
+			if strings.HasSuffix(u.Loc, "/page-with-images") {
+				pageWithImages = u
+			} else {
+				pageWithout = u
+			}
+		}
+
+		if len(pageWithImages.Images) != 2 {
+			t.Fatalf("expected 2 images on page-with-images, got %d", len(pageWithImages.Images))
+		}
+		img := pageWithImages.Images[0]
+		if !strings.HasSuffix(img.Loc, "/photo1.jpg") {
+			t.Errorf("unexpected image loc: %q", img.Loc)
+		}
+		if img.Title != "First photo" {
+			t.Errorf("expected title %q, got %q", "First photo", img.Title)
+		}
+		if img.Caption != "A caption" {
+			t.Errorf("expected caption %q, got %q", "A caption", img.Caption)
+		}
+		if img.GeoLocation != "Budapest, Hungary" {
+			t.Errorf("expected geo_location %q, got %q", "Budapest, Hungary", img.GeoLocation)
+		}
+		if img.License != "https://creativecommons.org/licenses/by/4.0/" {
+			t.Errorf("expected license URL, got %q", img.License)
+		}
+		if !strings.HasSuffix(pageWithImages.Images[1].Loc, "/photo2.jpg") {
+			t.Errorf("unexpected second image loc: %q", pageWithImages.Images[1].Loc)
+		}
+		if len(pageWithout.Images) != 0 {
+			t.Errorf("expected 0 images on page-without-images, got %d", len(pageWithout.Images))
+		}
+	})
+
+	t.Run("tolerant: image with empty loc dropped silently", func(t *testing.T) {
+		s := New()
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+    <url>
+        <loc>%s/page</loc>
+        <image:image><image:loc></image:loc></image:image>
+        <image:image><image:loc>%s/photo.jpg</image:loc></image:image>
+    </url>
+</urlset>`, server.URL, server.URL)
+		sitemapURL := server.URL + "/sitemap.xml"
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		urls := s.GetURLs()
+		if len(urls) != 1 {
+			t.Fatalf("expected 1 URL, got %d", len(urls))
+		}
+		if len(urls[0].Images) != 1 {
+			t.Errorf("expected 1 valid image (empty loc dropped), got %d", len(urls[0].Images))
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors in tolerant mode, got %d", s.GetErrorsCount())
+		}
+	})
+
+	t.Run("strict: image with empty loc produces error", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+    <url>
+        <loc>%s/page</loc>
+        <image:image><image:loc></image:loc></image:image>
+    </url>
+</urlset>`, server.URL)
+		sitemapURL := server.URL + "/sitemap.xml"
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetErrorsCount() != 1 {
+			t.Errorf("expected 1 error for empty image loc in strict mode, got %d", s.GetErrorsCount())
+		}
+	})
+
+	t.Run("strict: image with invalid scheme produces error", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+    <url>
+        <loc>%s/page</loc>
+        <image:image><image:loc>ftp://example.com/photo.jpg</image:loc></image:image>
+    </url>
+</urlset>`, server.URL)
+		sitemapURL := server.URL + "/sitemap.xml"
+		_, err := s.Parse(sitemapURL, &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetErrorsCount() != 1 {
+			t.Errorf("expected 1 error for ftp image loc in strict mode, got %d", s.GetErrorsCount())
+		}
+		if len(s.GetURLs()[0].Images) != 0 {
+			t.Errorf("expected image to be dropped, got %d", len(s.GetURLs()[0].Images))
+		}
+	})
+}
+
 func TestS_resolveAndValidateLoc(t *testing.T) {
 	baseURL := "https://example.com/sitemaps/index.xml"
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Google Image Sitemap extension support (`<image:image>`): the `URL` struct now exposes an `Images []Image` field populated from `xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"` elements. Each `Image` exposes `Loc`, `Title`, `Caption`, `GeoLocation`, and `License` fields.
+- Image validation: in tolerant mode, images with an empty `<image:loc>` are silently dropped; URLs exceeding 2,048 characters are rejected with an error. In strict mode, `<image:loc>` must additionally be a non-empty absolute HTTP(S) URL. CDN-hosted images (different host from the page URL) are permitted in both modes per the Google specification.
+- New example: [`examples/image`](examples/image/main.go)
+
 ## [0.6.0] - 2026-05-03
 
 ### Added

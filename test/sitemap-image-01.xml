@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+    <url>
+        <loc>http://HOST/page-with-images</loc>
+        <image:image>
+            <image:loc>http://HOST/photo1.jpg</image:loc>
+            <image:title>First photo</image:title>
+            <image:caption>A caption</image:caption>
+            <image:geo_location>Budapest, Hungary</image:geo_location>
+            <image:license>https://creativecommons.org/licenses/by/4.0/</image:license>
+        </image:image>
+        <image:image>
+            <image:loc>http://HOST/photo2.jpg</image:loc>
+        </image:image>
+    </url>
+    <url>
+        <loc>http://HOST/page-without-images</loc>
+    </url>
+</urlset>

@@ -16,6 +16,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Configurable HTTP response size limit
 - Tolerant mode (default): resolves relative URLs in `<loc>` elements; rejects URLs exceeding 2,048 characters after resolution
 - Strict mode: validates URLs per the sitemaps.org specification
+- Google Image Sitemap extension (`<image:image>`)
 - Thread-safe
 
 ## Formats supported
@@ -312,6 +313,16 @@ Each `URL` struct contains the following fields:
 - `LastMod` (`*lastModTime`) — last modification time (embeds `time.Time`), may be `nil`
 - `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`
 - `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`
+- `Images` (`[]Image`) — images associated with this URL via the Google Image Sitemap extension, may be `nil`
+
+Each `Image` struct contains the following fields (all `string`):
+- `Loc` — image URL (required by the spec; images with an empty `Loc` are silently dropped in tolerant mode, or produce an error in strict mode)
+- `Title` — image title (optional)
+- `Caption` — image caption (optional)
+- `GeoLocation` — geographic location of the image subject (optional)
+- `License` — URL of the image licence (optional)
+
+See [`examples/image`](examples/image/main.go) for a runnable example.
 
 #### GetURLCount
 

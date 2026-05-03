@@ -88,12 +88,23 @@ type (
 		URL     []URL    `xml:"url"`
 	}
 
+	// Image is a structure of <image:image> in <url>, per the Google Image Sitemap extension.
+	// Reference: https://developers.google.com/search/docs/crawling-indexing/sitemaps/image-sitemaps
+	Image struct {
+		Loc         string `xml:"http://www.google.com/schemas/sitemap-image/1.1 loc"`
+		Title       string `xml:"http://www.google.com/schemas/sitemap-image/1.1 title"`
+		Caption     string `xml:"http://www.google.com/schemas/sitemap-image/1.1 caption"`
+		GeoLocation string `xml:"http://www.google.com/schemas/sitemap-image/1.1 geo_location"`
+		License     string `xml:"http://www.google.com/schemas/sitemap-image/1.1 license"`
+	}
+
 	// URL is a structure of <url> in <urlset>
 	URL struct {
 		Loc        string         `xml:"loc"`
 		LastMod    *lastModTime   `xml:"lastmod"`
 		ChangeFreq *URLChangeFreq `xml:"changefreq"`
 		Priority   *float32       `xml:"priority"`
+		Images     []Image        `xml:"http://www.google.com/schemas/sitemap-image/1.1 image"`
 	}
 
 	lastModTime struct {
@@ -914,6 +925,9 @@ func (s *S) parse(url string, content string) []string {
 				s.errs = append(s.errs, err)
 				continue
 			}
+			validImages, imageErrs := s.validateAndFilterImages(urlSetURL.Images)
+			urlSetURL.Images = validImages
+			s.errs = append(s.errs, imageErrs...)
 			// Check if the urlSetURL.Loc matches any of the regular expressions in s.cfg.rulesRegexes.
 			matches := false
 			if len(s.cfg.rulesRegexes) > 0 {
@@ -985,6 +999,9 @@ func (s *S) parseURLSet(data string) (URLSet, error) {
 // maxLocLength is the maximum URL length allowed in a sitemap <loc> element per the sitemaps.org specification.
 const maxLocLength = 2048
 
+// imageNamespace is the XML namespace URI for the Google Image Sitemap extension.
+const imageNamespace = "http://www.google.com/schemas/sitemap-image/1.1"
+
 // maxRegexPatternLength is the maximum allowed length of a regex pattern string passed to SetFollow or SetRules.
 // Go's regexp package uses RE2 semantics and is therefore not vulnerable to catastrophic backtracking,
 // but arbitrarily long patterns can still produce large compiled automata and consume significant memory.
@@ -1006,6 +1023,48 @@ func (s *S) validatePriority(priority *float32) error {
 		return fmt.Errorf("strict mode: priority %g is out of range [0.0, 1.0]", *priority)
 	}
 	return nil
+}
+
+// validateAndFilterImages validates the image entries on a parsed URL and returns
+// the filtered slice of valid images along with any validation errors.
+//
+// In tolerant mode, images with an empty Loc are silently dropped. In strict mode,
+// an empty Loc is an error. In both modes, a Loc exceeding maxLocLength characters
+// is rejected. In strict mode, Loc must additionally be an absolute HTTP or HTTPS URL.
+//
+// Note: image Loc values are not required to share the host of the parent page URL —
+// CDN-hosted images are explicitly permitted by the Google Image Sitemap specification.
+func (s *S) validateAndFilterImages(images []Image) ([]Image, []error) {
+	if len(images) == 0 {
+		return images, nil
+	}
+	valid := images[:0:0]
+	var errs []error
+	for _, img := range images {
+		if img.Loc == "" {
+			if s.cfg.strict {
+				errs = append(errs, fmt.Errorf("strict mode: image <loc> is empty"))
+			}
+			continue
+		}
+		if len(img.Loc) > maxLocLength {
+			errs = append(errs, fmt.Errorf("image URL exceeds maximum length of %d characters (%d)", maxLocLength, len(img.Loc)))
+			continue
+		}
+		if s.cfg.strict {
+			parsed, err := neturl.Parse(img.Loc)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("strict mode: invalid image URL %q: %w", img.Loc, err))
+				continue
+			}
+			if parsed.Scheme != "http" && parsed.Scheme != "https" {
+				errs = append(errs, fmt.Errorf("strict mode: image URL %q has unsupported scheme %q", img.Loc, parsed.Scheme))
+				continue
+			}
+		}
+		valid = append(valid, img)
+	}
+	return valid, errs
 }
 
 // resolveAndValidateLoc resolves and validates a <loc> URL found in a sitemap.
