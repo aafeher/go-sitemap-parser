@@ -1,0 +1,19 @@
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - misspell
+    - unused
+    - gosimple
+    - revive
+
+issues:
+  exclude-rules:
+    # Standard test function signature — t *testing.T is required even when not called directly.
+    - linters: [revive]
+      text: "unused-parameter"
+      path: "_test\\.go"
+      source: "func Test.*\\(t \\*testing\\.T\\)"

@@ -1282,18 +1282,6 @@ func (s *S) parseAtom(data string) (Atom, error) {
 // maxLocLength is the maximum URL length allowed in a sitemap <loc> element per the sitemaps.org specification.
 const maxLocLength = 2048
 
-// imageNamespace is the XML namespace URI for the Google Image Sitemap extension.
-const imageNamespace = "http://www.google.com/schemas/sitemap-image/1.1"
-
-// newsNamespace is the XML namespace URI for the Google News Sitemap extension.
-const newsNamespace = "http://www.google.com/schemas/sitemap-news/0.9"
-
-// videoNamespace is the XML namespace URI for the Google Video Sitemap extension.
-const videoNamespace = "http://www.google.com/schemas/sitemap-video/1.1"
-
-// xhtmlNamespace is the XML namespace URI for the XHTML extension (used for hreflang).
-const xhtmlNamespace = "http://www.w3.org/1999/xhtml"
-
 // maxVideoDuration is the maximum allowed <video:duration> in seconds per the Google specification.
 const maxVideoDuration = 28800
 

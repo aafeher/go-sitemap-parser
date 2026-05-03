@@ -439,7 +439,7 @@ func TestS_SetHTTPClient(t *testing.T) {
 
 	t.Run("custom client is used for fetching", func(t *testing.T) {
 		sitemap := `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>http://example.com/page</loc></url></urlset>`
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			fmt.Fprint(w, sitemap)
 		}))
 		defer server.Close()
@@ -468,7 +468,7 @@ func TestS_SetHTTPClient(t *testing.T) {
 	t.Run("fetchTimeout ignored when custom client set", func(t *testing.T) {
 		// The custom client has a 1ms timeout; if fetchTimeout were applied instead,
 		// the server sleep would not cause a timeout error.
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(50 * time.Millisecond)
 			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`)
 		}))
@@ -2140,7 +2140,7 @@ func TestS_Parse_Deduplication(t *testing.T) {
     <url><loc>https://example.com/page-01</loc></url>
 </urlset>`
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		mu.Lock()
 		fetchCount++
 		mu.Unlock()
@@ -2616,7 +2616,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New(fmt.Sprintf("fetch %q: received HTTP status 404", server.URL))},
+			errs:                 []error{fmt.Errorf("fetch %q: received HTTP status 404", server.URL)},
 		},
 		{
 			name:                 "page not found",
@@ -2629,7 +2629,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New(fmt.Sprintf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/404", server.URL)))},
+			errs:                 []error{fmt.Errorf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/404", server.URL))},
 		},
 
 		// robots.txt
@@ -2826,7 +2826,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: []string{fmt.Sprintf("%s/invalid.xml", server.URL)},
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New(fmt.Sprintf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/invalid.xml", server.URL)))},
+			errs:                 []error{fmt.Errorf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/invalid.xml", server.URL))},
 		},
 		{
 			name:                 "robots.txt with sitemapindex.xml.gz",
@@ -3092,7 +3092,7 @@ func TestS_Parse(t *testing.T) {
 				fmt.Sprintf("%s/invalid.xml", server.URL),
 			},
 			urls: nil,
-			errs: []error{errors.New(fmt.Sprintf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/invalid.xml", server.URL)))},
+			errs: []error{fmt.Errorf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/invalid.xml", server.URL))},
 		},
 		{
 			name:                 "sitemapindex with follow and rules",
@@ -3931,7 +3931,7 @@ func TestS_fetch(t *testing.T) {
 }
 
 func TestS_fetch_ResponseSizeLimit(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(bytes.Repeat([]byte("A"), 1024))
 	}))
@@ -3967,7 +3967,7 @@ func TestS_fetch_NewRequestError(t *testing.T) {
 }
 
 func TestS_fetch_IOCopyError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		for i := 0; i < 1000; i++ {
 			_, err := w.Write([]byte("Some content that will be interrupted"))
@@ -4706,7 +4706,7 @@ func TestS_fetch_ContextCancel(t *testing.T) {
 	// Server that blocks until the client gives up. We use a channel that
 	// is never written to, so the handler waits for the request context to
 	// be cancelled.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
@@ -4730,7 +4730,7 @@ func TestS_fetch_ContextCancel(t *testing.T) {
 }
 
 func TestS_ParseContext_Cancel(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
@@ -4754,7 +4754,7 @@ func TestS_ParseContext_Cancel(t *testing.T) {
 
 func TestS_fetch_NilContext(t *testing.T) {
 	// Covers the `if ctx == nil { ctx = context.Background() }` branch in fetch.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -5133,7 +5133,7 @@ func TestTypedErrors_ConfigError(t *testing.T) {
 }
 
 func TestTypedErrors_NetworkError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()

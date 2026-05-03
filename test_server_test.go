@@ -127,7 +127,7 @@ func TestTestServer(t *testing.T) {
 	t.Run("handle zip error", func(t *testing.T) {
 		// Replace the original zip function with a mock that returns an error
 		originalZipFunc := zipFunc
-		zipFunc = func(content []byte, w io.Writer) ([]byte, error) {
+		zipFunc = func(_ []byte, _ io.Writer) ([]byte, error) {
 			return nil, fmt.Errorf("simulated zip error")
 		}
 		// Ensure the original function is restored after the test
