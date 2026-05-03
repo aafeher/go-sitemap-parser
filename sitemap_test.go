@@ -1249,6 +1249,498 @@ func TestNews_Parse_integration(t *testing.T) {
 	})
 }
 
+func pointerOfInt(i int) *int                  { return &i }
+func pointerOfFloat32Video(f float32) *float32 { return &f }
+
+func TestVideo_validateAndFilterVideos(t *testing.T) {
+	t.Run("empty input returns empty", func(t *testing.T) {
+		s := New()
+		got, errs := s.validateAndFilterVideos(nil)
+		if len(got) != 0 || len(errs) != 0 {
+			t.Errorf("expected empty result for nil input")
+		}
+	})
+
+	t.Run("tolerant: valid video kept", func(t *testing.T) {
+		s := New()
+		videos := []Video{{ThumbnailLoc: "https://example.com/thumb.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4"}}
+		got, errs := s.validateAndFilterVideos(videos)
+		if len(got) != 1 || len(errs) != 0 {
+			t.Errorf("expected 1 video, 0 errors; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("tolerant: empty ThumbnailLoc silently dropped", func(t *testing.T) {
+		s := New()
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: ""}})
+		if len(got) != 0 || len(errs) != 0 {
+			t.Errorf("expected 0 videos, 0 errors; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("tolerant: ThumbnailLoc exceeding max length rejected with error", func(t *testing.T) {
+		s := New()
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/" + strings.Repeat("a", maxLocLength)}})
+		if len(got) != 0 || len(errs) != 1 {
+			t.Errorf("expected 0 videos, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("tolerant: non-HTTP scheme accepted", func(t *testing.T) {
+		s := New()
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "ftp://example.com/thumb.jpg"}})
+		if len(got) != 1 || len(errs) != 0 {
+			t.Errorf("expected 1 video, 0 errors in tolerant mode; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("tolerant: multiple videos one without ThumbnailLoc dropped", func(t *testing.T) {
+		s := New()
+		videos := []Video{
+			{ThumbnailLoc: "https://example.com/a.jpg"},
+			{ThumbnailLoc: ""},
+			{ThumbnailLoc: "https://example.com/b.jpg"},
+		}
+		got, errs := s.validateAndFilterVideos(videos)
+		if len(got) != 2 || len(errs) != 0 {
+			t.Errorf("expected 2 videos, 0 errors; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: valid video kept without errors", func(t *testing.T) {
+		s := New().SetStrict(true)
+		dur := 300
+		rat := float32(4.5)
+		videos := []Video{{
+			ThumbnailLoc: "https://example.com/thumb.jpg",
+			Title:        "Title",
+			Description:  "Description",
+			ContentLoc:   "https://example.com/video.mp4",
+			Duration:     &dur,
+			Rating:       &rat,
+			Tags:         []string{"a", "b"},
+		}}
+		got, errs := s.validateAndFilterVideos(videos)
+		if len(got) != 1 || len(errs) != 0 {
+			t.Errorf("expected 1 video, 0 errors; got %d, %d: %v", len(got), len(errs), errs)
+		}
+	})
+
+	t.Run("strict: empty ThumbnailLoc produces error and drops video", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: ""}})
+		if len(got) != 0 || len(errs) != 1 {
+			t.Errorf("expected 0 videos, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: ThumbnailLoc exceeding max length rejected", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/" + strings.Repeat("a", maxLocLength)}})
+		if len(got) != 0 || len(errs) != 1 {
+			t.Errorf("expected 0 videos, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: non-HTTP scheme rejected", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "ftp://example.com/thumb.jpg"}})
+		if len(got) != 0 || len(errs) != 1 {
+			t.Errorf("expected 0 videos, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: unparseable ThumbnailLoc rejected", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/path%zzinvalid"}})
+		if len(got) != 0 || len(errs) != 1 {
+			t.Errorf("expected 0 videos, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: empty title produces error, video kept", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "", Description: "D", ContentLoc: "https://example.com/v.mp4"}})
+		if len(got) != 1 || len(errs) != 1 {
+			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: empty description produces error, video kept", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "", ContentLoc: "https://example.com/v.mp4"}})
+		if len(got) != 1 || len(errs) != 1 {
+			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: no ContentLoc and no PlayerLoc produces error, video kept", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D"}})
+		if len(got) != 1 || len(errs) != 1 {
+			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: PlayerLoc alone satisfies content requirement", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", PlayerLoc: "https://example.com/player"}})
+		if len(got) != 1 || len(errs) != 0 {
+			t.Errorf("expected 1 video, 0 errors; got %d, %d: %v", len(got), len(errs), errs)
+		}
+	})
+
+	t.Run("strict: Duration below 1 produces error", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Duration: pointerOfInt(0)}})
+		if len(got) != 1 || len(errs) != 1 {
+			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: Duration above 28800 produces error", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Duration: pointerOfInt(maxVideoDuration + 1)}})
+		if len(got) != 1 || len(errs) != 1 {
+			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: Rating below 0 produces error", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Rating: pointerOfFloat32Video(-0.1)}})
+		if len(got) != 1 || len(errs) != 1 {
+			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: Rating above 5.0 produces error", func(t *testing.T) {
+		s := New().SetStrict(true)
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Rating: pointerOfFloat32Video(5.1)}})
+		if len(got) != 1 || len(errs) != 1 {
+			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict: Tags exceeding 32 produces error, video kept", func(t *testing.T) {
+		s := New().SetStrict(true)
+		tags := make([]string, maxVideoTags+1)
+		for i := range tags {
+			tags[i] = fmt.Sprintf("tag%d", i)
+		}
+		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Tags: tags}})
+		if len(got) != 1 || len(errs) != 1 {
+			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+}
+
+func TestVideo_parseURLSet_WithVideos(t *testing.T) {
+	t.Run("URL with full video entry", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
+    <url>
+        <loc>https://example.com/video-page</loc>
+        <video:video>
+            <video:thumbnail_loc>https://example.com/thumb.jpg</video:thumbnail_loc>
+            <video:title>Example Video</video:title>
+            <video:description>A description</video:description>
+            <video:content_loc>https://example.com/video.mp4</video:content_loc>
+            <video:player_loc>https://example.com/player</video:player_loc>
+            <video:duration>600</video:duration>
+            <video:rating>4.5</video:rating>
+            <video:view_count>1000</video:view_count>
+            <video:family_friendly>yes</video:family_friendly>
+            <video:restriction relationship="allow">HU AT</video:restriction>
+            <video:platform relationship="allow">web mobile</video:platform>
+            <video:requires_subscription>no</video:requires_subscription>
+            <video:uploader info="https://example.com/uploader">Channel</video:uploader>
+            <video:live>no</video:live>
+            <video:tag>golang</video:tag>
+            <video:tag>sitemap</video:tag>
+        </video:video>
+    </url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		u := urlSet.URL[0]
+		if len(u.Videos) != 1 {
+			t.Fatalf("expected 1 video, got %d", len(u.Videos))
+		}
+		v := u.Videos[0]
+		if v.ThumbnailLoc != "https://example.com/thumb.jpg" {
+			t.Errorf("unexpected ThumbnailLoc: %q", v.ThumbnailLoc)
+		}
+		if v.Title != "Example Video" {
+			t.Errorf("unexpected Title: %q", v.Title)
+		}
+		if v.Description != "A description" {
+			t.Errorf("unexpected Description: %q", v.Description)
+		}
+		if v.ContentLoc != "https://example.com/video.mp4" {
+			t.Errorf("unexpected ContentLoc: %q", v.ContentLoc)
+		}
+		if v.PlayerLoc != "https://example.com/player" {
+			t.Errorf("unexpected PlayerLoc: %q", v.PlayerLoc)
+		}
+		if v.Duration == nil || *v.Duration != 600 {
+			t.Errorf("unexpected Duration: %v", v.Duration)
+		}
+		if v.Rating == nil || *v.Rating != 4.5 {
+			t.Errorf("unexpected Rating: %v", v.Rating)
+		}
+		if v.ViewCount == nil || *v.ViewCount != 1000 {
+			t.Errorf("unexpected ViewCount: %v", v.ViewCount)
+		}
+		if v.FamilyFriendly != "yes" {
+			t.Errorf("unexpected FamilyFriendly: %q", v.FamilyFriendly)
+		}
+		if v.Restriction == nil || v.Restriction.Relationship != "allow" || v.Restriction.Value != "HU AT" {
+			t.Errorf("unexpected Restriction: %v", v.Restriction)
+		}
+		if v.Platform == nil || v.Platform.Relationship != "allow" || v.Platform.Value != "web mobile" {
+			t.Errorf("unexpected Platform: %v", v.Platform)
+		}
+		if v.RequiresSubscription != "no" {
+			t.Errorf("unexpected RequiresSubscription: %q", v.RequiresSubscription)
+		}
+		if v.Uploader == nil || v.Uploader.Value != "Channel" || v.Uploader.Info != "https://example.com/uploader" {
+			t.Errorf("unexpected Uploader: %v", v.Uploader)
+		}
+		if v.Live != "no" {
+			t.Errorf("unexpected Live: %q", v.Live)
+		}
+		if len(v.Tags) != 2 || v.Tags[0] != "golang" || v.Tags[1] != "sitemap" {
+			t.Errorf("unexpected Tags: %v", v.Tags)
+		}
+	})
+
+	t.Run("URL without video has nil Videos slice", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://example.com/page</loc></url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(urlSet.URL[0].Videos) != 0 {
+			t.Errorf("expected 0 videos, got %d", len(urlSet.URL[0].Videos))
+		}
+	})
+
+	t.Run("video element without namespace is ignored", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://example.com/page</loc>
+        <video><thumbnail_loc>https://example.com/thumb.jpg</thumbnail_loc></video>
+    </url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(urlSet.URL[0].Videos) != 0 {
+			t.Errorf("expected 0 videos (no namespace), got %d", len(urlSet.URL[0].Videos))
+		}
+	})
+
+	t.Run("multiple URLs with mixed video presence", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
+    <url>
+        <loc>https://example.com/with-video</loc>
+        <video:video><video:thumbnail_loc>https://example.com/t.jpg</video:thumbnail_loc></video:video>
+    </url>
+    <url>
+        <loc>https://example.com/without-video</loc>
+    </url>
+</urlset>`
+		s := New()
+		urlSet, err := s.parseURLSet(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(urlSet.URL[0].Videos) != 1 {
+			t.Errorf("expected 1 video on first URL, got %d", len(urlSet.URL[0].Videos))
+		}
+		if len(urlSet.URL[1].Videos) != 0 {
+			t.Errorf("expected 0 videos on second URL, got %d", len(urlSet.URL[1].Videos))
+		}
+	})
+}
+
+func TestVideo_Parse_integration(t *testing.T) {
+	server := testServer()
+	defer server.Close()
+
+	t.Run("fixture with video parses correctly", func(t *testing.T) {
+		s := New()
+		_, err := s.Parse(server.URL+"/sitemap-video-01.xml", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetURLCount() != 2 {
+			t.Fatalf("expected 2 URLs, got %d", s.GetURLCount())
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
+		}
+
+		urls := s.GetURLs()
+		var videoPage, plain URL
+		for _, u := range urls {
+			if strings.HasSuffix(u.Loc, "/video-page") {
+				videoPage = u
+			} else {
+				plain = u
+			}
+		}
+
+		if len(videoPage.Videos) != 1 {
+			t.Fatalf("expected 1 video on video-page, got %d", len(videoPage.Videos))
+		}
+		v := videoPage.Videos[0]
+		if !strings.HasSuffix(v.ThumbnailLoc, "/thumb.jpg") {
+			t.Errorf("unexpected ThumbnailLoc: %q", v.ThumbnailLoc)
+		}
+		if v.Title != "Example Video" {
+			t.Errorf("unexpected Title: %q", v.Title)
+		}
+		if v.Duration == nil || *v.Duration != 600 {
+			t.Errorf("unexpected Duration: %v", v.Duration)
+		}
+		if v.Rating == nil || *v.Rating != 4.5 {
+			t.Errorf("unexpected Rating: %v", v.Rating)
+		}
+		if v.ViewCount == nil || *v.ViewCount != 1000 {
+			t.Errorf("unexpected ViewCount: %v", v.ViewCount)
+		}
+		if v.Restriction == nil || v.Restriction.Relationship != "allow" {
+			t.Errorf("unexpected Restriction: %v", v.Restriction)
+		}
+		if v.Platform == nil || v.Platform.Relationship != "allow" {
+			t.Errorf("unexpected Platform: %v", v.Platform)
+		}
+		if v.Uploader == nil || v.Uploader.Value != "ExampleChannel" {
+			t.Errorf("unexpected Uploader: %v", v.Uploader)
+		}
+		if len(v.Tags) != 2 {
+			t.Errorf("expected 2 tags, got %d", len(v.Tags))
+		}
+		if len(plain.Videos) != 0 {
+			t.Errorf("expected 0 videos on plain page")
+		}
+	})
+
+	t.Run("strict: valid video produces no errors", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
+    <url>
+        <loc>%s/page</loc>
+        <video:video>
+            <video:thumbnail_loc>%s/thumb.jpg</video:thumbnail_loc>
+            <video:title>Title</video:title>
+            <video:description>Description</video:description>
+            <video:content_loc>%s/video.mp4</video:content_loc>
+        </video:video>
+    </url>
+</urlset>`, server.URL, server.URL, server.URL)
+		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
+		}
+		if len(s.GetURLs()[0].Videos) != 1 {
+			t.Errorf("expected 1 video, got %d", len(s.GetURLs()[0].Videos))
+		}
+	})
+
+	t.Run("tolerant: video with only ThumbnailLoc kept without errors", func(t *testing.T) {
+		s := New()
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
+    <url>
+        <loc>%s/page</loc>
+        <video:video>
+            <video:thumbnail_loc>%s/thumb.jpg</video:thumbnail_loc>
+        </video:video>
+    </url>
+</urlset>`, server.URL, server.URL)
+		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors in tolerant mode, got %d", s.GetErrorsCount())
+		}
+		if len(s.GetURLs()[0].Videos) != 1 {
+			t.Errorf("expected 1 video, got %d", len(s.GetURLs()[0].Videos))
+		}
+	})
+
+	t.Run("strict: missing required fields produce errors, video kept", func(t *testing.T) {
+		s := New().SetStrict(true)
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
+    <url>
+        <loc>%s/page</loc>
+        <video:video>
+            <video:thumbnail_loc>%s/thumb.jpg</video:thumbnail_loc>
+        </video:video>
+    </url>
+</urlset>`, server.URL, server.URL)
+		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// title, description, content_loc+player_loc = 3 errors
+		if s.GetErrorsCount() != 3 {
+			t.Errorf("expected 3 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
+		}
+		if len(s.GetURLs()[0].Videos) != 1 {
+			t.Errorf("expected video to be kept despite errors, got %d", len(s.GetURLs()[0].Videos))
+		}
+	})
+
+	t.Run("tolerant: empty ThumbnailLoc dropped silently", func(t *testing.T) {
+		s := New()
+		content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
+    <url>
+        <loc>%s/page</loc>
+        <video:video><video:thumbnail_loc></video:thumbnail_loc></video:video>
+        <video:video><video:thumbnail_loc>%s/thumb.jpg</video:thumbnail_loc></video:video>
+    </url>
+</urlset>`, server.URL, server.URL)
+		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.GetErrorsCount() != 0 {
+			t.Errorf("expected 0 errors, got %d", s.GetErrorsCount())
+		}
+		if len(s.GetURLs()[0].Videos) != 1 {
+			t.Errorf("expected 1 valid video (empty thumb dropped), got %d", len(s.GetURLs()[0].Videos))
+		}
+	})
+}
+
 func TestS_resolveAndValidateLoc(t *testing.T) {
 	baseURL := "https://example.com/sitemaps/index.xml"
 

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-03
+
+### Added
+- Google Video Sitemap extension support (`<video:video>`): the `URL` struct now exposes a `Videos []Video` field populated from `xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"` elements. `Video` exposes `ThumbnailLoc`, `Title`, `Description`, `ContentLoc`, `PlayerLoc`, `Duration`, `ExpirationDate`, `Rating`, `ViewCount`, `PublicationDate`, `FamilyFriendly`, `Restriction`, `Platform`, `RequiresSubscription`, `Uploader`, `Live`, and `Tags`.
+- Video validation: videos with an empty `ThumbnailLoc` are silently dropped in tolerant mode or produce an error in strict mode; `ThumbnailLoc` values exceeding 2,048 characters or with an invalid/non-HTTP(S) scheme are rejected in strict mode. In strict mode, `Title`, `Description`, at least one of `ContentLoc`/`PlayerLoc`, `Duration` range (1–28800), `Rating` range (0.0–5.0), and tag count (≤ 32) are also validated.
+- New example: [`examples/video`](examples/video/main.go)
+
 ## [0.7.0] - 2026-05-03
 
 ### Added
@@ -144,7 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each parsed `URL` exposes `Loc`, `LastMod`, `ChangeFreq`, and `Priority`
 - Method chaining (fluent interface) on all setters
 
-[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.4.0...v0.5.0

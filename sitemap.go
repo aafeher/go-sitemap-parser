@@ -98,6 +98,49 @@ type (
 		License     string `xml:"http://www.google.com/schemas/sitemap-image/1.1 license"`
 	}
 
+	// VideoRestriction is a structure of <video:restriction> in <video:video>.
+	// It captures the element text and the required "relationship" attribute.
+	VideoRestriction struct {
+		Relationship string `xml:"relationship,attr"`
+		Value        string `xml:",chardata"`
+	}
+
+	// VideoPlatform is a structure of <video:platform> in <video:video>.
+	// It captures the element text and the required "relationship" attribute.
+	VideoPlatform struct {
+		Relationship string `xml:"relationship,attr"`
+		Value        string `xml:",chardata"`
+	}
+
+	// VideoUploader is a structure of <video:uploader> in <video:video>.
+	// It captures the uploader name and the optional "info" URL attribute.
+	VideoUploader struct {
+		Info  string `xml:"info,attr"`
+		Value string `xml:",chardata"`
+	}
+
+	// Video is a structure of <video:video> in <url>, per the Google Video Sitemap extension.
+	// Reference: https://developers.google.com/search/docs/crawling-indexing/sitemaps/video-sitemaps
+	Video struct {
+		ThumbnailLoc         string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 thumbnail_loc"`
+		Title                string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 title"`
+		Description          string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 description"`
+		ContentLoc           string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 content_loc"`
+		PlayerLoc            string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 player_loc"`
+		Duration             *int              `xml:"http://www.google.com/schemas/sitemap-video/1.1 duration"`
+		ExpirationDate       *lastModTime      `xml:"http://www.google.com/schemas/sitemap-video/1.1 expiration_date"`
+		Rating               *float32          `xml:"http://www.google.com/schemas/sitemap-video/1.1 rating"`
+		ViewCount            *int              `xml:"http://www.google.com/schemas/sitemap-video/1.1 view_count"`
+		PublicationDate      *lastModTime      `xml:"http://www.google.com/schemas/sitemap-video/1.1 publication_date"`
+		FamilyFriendly       string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 family_friendly"`
+		Restriction          *VideoRestriction `xml:"http://www.google.com/schemas/sitemap-video/1.1 restriction"`
+		Platform             *VideoPlatform    `xml:"http://www.google.com/schemas/sitemap-video/1.1 platform"`
+		RequiresSubscription string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 requires_subscription"`
+		Uploader             *VideoUploader    `xml:"http://www.google.com/schemas/sitemap-video/1.1 uploader"`
+		Live                 string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 live"`
+		Tags                 []string          `xml:"http://www.google.com/schemas/sitemap-video/1.1 tag"`
+	}
+
 	// NewsPublication is a structure of <news:publication> in <news:news>.
 	NewsPublication struct {
 		Name     string `xml:"http://www.google.com/schemas/sitemap-news/0.9 name"`
@@ -120,6 +163,7 @@ type (
 		Priority   *float32       `xml:"priority"`
 		Images     []Image        `xml:"http://www.google.com/schemas/sitemap-image/1.1 image"`
 		News       *News          `xml:"http://www.google.com/schemas/sitemap-news/0.9 news"`
+		Videos     []Video        `xml:"http://www.google.com/schemas/sitemap-video/1.1 video"`
 	}
 
 	lastModTime struct {
@@ -946,6 +990,9 @@ func (s *S) parse(url string, content string) []string {
 			validNews, newsErrs := s.validateNews(urlSetURL.News)
 			urlSetURL.News = validNews
 			s.errs = append(s.errs, newsErrs...)
+			validVideos, videoErrs := s.validateAndFilterVideos(urlSetURL.Videos)
+			urlSetURL.Videos = validVideos
+			s.errs = append(s.errs, videoErrs...)
 			// Check if the urlSetURL.Loc matches any of the regular expressions in s.cfg.rulesRegexes.
 			matches := false
 			if len(s.cfg.rulesRegexes) > 0 {
@@ -1022,6 +1069,18 @@ const imageNamespace = "http://www.google.com/schemas/sitemap-image/1.1"
 
 // newsNamespace is the XML namespace URI for the Google News Sitemap extension.
 const newsNamespace = "http://www.google.com/schemas/sitemap-news/0.9"
+
+// videoNamespace is the XML namespace URI for the Google Video Sitemap extension.
+const videoNamespace = "http://www.google.com/schemas/sitemap-video/1.1"
+
+// maxVideoDuration is the maximum allowed <video:duration> in seconds per the Google specification.
+const maxVideoDuration = 28800
+
+// maxVideoTags is the maximum number of <video:tag> elements allowed per video per the Google specification.
+const maxVideoTags = 32
+
+// maxVideoRating is the maximum allowed <video:rating> value per the Google specification.
+const maxVideoRating = float32(5.0)
 
 // maxRegexPatternLength is the maximum allowed length of a regex pattern string passed to SetFollow or SetRules.
 // Go's regexp package uses RE2 semantics and is therefore not vulnerable to catastrophic backtracking,
@@ -1118,6 +1177,69 @@ func (s *S) validateNews(news *News) (*News, []error) {
 		errs = append(errs, fmt.Errorf("strict mode: news <publication_date> is missing"))
 	}
 	return news, errs
+}
+
+// validateAndFilterVideos validates the video entries on a parsed URL and returns
+// the filtered slice of valid videos along with any validation errors.
+//
+// ThumbnailLoc is treated as the primary key: videos with an empty ThumbnailLoc
+// are silently dropped in tolerant mode or produce an error in strict mode.
+// In both modes, a ThumbnailLoc exceeding maxLocLength is rejected. In strict mode,
+// ThumbnailLoc must additionally be a parseable absolute HTTP(S) URL.
+//
+// For videos that pass the ThumbnailLoc check, strict mode also validates the
+// remaining required fields (Title, Description, at least one of ContentLoc or
+// PlayerLoc) and optional numeric fields (Duration range 1–28800, Rating range
+// 0.0–5.0, Tags count ≤ 32). These failures record errors but keep the video entry.
+func (s *S) validateAndFilterVideos(videos []Video) ([]Video, []error) {
+	if len(videos) == 0 {
+		return videos, nil
+	}
+	valid := videos[:0:0]
+	var errs []error
+	for _, v := range videos {
+		if v.ThumbnailLoc == "" {
+			if s.cfg.strict {
+				errs = append(errs, fmt.Errorf("strict mode: video <thumbnail_loc> is empty"))
+			}
+			continue
+		}
+		if len(v.ThumbnailLoc) > maxLocLength {
+			errs = append(errs, fmt.Errorf("video thumbnail URL exceeds maximum length of %d characters (%d)", maxLocLength, len(v.ThumbnailLoc)))
+			continue
+		}
+		if s.cfg.strict {
+			parsed, err := neturl.Parse(v.ThumbnailLoc)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("strict mode: invalid video thumbnail URL %q: %w", v.ThumbnailLoc, err))
+				continue
+			}
+			if parsed.Scheme != "http" && parsed.Scheme != "https" {
+				errs = append(errs, fmt.Errorf("strict mode: video thumbnail URL %q has unsupported scheme %q", v.ThumbnailLoc, parsed.Scheme))
+				continue
+			}
+			if v.Title == "" {
+				errs = append(errs, fmt.Errorf("strict mode: video <title> is empty"))
+			}
+			if v.Description == "" {
+				errs = append(errs, fmt.Errorf("strict mode: video <description> is empty"))
+			}
+			if v.ContentLoc == "" && v.PlayerLoc == "" {
+				errs = append(errs, fmt.Errorf("strict mode: video must have at least one of <content_loc> or <player_loc>"))
+			}
+			if v.Duration != nil && (*v.Duration < 1 || *v.Duration > maxVideoDuration) {
+				errs = append(errs, fmt.Errorf("strict mode: video <duration> %d is out of range [1, %d]", *v.Duration, maxVideoDuration))
+			}
+			if v.Rating != nil && (*v.Rating < 0.0 || *v.Rating > maxVideoRating) {
+				errs = append(errs, fmt.Errorf("strict mode: video <rating> %g is out of range [0.0, %g]", *v.Rating, maxVideoRating))
+			}
+			if len(v.Tags) > maxVideoTags {
+				errs = append(errs, fmt.Errorf("strict mode: video has %d tags, maximum is %d", len(v.Tags), maxVideoTags))
+			}
+		}
+		valid = append(valid, v)
+	}
+	return valid, errs
 }
 
 // resolveAndValidateLoc resolves and validates a <loc> URL found in a sitemap.

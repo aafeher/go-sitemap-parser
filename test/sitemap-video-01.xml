@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
+    <url>
+        <loc>http://HOST/video-page</loc>
+        <video:video>
+            <video:thumbnail_loc>http://HOST/thumb.jpg</video:thumbnail_loc>
+            <video:title>Example Video</video:title>
+            <video:description>A sample video description</video:description>
+            <video:content_loc>http://HOST/video.mp4</video:content_loc>
+            <video:player_loc>http://HOST/player</video:player_loc>
+            <video:duration>600</video:duration>
+            <video:expiration_date>2027-01-01</video:expiration_date>
+            <video:rating>4.5</video:rating>
+            <video:view_count>1000</video:view_count>
+            <video:publication_date>2026-05-03T10:00:00Z</video:publication_date>
+            <video:family_friendly>yes</video:family_friendly>
+            <video:restriction relationship="allow">HU AT DE</video:restriction>
+            <video:platform relationship="allow">web mobile</video:platform>
+            <video:requires_subscription>no</video:requires_subscription>
+            <video:uploader info="http://HOST/uploader">ExampleChannel</video:uploader>
+            <video:live>no</video:live>
+            <video:tag>golang</video:tag>
+            <video:tag>sitemap</video:tag>
+        </video:video>
+    </url>
+    <url>
+        <loc>http://HOST/page-without-video</loc>
+    </url>
+</urlset>

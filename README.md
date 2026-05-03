@@ -18,6 +18,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Strict mode: validates URLs per the sitemaps.org specification
 - Google Image Sitemap extension (`<image:image>`)
 - Google News Sitemap extension (`<news:news>`)
+- Google Video Sitemap extension (`<video:video>`)
 - Thread-safe
 
 ## Formats supported
@@ -336,6 +337,27 @@ Each `News` struct contains:
 In strict mode, all four required fields (`Title`, `Publication.Name`, `Publication.Language`, `PublicationDate`) must be present; missing fields are each reported via `GetErrors()` and the `News` entry is still included with whatever data was parsed. In tolerant mode no validation is performed.
 
 See [`examples/news`](examples/news/main.go) for a runnable example.
+
+Each `Video` struct contains:
+- `ThumbnailLoc` (`string`) — thumbnail image URL (required; videos with an empty `ThumbnailLoc` are silently dropped in tolerant mode, or produce an error in strict mode)
+- `Title` (`string`) — video title (required in strict mode)
+- `Description` (`string`) — video description (required in strict mode)
+- `ContentLoc` (`string`) — direct URL to the video file (at least one of `ContentLoc` or `PlayerLoc` required in strict mode)
+- `PlayerLoc` (`string`) — URL of an embedded video player
+- `Duration` (`*int`) — duration in seconds (1–28800); validated in strict mode if present
+- `ExpirationDate` (`*lastModTime`) — date after which the video should not be shown; embeds `time.Time`, may be `nil`
+- `Rating` (`*float32`) — rating between 0.0 and 5.0; validated in strict mode if present
+- `ViewCount` (`*int`) — number of views
+- `PublicationDate` (`*lastModTime`) — publication date; embeds `time.Time`, may be `nil`
+- `FamilyFriendly` (`string`) — `"yes"` or `"no"`
+- `Restriction` (`*VideoRestriction`) — country restriction with `Relationship` (`"allow"`/`"deny"`) and `Value` (space-separated country codes)
+- `Platform` (`*VideoPlatform`) — platform restriction with `Relationship` and `Value` (e.g. `"web mobile tv"`)
+- `RequiresSubscription` (`string`) — `"yes"` or `"no"`
+- `Uploader` (`*VideoUploader`) — uploader name (`Value`) and optional profile URL (`Info`)
+- `Live` (`string`) — `"yes"` or `"no"`
+- `Tags` (`[]string`) — content tags; maximum 32 validated in strict mode
+
+See [`examples/video`](examples/video/main.go) for a runnable example.
 
 #### GetURLCount
 
