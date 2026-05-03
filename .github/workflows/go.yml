@@ -24,6 +24,9 @@ jobs:
     - name: Vet
       run: go vet ./...
 
+    - name: Build examples
+      run: go build ./examples/...
+
     - name: Test
       run: go test -v -race -coverprofile=coverage.txt -covermode=atomic .
     - name: Upload coverage reports to Codecov
