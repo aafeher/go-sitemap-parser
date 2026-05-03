@@ -335,13 +335,11 @@ func (s *S) SetMaxDepth(maxDepth int) *S {
 }
 
 // SetMaxConcurrency sets the maximum number of concurrent fetch goroutines used
-// when multi-threaded parsing is enabled. A value of 0 (the default) means
-// unlimited concurrency, preserving the historical behaviour. A positive value
-// caps the number of in-flight HTTP fetches across the recursive sitemap-index
-// traversal, which is recommended for very large sitemap indexes to avoid
-// goroutine and connection blow-up.
-// The value must be greater than or equal to 0; negative values are ignored
-// and a *ConfigError is recorded.
+// when multi-threaded parsing is enabled. The default is 16. A value of 0 means
+// unlimited concurrency. A positive value caps the number of in-flight HTTP fetches
+// across the recursive sitemap-index traversal, which is recommended for very large
+// sitemap indexes to avoid goroutine and connection blow-up.
+// Negative values are rejected and a *ConfigError is recorded.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
 	s.mu.Lock()
