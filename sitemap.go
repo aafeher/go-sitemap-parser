@@ -273,11 +273,17 @@ func (s *S) SetUserAgent(userAgent string) *S {
 
 // SetFetchTimeout sets the fetch timeout for the Sitemap Parser.
 // The fetch timeout determines how long the parser will wait for an HTTP request to complete.
-// It should be specified in seconds as a uint16 value.
+// It should be specified in seconds as a uint16 value and must be greater than 0.
+// Invalid values are ignored and a *ConfigError is recorded.
+// Note: when a custom HTTP client is set via SetHTTPClient, this value has no effect.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetFetchTimeout(fetchTimeout uint16) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if fetchTimeout == 0 {
+		s.errs = append(s.errs, &ConfigError{Field: "fetchTimeout", Err: fmt.Errorf("must be greater than 0, got %d", fetchTimeout)})
+		return s
+	}
 	s.cfg.fetchTimeout = fetchTimeout
 
 	return s

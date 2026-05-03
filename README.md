@@ -80,7 +80,7 @@ s := sitemap.New().SetUserAgent("YourUserAgent")
 
 #### Fetch timeout
 
-To set the fetch timeout, use the `SetFetchTimeout()` function. It should be specified in seconds as a **uint16** value (max 65535 seconds).
+To set the fetch timeout, use the `SetFetchTimeout()` function. It should be specified in seconds as a **uint16** value (1–65535 seconds). A value of `0` is rejected and a `*ConfigError` is recorded. Note: when a custom HTTP client is set via `SetHTTPClient()`, this value has no effect — the client's own `Timeout` field controls the request deadline.
 
 ```go
 s := sitemap.New()

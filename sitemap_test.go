@@ -79,32 +79,43 @@ func TestS_SetUserAgent(t *testing.T) {
 }
 
 func TestS_SetFetchTimeout(t *testing.T) {
-	tests := []struct {
-		name    string
-		timeout uint16
-	}{
-		{
-			name:    "PositiveTimeout",
-			timeout: 5,
-		},
-		{
-			name:    "ZeroTimeout",
-			timeout: 0,
-		},
-		{
-			name:    "LargeTimeout",
-			timeout: 600,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			s := New()
-			s.SetFetchTimeout(test.timeout)
-			if s.cfg.fetchTimeout != test.timeout {
-				t.Errorf("expected %v, got %v", test.timeout, s.cfg.fetchTimeout)
-			}
-		})
-	}
+	t.Run("PositiveTimeout", func(t *testing.T) {
+		s := New()
+		s.SetFetchTimeout(5)
+		if s.cfg.fetchTimeout != 5 {
+			t.Errorf("expected 5, got %v", s.cfg.fetchTimeout)
+		}
+		if len(s.errs) != 0 {
+			t.Errorf("expected no errors, got %v", s.errs)
+		}
+	})
+
+	t.Run("LargeTimeout", func(t *testing.T) {
+		s := New()
+		s.SetFetchTimeout(600)
+		if s.cfg.fetchTimeout != 600 {
+			t.Errorf("expected 600, got %v", s.cfg.fetchTimeout)
+		}
+	})
+
+	t.Run("ZeroTimeout records ConfigError and keeps default", func(t *testing.T) {
+		s := New()
+		defaultTimeout := s.cfg.fetchTimeout
+		s.SetFetchTimeout(0)
+		if s.cfg.fetchTimeout != defaultTimeout {
+			t.Errorf("expected fetchTimeout to remain %d, got %d", defaultTimeout, s.cfg.fetchTimeout)
+		}
+		if len(s.errs) != 1 {
+			t.Fatalf("expected 1 error, got %d", len(s.errs))
+		}
+		var cfgErr *ConfigError
+		if !errors.As(s.errs[0], &cfgErr) {
+			t.Fatalf("expected *ConfigError, got %T", s.errs[0])
+		}
+		if cfgErr.Field != "fetchTimeout" {
+			t.Errorf("expected field %q, got %q", "fetchTimeout", cfgErr.Field)
+		}
+	})
 }
 
 func TestS_SetMultiThread(t *testing.T) {

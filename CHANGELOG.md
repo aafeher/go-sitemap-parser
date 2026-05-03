@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New examples: [`examples/rss`](examples/rss/main.go), [`examples/atom`](examples/atom/main.go), [`examples/text`](examples/text/main.go), and [`examples/hreflang`](examples/hreflang/main.go).
 - Configuration getter methods: `GetUserAgent()`, `GetFetchTimeout()`, `GetMultiThread()`, `GetMaxResponseSize()`, `GetMaxDepth()`, `GetMaxConcurrency()`, `GetFollow()`, `GetRules()`, `GetHTTPClient()`, `GetStrict()` — each returns the current value of the corresponding configuration field. `GetFollow()` and `GetRules()` return copies of the internal slice.
 
+### Changed
+- `SetFetchTimeout()` now rejects `0` with a `*ConfigError`; the default value is kept unchanged. Previously `0` was silently accepted but caused every HTTP request to time out immediately.
+
 ## [0.9.0] - 2026-05-03
 
 ### Added
