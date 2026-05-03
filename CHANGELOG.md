@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-03
+
+### Added
+- `SetHTTPClient()`: supply a custom `*http.Client` for all HTTP requests, enabling custom transports, proxies, TLS configuration, and authentication via a custom `http.RoundTripper`. When a custom client is set, `SetFetchTimeout` has no effect — the client's own `Timeout` field controls the request deadline. Pass `nil` to restore the default behaviour.
+- New example: [`examples/httpclient`](examples/httpclient/main.go)
+
 ## [0.5.0] - 2026-05-01
 
 ### Changed
@@ -129,7 +135,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each parsed `URL` exposes `Loc`, `LastMod`, `ChangeFreq`, and `Priority`
 - Method chaining (fluent interface) on all setters
 
-[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.2.0...v0.3.0

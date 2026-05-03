@@ -51,6 +51,7 @@ s := sitemap.New()
  - maxConcurrency: `16`
  - multiThread: `true`
  - strict: `false`
+ - httpClient: `nil` (a default `*http.Client` is created per call with the configured `fetchTimeout`)
 
 ### Overwrite defaults
 
@@ -184,6 +185,32 @@ s := sitemap.New().SetRules([]string{
 	`category/`,
 })
 ```
+
+#### HTTP client
+
+To use a custom HTTP client for all requests, use the `SetHTTPClient()` function.
+This is useful when you need a custom transport, proxy, TLS configuration, or
+authentication via a custom `http.RoundTripper`.
+
+When a custom client is provided, `SetFetchTimeout` has no effect — the client's
+own `Timeout` field controls the request deadline. Pass `nil` to reset to the
+default client behaviour.
+
+```go
+s := sitemap.New()
+s = s.SetHTTPClient(&http.Client{
+    Timeout: 30 * time.Second,
+    Transport: &http.Transport{
+        TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+    },
+})
+```
+... or ...
+```go
+s := sitemap.New().SetHTTPClient(&http.Client{Timeout: 30 * time.Second})
+```
+
+See [`examples/httpclient`](examples/httpclient/main.go) for a runnable example.
 
 #### Strict mode
 

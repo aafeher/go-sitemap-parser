@@ -399,6 +399,94 @@ func TestS_SetStrict(t *testing.T) {
 	})
 }
 
+func TestS_SetHTTPClient(t *testing.T) {
+	t.Run("default is nil", func(t *testing.T) {
+		s := New()
+		if s.cfg.httpClient != nil {
+			t.Error("expected httpClient to be nil by default")
+		}
+	})
+
+	t.Run("stores custom client", func(t *testing.T) {
+		s := New()
+		custom := &http.Client{}
+		result := s.SetHTTPClient(custom)
+		if s.cfg.httpClient != custom {
+			t.Error("expected custom client to be stored in config")
+		}
+		if result != s {
+			t.Error("expected method chaining to return same instance")
+		}
+	})
+
+	t.Run("nil resets to default", func(t *testing.T) {
+		s := New()
+		s.SetHTTPClient(&http.Client{})
+		s.SetHTTPClient(nil)
+		if s.cfg.httpClient != nil {
+			t.Error("expected httpClient to be nil after reset")
+		}
+	})
+
+	t.Run("custom client is used for fetching", func(t *testing.T) {
+		sitemap := `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>http://example.com/page</loc></url></urlset>`
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, sitemap)
+		}))
+		defer server.Close()
+
+		called := false
+		transport := &recordingTransport{
+			delegate: http.DefaultTransport,
+			called:   &called,
+		}
+		customClient := &http.Client{Transport: transport}
+
+		s := New()
+		s.SetHTTPClient(customClient)
+		_, err := s.Parse(server.URL+"/sitemap.xml", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !called {
+			t.Error("expected custom HTTP client to be used for fetching")
+		}
+		if s.GetURLCount() != 1 {
+			t.Errorf("expected 1 URL, got %d", s.GetURLCount())
+		}
+	})
+
+	t.Run("fetchTimeout ignored when custom client set", func(t *testing.T) {
+		// The custom client has a 1ms timeout; if fetchTimeout were applied instead,
+		// the server sleep would not cause a timeout error.
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(50 * time.Millisecond)
+			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`)
+		}))
+		defer server.Close()
+
+		customClient := &http.Client{Timeout: 1 * time.Millisecond}
+
+		s := New().SetFetchTimeout(60).SetHTTPClient(customClient)
+		_, err := s.Parse(server.URL+"/sitemap.xml", nil)
+		if err == nil {
+			t.Error("expected timeout error from custom client, got nil")
+		}
+	})
+}
+
+// recordingTransport is an http.RoundTripper that records whether it was called
+// and delegates all requests to the underlying transport.
+type recordingTransport struct {
+	delegate http.RoundTripper
+	called   *bool
+}
+
+func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	*rt.called = true
+	return rt.delegate.RoundTrip(req)
+}
+
 func TestS_resolveAndValidateLoc(t *testing.T) {
 	baseURL := "https://example.com/sitemaps/index.xml"
 
@@ -3165,6 +3253,7 @@ func configsEqual(c1, c2 config) bool {
 		c1.maxDepth == c2.maxDepth &&
 		c1.maxConcurrency == c2.maxConcurrency &&
 		c1.multiThread == c2.multiThread &&
+		c1.httpClient == c2.httpClient &&
 		reflect.DeepEqual(c1.follow, c2.follow) &&
 		reflect.DeepEqual(c1.rules, c2.rules)
 }

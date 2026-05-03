@@ -66,6 +66,7 @@ type (
 		maxConcurrency  int
 		multiThread     bool
 		strict          bool
+		httpClient      *http.Client
 		follow          []string
 		followRegexes   []*regexp.Regexp
 		rules           []string
@@ -293,6 +294,22 @@ func (s *S) SetRules(regexes []string) *S {
 		}
 		s.cfg.rulesRegexes = append(s.cfg.rulesRegexes, re)
 	}
+	return s
+}
+
+// SetHTTPClient sets a custom HTTP client for the Sitemap Parser.
+// When set, the provided client is used for all HTTP requests instead of the
+// internally created default client. This allows callers to configure custom
+// transports, proxies, TLS settings, authentication, or timeout strategies.
+// When a custom client is provided, SetFetchTimeout has no effect; the
+// client's own Timeout field controls the request deadline.
+// Pass nil to reset to the default client behaviour.
+// The function returns a pointer to the S structure to allow method chaining.
+func (s *S) SetHTTPClient(client *http.Client) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.httpClient = client
+
 	return s
 }
 
@@ -639,11 +656,18 @@ func (s *S) fetch(ctx context.Context, url string) ([]byte, error) {
 	fetchTimeout := s.cfg.fetchTimeout
 	userAgent := s.cfg.userAgent
 	maxResponseSize := s.cfg.maxResponseSize
+	httpClient := s.cfg.httpClient
 	s.mu.Unlock()
 
-	client := &http.Client{
-		Timeout: time.Duration(fetchTimeout) * time.Second,
+	var client *http.Client
+	if httpClient != nil {
+		client = httpClient
+	} else {
+		client = &http.Client{
+			Timeout: time.Duration(fetchTimeout) * time.Second,
+		}
 	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
