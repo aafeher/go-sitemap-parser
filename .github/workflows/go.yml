@@ -32,6 +32,12 @@ jobs:
 
     - name: Test
       run: go test -v -race -coverprofile=coverage.txt -covermode=atomic .
+    - name: Vulnerability scan
+      if: matrix.go-version == 'stable'
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./...
+
     - name: Upload coverage reports to Codecov
       if: matrix.go-version == 'stable'
       uses: codecov/codecov-action@v5
