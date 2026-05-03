@@ -1449,6 +1449,114 @@ func TestVideo_validateAndFilterVideos(t *testing.T) {
 	})
 }
 
+func TestHreflang_validateAndFilterHreflangs(t *testing.T) {
+	t.Run("nil or empty", func(t *testing.T) {
+		s := New()
+		got, errs := s.validateAndFilterHreflangs(nil)
+		if len(got) != 0 || len(errs) != 0 {
+			t.Errorf("expected 0 links, 0 errors; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("tolerant mode: drop empty href", func(t *testing.T) {
+		s := New()
+		links := []AlternateLink{{Href: ""}, {Href: "http://example.com/"}}
+		got, errs := s.validateAndFilterHreflangs(links)
+		if len(got) != 1 || len(errs) != 0 {
+			t.Errorf("expected 1 link, 0 errors; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("both modes: reject oversized href", func(t *testing.T) {
+		s := New()
+		links := []AlternateLink{{Href: "http://example.com/" + strings.Repeat("a", maxLocLength)}}
+		got, errs := s.validateAndFilterHreflangs(links)
+		if len(got) != 0 || len(errs) != 1 {
+			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict mode: valid link", func(t *testing.T) {
+		s := New().SetStrict(true)
+		links := []AlternateLink{{Rel: "alternate", Hreflang: "en", Href: "http://example.com/"}}
+		got, errs := s.validateAndFilterHreflangs(links)
+		if len(got) != 1 || len(errs) != 0 {
+			t.Errorf("expected 1 link, 0 errors; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict mode: reject empty href", func(t *testing.T) {
+		s := New().SetStrict(true)
+		links := []AlternateLink{{Href: ""}}
+		got, errs := s.validateAndFilterHreflangs(links)
+		if len(got) != 0 || len(errs) != 1 {
+			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict mode: reject invalid rel", func(t *testing.T) {
+		s := New().SetStrict(true)
+		links := []AlternateLink{{Rel: "canonical", Hreflang: "en", Href: "http://example.com/"}}
+		got, errs := s.validateAndFilterHreflangs(links)
+		if len(got) != 0 || len(errs) != 1 {
+			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict mode: reject empty hreflang", func(t *testing.T) {
+		s := New().SetStrict(true)
+		links := []AlternateLink{{Rel: "alternate", Hreflang: "", Href: "http://example.com/"}}
+		got, errs := s.validateAndFilterHreflangs(links)
+		if len(got) != 0 || len(errs) != 1 {
+			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict mode: reject invalid URL", func(t *testing.T) {
+		s := New().SetStrict(true)
+		links := []AlternateLink{{Rel: "alternate", Hreflang: "en", Href: "http://example.com/%%invalid"}}
+		got, errs := s.validateAndFilterHreflangs(links)
+		if len(got) != 0 || len(errs) != 1 {
+			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+
+	t.Run("strict mode: reject unsupported scheme", func(t *testing.T) {
+		s := New().SetStrict(true)
+		links := []AlternateLink{{Rel: "alternate", Hreflang: "en", Href: "ftp://example.com/"}}
+		got, errs := s.validateAndFilterHreflangs(links)
+		if len(got) != 0 || len(errs) != 1 {
+			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
+		}
+	})
+}
+
+func TestHreflang_parseURLSet_WithHreflang(t *testing.T) {
+	t.Run("URL with hreflang entries", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+    <url>
+        <loc>http://www.example.com/english/page.html</loc>
+        <xhtml:link rel="alternate" hreflang="de" href="http://www.example.com/deutsch/page.html"/>
+        <xhtml:link rel="alternate" hreflang="en" href="http://www.example.com/english/page.html"/>
+    </url>
+</urlset>`
+		s := New()
+		_, err := s.Parse("http://www.example.com/sitemap.xml", &data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		urls := s.GetURLs()
+		if len(urls) != 1 {
+			t.Fatalf("expected 1 URL, got %d", len(urls))
+		}
+		if len(urls[0].Hreflangs) != 2 {
+			t.Errorf("expected 2 hreflangs, got %d", len(urls[0].Hreflangs))
+		}
+	})
+}
+
 func TestVideo_parseURLSet_WithVideos(t *testing.T) {
 	t.Run("URL with full video entry", func(t *testing.T) {
 		data := `<?xml version="1.0" encoding="UTF-8"?>

@@ -19,6 +19,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Google Image Sitemap extension (`<image:image>`)
 - Google News Sitemap extension (`<news:news>`)
 - Google Video Sitemap extension (`<video:video>`)
+- XHTML hreflang extension (`<xhtml:link>`)
 - Typed errors: `*ConfigError`, `*NetworkError`, `*ParseError`, `*ValidationError` — inspectable via `errors.As`
 - Thread-safe
 
@@ -318,6 +319,8 @@ Each `URL` struct contains the following fields:
 - `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`
 - `Images` (`[]Image`) — images associated with this URL via the Google Image Sitemap extension, may be `nil`
 - `News` (`*News`) — news metadata associated with this URL via the Google News Sitemap extension, may be `nil`
+- `Videos` (`[]Video`) — videos associated with this URL via the Google Video Sitemap extension, may be `nil`
+- `Hreflangs` (`[]AlternateLink`) — alternate language/region versions of this URL via the XHTML extension, may be `nil`
 
 Each `Image` struct contains the following fields (all `string`):
 - `Loc` — image URL (required by the spec; images with an empty `Loc` are silently dropped in tolerant mode, or produce an error in strict mode)
@@ -338,6 +341,13 @@ Each `News` struct contains:
 In strict mode, all four required fields (`Title`, `Publication.Name`, `Publication.Language`, `PublicationDate`) must be present; missing fields are each reported via `GetErrors()` and the `News` entry is still included with whatever data was parsed. In tolerant mode no validation is performed.
 
 See [`examples/news`](examples/news/main.go) for a runnable example.
+
+Each `AlternateLink` struct contains:
+- `Rel` (`string`) — relationship, should be `"alternate"`
+- `Hreflang` (`string`) — language/region code (e.g. `"en"`, `"de-ch"`)
+- `Href` (`string`) — the URL of the alternate version
+
+See [`examples/hreflang`](examples/hreflang/main.go) for a runnable example.
 
 Each `Video` struct contains:
 - `ThumbnailLoc` (`string`) — thumbnail image URL (required; videos with an empty `ThumbnailLoc` are silently dropped in tolerant mode, or produce an error in strict mode)

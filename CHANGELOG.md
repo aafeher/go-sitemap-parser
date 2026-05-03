@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- XHTML hreflang extension support (`<xhtml:link>`): the `URL` struct now exposes a `Hreflangs []AlternateLink` field populated from `xmlns:xhtml="http://www.w3.org/1999/xhtml"` elements. Each `AlternateLink` exposes `Rel`, `Hreflang`, and `Href`.
+- Hreflang validation: links with an empty `Href` are silently dropped in tolerant mode or produce an error in strict mode. In strict mode, `Rel` must be `"alternate"`, `Hreflang` must not be empty, and `Href` must be a valid absolute HTTP(S) URL.
+- New example: [`examples/hreflang`](examples/hreflang/main.go)
+
 ## [0.9.0] - 2026-05-03
 
 ### Added

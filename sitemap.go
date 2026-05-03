@@ -155,15 +155,25 @@ type (
 		Title           string          `xml:"http://www.google.com/schemas/sitemap-news/0.9 title"`
 	}
 
+	// AlternateLink represents an alternate version of a page (hreflang)
+	// per the XHTML standard used in sitemaps.
+	// Reference: https://developers.google.com/search/docs/specialty/international/localized-versions#sitemap
+	AlternateLink struct {
+		Rel      string `xml:"rel,attr"`
+		Hreflang string `xml:"hreflang,attr"`
+		Href     string `xml:"href,attr"`
+	}
+
 	// URL is a structure of <url> in <urlset>
 	URL struct {
-		Loc        string         `xml:"loc"`
-		LastMod    *lastModTime   `xml:"lastmod"`
-		ChangeFreq *URLChangeFreq `xml:"changefreq"`
-		Priority   *float32       `xml:"priority"`
-		Images     []Image        `xml:"http://www.google.com/schemas/sitemap-image/1.1 image"`
-		News       *News          `xml:"http://www.google.com/schemas/sitemap-news/0.9 news"`
-		Videos     []Video        `xml:"http://www.google.com/schemas/sitemap-video/1.1 video"`
+		Loc        string          `xml:"loc"`
+		LastMod    *lastModTime    `xml:"lastmod"`
+		ChangeFreq *URLChangeFreq  `xml:"changefreq"`
+		Priority   *float32        `xml:"priority"`
+		Images     []Image         `xml:"http://www.google.com/schemas/sitemap-image/1.1 image"`
+		News       *News           `xml:"http://www.google.com/schemas/sitemap-news/0.9 news"`
+		Videos     []Video         `xml:"http://www.google.com/schemas/sitemap-video/1.1 video"`
+		Hreflangs  []AlternateLink `xml:"http://www.w3.org/1999/xhtml link"`
 	}
 
 	lastModTime struct {
@@ -995,6 +1005,9 @@ func (s *S) parse(url string, content string) []string {
 			validVideos, videoErrs := s.validateAndFilterVideos(urlSetURL.Videos)
 			urlSetURL.Videos = validVideos
 			s.errs = append(s.errs, videoErrs...)
+			validHreflangs, hreflangErrs := s.validateAndFilterHreflangs(urlSetURL.Hreflangs)
+			urlSetURL.Hreflangs = validHreflangs
+			s.errs = append(s.errs, hreflangErrs...)
 			// Check if the urlSetURL.Loc matches any of the regular expressions in s.cfg.rulesRegexes.
 			matches := false
 			if len(s.cfg.rulesRegexes) > 0 {
@@ -1074,6 +1087,9 @@ const newsNamespace = "http://www.google.com/schemas/sitemap-news/0.9"
 
 // videoNamespace is the XML namespace URI for the Google Video Sitemap extension.
 const videoNamespace = "http://www.google.com/schemas/sitemap-video/1.1"
+
+// xhtmlNamespace is the XML namespace URI for the XHTML extension (used for hreflang).
+const xhtmlNamespace = "http://www.w3.org/1999/xhtml"
 
 // maxVideoDuration is the maximum allowed <video:duration> in seconds per the Google specification.
 const maxVideoDuration = 28800
@@ -1242,6 +1258,54 @@ func (s *S) validateAndFilterVideos(videos []Video) ([]Video, []error) {
 			}
 		}
 		valid = append(valid, v)
+	}
+	return valid, errs
+}
+
+// validateAndFilterHreflangs validates the alternate link (hreflang) entries on a parsed URL
+// and returns the filtered slice of valid links along with any validation errors.
+//
+// In tolerant mode, links with an empty Href are silently dropped. In strict mode,
+// an empty Href is an error. In both modes, an Href exceeding maxLocLength characters
+// is rejected. In strict mode, Href must additionally be an absolute HTTP or HTTPS URL,
+// and Hreflang must not be empty.
+func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, []error) {
+	if len(links) == 0 {
+		return links, nil
+	}
+	valid := links[:0:0]
+	var errs []error
+	for _, link := range links {
+		if link.Href == "" {
+			if s.cfg.strict {
+				errs = append(errs, &ValidationError{URL: "", Err: errors.New("strict mode: alternate link <href> is empty")})
+			}
+			continue
+		}
+		if len(link.Href) > maxLocLength {
+			errs = append(errs, &ValidationError{URL: link.Href, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(link.Href))})
+			continue
+		}
+		if s.cfg.strict {
+			if link.Rel != "alternate" {
+				errs = append(errs, &ValidationError{URL: link.Href, Err: fmt.Errorf("strict mode: alternate link <rel> must be \"alternate\", got %q", link.Rel)})
+				continue
+			}
+			if link.Hreflang == "" {
+				errs = append(errs, &ValidationError{URL: link.Href, Err: errors.New("strict mode: alternate link <hreflang> is empty")})
+				continue
+			}
+			parsed, err := neturl.Parse(link.Href)
+			if err != nil {
+				errs = append(errs, &ValidationError{URL: link.Href, Err: err})
+				continue
+			}
+			if parsed.Scheme != "http" && parsed.Scheme != "https" {
+				errs = append(errs, &ValidationError{URL: link.Href, Err: fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)})
+				continue
+			}
+		}
+		valid = append(valid, link)
 	}
 	return valid, errs
 }
