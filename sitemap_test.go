@@ -2406,6 +2406,7 @@ func TestS_Parse(t *testing.T) {
 		sitemapLocations     []string
 		urls                 []URL
 		errs                 []error
+		strict               bool
 	}{
 		{
 			name:                 "unparseable url",
@@ -3185,6 +3186,41 @@ func TestS_Parse(t *testing.T) {
 			errs:        []error{fmt.Errorf("parse \"http://www.example.com/atom-empty.xml\": sitemap content is empty")},
 		},
 		{
+			name:        "RSS 2.0 malformed XML",
+			url:         "http://www.example.com/rss-malformed.xml",
+			multiThread: true,
+			content:     pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item>`),
+			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item>`),
+			errs:        []error{fmt.Errorf("parse \"http://www.example.com/rss-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
+		},
+		{
+			name:        "Atom 1.0 malformed XML",
+			url:         "http://www.example.com/atom-malformed.xml",
+			multiThread: true,
+			content:     pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>`),
+			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>`),
+			errs:        []error{fmt.Errorf("parse \"http://www.example.com/atom-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
+		},
+		{
+			name:        "RSS 2.0 with relative URL in strict mode",
+			url:         "http://www.example.com/rss-strict.xml",
+			strict:      true,
+			multiThread: true,
+			content: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item><link>/relative</link></item>
+  </channel>
+</rss>`),
+			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item><link>/relative</link></item>
+  </channel>
+</rss>`),
+			errs: []error{&ValidationError{URL: "/relative", Err: errors.New("strict mode: unsupported scheme \"\"")}},
+		},
+		{
 			name:                 "sitemap.xml empty content",
 			url:                  fmt.Sprintf("%s/sitemap-empty.xml", server.URL),
 			multiThread:          true,
@@ -3225,7 +3261,7 @@ func TestS_Parse(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			s := New()
+			s := New().SetStrict(test.strict)
 			sitemap, err := s.SetMultiThread(test.multiThread).SetFollow(test.follow).SetRules(test.rules).Parse(test.url, test.content)
 			if err != nil {
 				if err.Error() != *test.err {
@@ -4224,6 +4260,62 @@ func TestS_parseURLSet(t *testing.T) {
 				if err != nil {
 					t.Errorf("expected %v, got %v", test.err, err)
 				}
+			}
+		})
+	}
+}
+
+func TestS_parseRSS(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		err  error
+	}{
+		{
+			name: "empty content",
+			data: "",
+			err:  errors.New("rss is empty"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := New()
+			_, err := s.parseRSS(test.data)
+			if test.err != nil {
+				if err == nil || err.Error() != test.err.Error() {
+					t.Errorf("expected %v, got %v", test.err, err)
+				}
+			} else if err != nil {
+				t.Errorf("expected nil, got %v", err)
+			}
+		})
+	}
+}
+
+func TestS_parseAtom(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		err  error
+	}{
+		{
+			name: "empty content",
+			data: "",
+			err:  errors.New("atom is empty"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := New()
+			_, err := s.parseAtom(test.data)
+			if test.err != nil {
+				if err == nil || err.Error() != test.err.Error() {
+					t.Errorf("expected %v, got %v", test.err, err)
+				}
+			} else if err != nil {
+				t.Errorf("expected nil, got %v", err)
 			}
 		})
 	}
