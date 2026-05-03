@@ -4373,59 +4373,132 @@ func TestS_parseURLSet(t *testing.T) {
 }
 
 func TestS_parseRSS(t *testing.T) {
-	tests := []struct {
-		name string
-		data string
-		err  error
-	}{
-		{
-			name: "empty content",
-			data: "",
-			err:  errors.New("rss is empty"),
-		},
-	}
+	t.Run("empty content returns error", func(t *testing.T) {
+		s := New()
+		_, err := s.parseRSS("")
+		if err == nil || err.Error() != "rss is empty" {
+			t.Errorf("expected %q, got %v", "rss is empty", err)
+		}
+	})
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			s := New()
-			_, err := s.parseRSS(test.data)
-			if test.err != nil {
-				if err == nil || err.Error() != test.err.Error() {
-					t.Errorf("expected %v, got %v", test.err, err)
-				}
-			} else if err != nil {
-				t.Errorf("expected nil, got %v", err)
-			}
-		})
-	}
+	t.Run("valid RSS with multiple items", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Feed</title>
+    <item><link>http://example.com/item-1</link></item>
+    <item><link>http://example.com/item-2</link></item>
+    <item><link>http://example.com/item-3</link></item>
+  </channel>
+</rss>`
+		s := New()
+		rss, err := s.parseRSS(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(rss.Channel.Item) != 3 {
+			t.Fatalf("expected 3 items, got %d", len(rss.Channel.Item))
+		}
+		if rss.Channel.Item[0].Link != "http://example.com/item-1" {
+			t.Errorf("item[0].Link: got %q", rss.Channel.Item[0].Link)
+		}
+		if rss.Channel.Item[1].Link != "http://example.com/item-2" {
+			t.Errorf("item[1].Link: got %q", rss.Channel.Item[1].Link)
+		}
+		if rss.Channel.Item[2].Link != "http://example.com/item-3" {
+			t.Errorf("item[2].Link: got %q", rss.Channel.Item[2].Link)
+		}
+	})
+
+	t.Run("valid RSS with no items", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Empty</title></channel></rss>`
+		s := New()
+		rss, err := s.parseRSS(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(rss.Channel.Item) != 0 {
+			t.Errorf("expected 0 items, got %d", len(rss.Channel.Item))
+		}
+	})
+
+	t.Run("malformed XML returns error", func(t *testing.T) {
+		data := `<?xml version="1.0"?><rss version="2.0"><channel><item>`
+		s := New()
+		_, err := s.parseRSS(data)
+		if err == nil {
+			t.Error("expected error for malformed XML, got nil")
+		}
+	})
 }
 
 func TestS_parseAtom(t *testing.T) {
-	tests := []struct {
-		name string
-		data string
-		err  error
-	}{
-		{
-			name: "empty content",
-			data: "",
-			err:  errors.New("atom is empty"),
-		},
-	}
+	t.Run("empty content returns error", func(t *testing.T) {
+		s := New()
+		_, err := s.parseAtom("")
+		if err == nil || err.Error() != "atom is empty" {
+			t.Errorf("expected %q, got %v", "atom is empty", err)
+		}
+	})
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			s := New()
-			_, err := s.parseAtom(test.data)
-			if test.err != nil {
-				if err == nil || err.Error() != test.err.Error() {
-					t.Errorf("expected %v, got %v", test.err, err)
-				}
-			} else if err != nil {
-				t.Errorf("expected nil, got %v", err)
-			}
-		})
-	}
+	t.Run("valid Atom with alternate and empty-rel links", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <link href="http://example.com/entry-1"/>
+  </entry>
+  <entry>
+    <link rel="alternate" href="http://example.com/entry-2"/>
+  </entry>
+  <entry>
+    <link rel="self" href="http://example.com/entry-3-self"/>
+    <link rel="alternate" href="http://example.com/entry-3-alt"/>
+  </entry>
+</feed>`
+		s := New()
+		atom, err := s.parseAtom(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(atom.Entry) != 3 {
+			t.Fatalf("expected 3 entries, got %d", len(atom.Entry))
+		}
+		// entry[0]: empty rel → treated as alternate
+		if atom.Entry[0].Link[0].Href != "http://example.com/entry-1" {
+			t.Errorf("entry[0] href: got %q", atom.Entry[0].Link[0].Href)
+		}
+		// entry[1]: rel="alternate"
+		if atom.Entry[1].Link[0].Rel != "alternate" || atom.Entry[1].Link[0].Href != "http://example.com/entry-2" {
+			t.Errorf("entry[1]: got rel=%q href=%q", atom.Entry[1].Link[0].Rel, atom.Entry[1].Link[0].Href)
+		}
+		// entry[2]: has both self and alternate links
+		if len(atom.Entry[2].Link) != 2 {
+			t.Fatalf("entry[2]: expected 2 links, got %d", len(atom.Entry[2].Link))
+		}
+	})
+
+	t.Run("valid Atom with no entries", func(t *testing.T) {
+		data := `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Empty</title></feed>`
+		s := New()
+		atom, err := s.parseAtom(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(atom.Entry) != 0 {
+			t.Errorf("expected 0 entries, got %d", len(atom.Entry))
+		}
+	})
+
+	t.Run("malformed XML returns error", func(t *testing.T) {
+		data := `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>`
+		s := New()
+		_, err := s.parseAtom(data)
+		if err == nil {
+			t.Error("expected error for malformed XML, got nil")
+		}
+	})
 }
 
 func TestUnzip(t *testing.T) {
