@@ -997,8 +997,8 @@ func TestImage_Parse_integration(t *testing.T) {
 }
 
 func TestNews_validateNews(t *testing.T) {
-	makeDate := func(s string) *lastModTime {
-		lmt := &lastModTime{}
+	makeDate := func(s string) *LastModTime {
+		lmt := &LastModTime{}
 		tok := xml.NewDecoder(strings.NewReader("<d>" + s + "</d>"))
 		start, _ := tok.Token()
 		_ = lmt.UnmarshalXML(tok, start.(xml.StartElement))
@@ -2684,37 +2684,37 @@ func TestS_Parse(t *testing.T) {
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-01", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqAlways),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-02", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqHourly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-03", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqDaily),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-04", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 0, 0, 0, 0, timeLocationUTC)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 0, 0, 0, 0, timeLocationUTC)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqWeekly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-05", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqMonthly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-06", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqYearly),
 					Priority:   pointerOfFloat32(0.5),
 				},
@@ -2744,73 +2744,73 @@ func TestS_Parse(t *testing.T) {
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-01", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqAlways),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-02", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqHourly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-03", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqDaily),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-04", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 0, 0, 0, 0, timeLocationUTC)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 0, 0, 0, 0, timeLocationUTC)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqWeekly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-05", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqMonthly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-06", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqYearly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-07", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqNever),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-08", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqMonthly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-09", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqMonthly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-10", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqMonthly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-11", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqMonthly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-12", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqMonthly),
 					Priority:   pointerOfFloat32(0.5),
 				},
@@ -2845,37 +2845,37 @@ func TestS_Parse(t *testing.T) {
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-01", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqAlways),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-02", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqHourly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-03", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqDaily),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-04", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 0, 0, 0, 0, timeLocationUTC)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 0, 0, 0, 0, timeLocationUTC)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqWeekly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-05", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqMonthly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-06", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqYearly),
 					Priority:   pointerOfFloat32(0.5),
 				},
@@ -2924,37 +2924,37 @@ func TestS_Parse(t *testing.T) {
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-01", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqAlways),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-02", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqHourly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-03", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqDaily),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-04", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 0, 0, 0, 0, timeLocationUTC)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 0, 0, 0, 0, timeLocationUTC)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqWeekly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-05", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqMonthly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-06", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqYearly),
 					Priority:   pointerOfFloat32(0.5),
 				},
@@ -2986,13 +2986,13 @@ func TestS_Parse(t *testing.T) {
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-02", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqHourly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-03", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqDaily),
 					Priority:   pointerOfFloat32(0.5),
 				},
@@ -3042,37 +3042,37 @@ func TestS_Parse(t *testing.T) {
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-01", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqAlways),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-02", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqHourly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-03", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqDaily),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-04", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 0, 0, 0, 0, timeLocationUTC)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 0, 0, 0, 0, timeLocationUTC)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqWeekly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-05", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqMonthly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-06", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqYearly),
 					Priority:   pointerOfFloat32(0.5),
 				},
@@ -3110,13 +3110,13 @@ func TestS_Parse(t *testing.T) {
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-alpha-01", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqAlways),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-alpha-02", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqHourly),
 					Priority:   pointerOfFloat32(0.5),
 				},
@@ -3352,13 +3352,13 @@ func TestS_Parse(t *testing.T) {
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-02", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqHourly),
 					Priority:   pointerOfFloat32(0.5),
 				},
 				{
 					Loc:        fmt.Sprintf("%s/page-03", server.URL),
-					LastMod:    pointerOfLastModTime(lastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
+					LastMod:    pointerOfLastModTime(LastModTime{time.Date(2024, time.February, 12, 12, 34, 56, 0, timeLocationCET)}),
 					ChangeFreq: pointerOfURLChangeFreq(ChangeFreqDaily),
 					Priority:   pointerOfFloat32(0.5),
 				},
@@ -4641,18 +4641,18 @@ func TestLastModTime_UnmarshalXML(t *testing.T) {
 			}
 			startElement := token.(xml.StartElement)
 
-			var got lastModTime
+			var got LastModTime
 			err = got.UnmarshalXML(decoder, startElement)
 
 			if (err != nil) != tt.wantErr {
-				t.Errorf("lastModTime.UnmarshalXML() error = %v, expected error: %v", err, tt.wantErr)
+				t.Errorf("LastModTime.UnmarshalXML() error = %v, expected error: %v", err, tt.wantErr)
 				return
 			}
 
 			if !tt.wantErr {
 				gotTime := got.Time
 				if !gotTime.Equal(tt.want) {
-					t.Errorf("lastModTime.UnmarshalXML() = %v, expected value: %v", gotTime, tt.want)
+					t.Errorf("LastModTime.UnmarshalXML() = %v, expected value: %v", gotTime, tt.want)
 				}
 			}
 		})
@@ -5035,7 +5035,7 @@ func pointerOfFloat32(number float32) *float32 {
 	return &number
 }
 
-func pointerOfLastModTime(lmt lastModTime) *lastModTime {
+func pointerOfLastModTime(lmt LastModTime) *LastModTime {
 	return &lmt
 }
 

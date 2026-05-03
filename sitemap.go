@@ -149,10 +149,10 @@ type (
 		ContentLoc           string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 content_loc"`
 		PlayerLoc            string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 player_loc"`
 		Duration             *int              `xml:"http://www.google.com/schemas/sitemap-video/1.1 duration"`
-		ExpirationDate       *lastModTime      `xml:"http://www.google.com/schemas/sitemap-video/1.1 expiration_date"`
+		ExpirationDate       *LastModTime      `xml:"http://www.google.com/schemas/sitemap-video/1.1 expiration_date"`
 		Rating               *float32          `xml:"http://www.google.com/schemas/sitemap-video/1.1 rating"`
 		ViewCount            *int              `xml:"http://www.google.com/schemas/sitemap-video/1.1 view_count"`
-		PublicationDate      *lastModTime      `xml:"http://www.google.com/schemas/sitemap-video/1.1 publication_date"`
+		PublicationDate      *LastModTime      `xml:"http://www.google.com/schemas/sitemap-video/1.1 publication_date"`
 		FamilyFriendly       string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 family_friendly"`
 		Restriction          *VideoRestriction `xml:"http://www.google.com/schemas/sitemap-video/1.1 restriction"`
 		Platform             *VideoPlatform    `xml:"http://www.google.com/schemas/sitemap-video/1.1 platform"`
@@ -172,7 +172,7 @@ type (
 	// Reference: https://developers.google.com/search/docs/crawling-indexing/sitemaps/news-sitemap
 	News struct {
 		Publication     NewsPublication `xml:"http://www.google.com/schemas/sitemap-news/0.9 publication"`
-		PublicationDate *lastModTime    `xml:"http://www.google.com/schemas/sitemap-news/0.9 publication_date"`
+		PublicationDate *LastModTime    `xml:"http://www.google.com/schemas/sitemap-news/0.9 publication_date"`
 		Title           string          `xml:"http://www.google.com/schemas/sitemap-news/0.9 title"`
 	}
 
@@ -188,7 +188,7 @@ type (
 	// URL is a structure of <url> in <urlset>
 	URL struct {
 		Loc        string          `xml:"loc"`
-		LastMod    *lastModTime    `xml:"lastmod"`
+		LastMod    *LastModTime    `xml:"lastmod"`
 		ChangeFreq *URLChangeFreq  `xml:"changefreq"`
 		Priority   *float32        `xml:"priority"`
 		Images     []Image         `xml:"http://www.google.com/schemas/sitemap-image/1.1 image"`
@@ -197,7 +197,7 @@ type (
 		Hreflangs  []AlternateLink `xml:"http://www.w3.org/1999/xhtml link"`
 	}
 
-	lastModTime struct {
+	LastModTime struct {
 		time.Time
 	}
 
@@ -1581,7 +1581,7 @@ func unzip(content []byte) ([]byte, error) {
 	return uncompressed, nil
 }
 
-func (l *lastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+func (l *LastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var v string
 	err := d.DecodeElement(&v, &start)
 	if err != nil {
@@ -1614,7 +1614,7 @@ func (l *lastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error
 	for _, format := range formats {
 		parsedTime, parseErr := time.Parse(format, v)
 		if parseErr == nil {
-			*l = lastModTime{parsedTime}
+			*l = LastModTime{parsedTime}
 			return nil
 		}
 	}
