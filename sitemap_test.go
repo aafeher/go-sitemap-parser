@@ -3059,6 +3059,132 @@ func TestS_Parse(t *testing.T) {
 			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")},
 		},
 		{
+			name:        "RSS 2.0 sitemap",
+			url:         "http://www.example.com/rss.xml",
+			multiThread: true,
+			content: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <link>http://www.example.com/rss-item-1</link>
+    </item>
+    <item>
+      <link>http://www.example.com/rss-item-2</link>
+    </item>
+  </channel>
+</rss>`),
+			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <link>http://www.example.com/rss-item-1</link>
+    </item>
+    <item>
+      <link>http://www.example.com/rss-item-2</link>
+    </item>
+  </channel>
+</rss>`),
+			urls: []URL{
+				{Loc: "http://www.example.com/rss-item-1"},
+				{Loc: "http://www.example.com/rss-item-2"},
+			},
+		},
+		{
+			name:        "Atom 1.0 sitemap",
+			url:         "http://www.example.com/atom.xml",
+			multiThread: true,
+			content: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <link href="http://www.example.com/atom-entry-1"/>
+  </entry>
+  <entry>
+    <link rel="alternate" href="http://www.example.com/atom-entry-2"/>
+  </entry>
+</feed>`),
+			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <link href="http://www.example.com/atom-entry-1"/>
+  </entry>
+  <entry>
+    <link rel="alternate" href="http://www.example.com/atom-entry-2"/>
+  </entry>
+</feed>`),
+			urls: []URL{
+				{Loc: "http://www.example.com/atom-entry-1"},
+				{Loc: "http://www.example.com/atom-entry-2"},
+			},
+		},
+		{
+			name:           "Plain Text sitemap",
+			url:            "http://www.example.com/sitemap.txt",
+			multiThread:    true,
+			content:        pointerOfString("http://www.example.com/text-url-1\n# comment\n  \nhttps://www.example.com/text-url-2"),
+			mainURLContent: pointerOfString("http://www.example.com/text-url-1\n# comment\n  \nhttps://www.example.com/text-url-2"),
+			urls: []URL{
+				{Loc: "http://www.example.com/text-url-1"},
+				{Loc: "https://www.example.com/text-url-2"},
+			},
+		},
+		{
+			name:        "RSS 2.0 with rules and invalid links",
+			url:         "http://www.example.com/rss-rules.xml",
+			rules:       []string{"valid"},
+			multiThread: true,
+			content: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item><link>http://www.example.com/valid-1</link></item>
+    <item><link>http://www.example.com/wrong-1</link></item>
+    <item><link>  </link></item>
+  </channel>
+</rss>`),
+			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item><link>http://www.example.com/valid-1</link></item>
+    <item><link>http://www.example.com/wrong-1</link></item>
+    <item><link>  </link></item>
+  </channel>
+</rss>`),
+			urls: []URL{{Loc: "http://www.example.com/valid-1"}},
+		},
+		{
+			name:        "Atom 1.0 with no alternate link",
+			url:         "http://www.example.com/atom-no-alt.xml",
+			multiThread: true,
+			content: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <link rel="self" href="http://www.example.com/self"/>
+  </entry>
+</feed>`),
+			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <link rel="self" href="http://www.example.com/self"/>
+  </entry>
+</feed>`),
+			urls: nil,
+		},
+		{
+			name:        "RSS empty",
+			url:         "http://www.example.com/rss-empty.xml",
+			multiThread: true,
+			content:     pointerOfString(""),
+			mainURLContent: pointerOfString(""),
+			errs:        []error{fmt.Errorf("parse \"http://www.example.com/rss-empty.xml\": sitemap content is empty")},
+		},
+		{
+			name:        "Atom empty",
+			url:         "http://www.example.com/atom-empty.xml",
+			multiThread: true,
+			content:     pointerOfString(""),
+			mainURLContent: pointerOfString(""),
+			errs:        []error{fmt.Errorf("parse \"http://www.example.com/atom-empty.xml\": sitemap content is empty")},
+		},
+		{
 			name:                 "sitemap.xml empty content",
 			url:                  fmt.Sprintf("%s/sitemap-empty.xml", server.URL),
 			multiThread:          true,
@@ -3127,6 +3253,7 @@ func TestS_Parse(t *testing.T) {
 				t.Error("sitemapLocations is not equal to expected value")
 			}
 			if !compareURLsArray(sitemap.urls, test.urls) {
+				t.Logf("urls mismatch:\n  got:  %+v\n  want: %+v", sitemap.urls, test.urls)
 				t.Error("urls is not equal to expected value")
 			}
 			if !compareErrorStrings(sitemap.errs, test.errs) {
@@ -4669,17 +4796,30 @@ func compareURLsArray(sitemapURLs []URL, testCaseURLs []URL) bool {
 		return sitemapURLs[i].Loc < sitemapURLs[j].Loc
 	})
 
+	sort.Slice(testCaseURLs, func(i, j int) bool {
+		return testCaseURLs[i].Loc < testCaseURLs[j].Loc
+	})
+
 	for i, sitemapURL := range sitemapURLs {
 		if sitemapURL.Loc != testCaseURLs[i].Loc {
 			return false
 		}
-		if sitemapURL.LastMod.Unix() != testCaseURLs[i].LastMod.Unix() {
+		if (sitemapURL.LastMod == nil) != (testCaseURLs[i].LastMod == nil) {
 			return false
 		}
-		if *sitemapURL.ChangeFreq != *testCaseURLs[i].ChangeFreq {
+		if sitemapURL.LastMod != nil && sitemapURL.LastMod.Unix() != testCaseURLs[i].LastMod.Unix() {
 			return false
 		}
-		if *sitemapURL.Priority != *testCaseURLs[i].Priority {
+		if (sitemapURL.ChangeFreq == nil) != (testCaseURLs[i].ChangeFreq == nil) {
+			return false
+		}
+		if sitemapURL.ChangeFreq != nil && *sitemapURL.ChangeFreq != *testCaseURLs[i].ChangeFreq {
+			return false
+		}
+		if (sitemapURL.Priority == nil) != (testCaseURLs[i].Priority == nil) {
+			return false
+		}
+		if sitemapURL.Priority != nil && *sitemapURL.Priority != *testCaseURLs[i].Priority {
 			return false
 		}
 	}

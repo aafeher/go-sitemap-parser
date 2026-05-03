@@ -88,6 +88,27 @@ type (
 		URL     []URL    `xml:"url"`
 	}
 
+	// RSS is a structure of <rss> for RSS 2.0 feeds.
+	RSS struct {
+		XMLName xml.Name `xml:"rss"`
+		Channel struct {
+			Item []struct {
+				Link string `xml:"link"`
+			} `xml:"item"`
+		} `xml:"channel"`
+	}
+
+	// Atom is a structure of <feed> for Atom 1.0 feeds.
+	Atom struct {
+		XMLName xml.Name `xml:"feed"`
+		Entry   []struct {
+			Link []struct {
+				Href string `xml:"href,attr"`
+				Rel  string `xml:"rel,attr"`
+			} `xml:"link"`
+		} `xml:"entry"`
+	}
+
 	// Image is a structure of <image:image> in <url>, per the Google Image Sitemap extension.
 	// Reference: https://developers.google.com/search/docs/crawling-indexing/sitemaps/image-sitemaps
 	Image struct {
@@ -1026,16 +1047,91 @@ func (s *S) parse(url string, content string) []string {
 			s.urls = append(s.urls, urlSetURL)
 		}
 
+	case "rss":
+		rss, err := s.parseRSS(content)
+		if err != nil {
+			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+			return sitemapLocationsAdded
+		}
+		for _, item := range rss.Channel.Item {
+			s.addURL(strings.TrimSpace(item.Link), url)
+		}
+
+	case "feed":
+		atom, err := s.parseAtom(content)
+		if err != nil {
+			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+			return sitemapLocationsAdded
+		}
+		for _, entry := range atom.Entry {
+			var loc string
+			for _, l := range entry.Link {
+				if l.Rel == "" || l.Rel == "alternate" {
+					loc = l.Href
+					break
+				}
+			}
+			if loc != "" {
+				s.addURL(strings.TrimSpace(loc), url)
+			}
+		}
+
 	default:
-		// Unknown root element: report a single error
-		if len(content) == 0 {
-			s.errs = append(s.errs, &ParseError{URL: url, Err: errors.New("sitemap content is empty")})
+		// Unknown root element: check if it's a plain text sitemap
+		// A text sitemap must contain at least one valid absolute URL.
+		lines := strings.Split(content, "\n")
+		var textURLs []string
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			// Minimal check for a URL-like string
+			if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
+				textURLs = append(textURLs, line)
+			}
+		}
+
+		if len(textURLs) > 0 {
+			for _, textURL := range textURLs {
+				s.addURL(textURL, url)
+			}
 		} else {
-			s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("unrecognized sitemap format (root element: %q)", rootElement)})
+			// Unknown root element: report a single error
+			if len(content) == 0 {
+				s.errs = append(s.errs, &ParseError{URL: url, Err: errors.New("sitemap content is empty")})
+			} else {
+				s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("unrecognized sitemap format (root element: %q)", rootElement)})
+			}
 		}
 	}
 
 	return sitemapLocationsAdded
+}
+
+// addURL resolves, validates, filters, and appends a single location to s.urls.
+// Used by RSS, Atom, and Text parsers.
+func (s *S) addURL(loc string, baseURL string) {
+	resolvedLoc, err := s.resolveAndValidateLoc(loc, baseURL)
+	if err != nil {
+		s.errs = append(s.errs, err)
+		return
+	}
+	// Check if the resolvedLoc matches any of the regular expressions in s.cfg.rulesRegexes.
+	matches := false
+	if len(s.cfg.rulesRegexes) > 0 {
+		for _, re := range s.cfg.rulesRegexes {
+			if re.MatchString(resolvedLoc) {
+				matches = true
+				break
+			}
+		}
+	} else {
+		matches = true
+	}
+	if matches {
+		s.urls = append(s.urls, URL{Loc: resolvedLoc})
+	}
 }
 
 // parseSitemapIndex parses the sitemap index data and returns a sitemapIndex object and an error.
@@ -1074,6 +1170,34 @@ func (s *S) parseURLSet(data string) (URLSet, error) {
 
 	err := decoder.Decode(&urlSet)
 	return urlSet, err
+}
+
+// parseRSS parses the RSS 2.0 data and returns an RSS object and an error.
+func (s *S) parseRSS(data string) (RSS, error) {
+	var rss RSS
+	if len(data) == 0 {
+		return rss, fmt.Errorf("rss is empty")
+	}
+
+	decoder := xml.NewDecoder(bytes.NewReader([]byte(data)))
+	decoder.CharsetReader = charset.NewReaderLabel
+
+	err := decoder.Decode(&rss)
+	return rss, err
+}
+
+// parseAtom parses the Atom 1.0 data and returns an Atom object and an error.
+func (s *S) parseAtom(data string) (Atom, error) {
+	var atom Atom
+	if len(data) == 0 {
+		return atom, fmt.Errorf("atom is empty")
+	}
+
+	decoder := xml.NewDecoder(bytes.NewReader([]byte(data)))
+	decoder.CharsetReader = charset.NewReaderLabel
+
+	err := decoder.Decode(&atom)
+	return atom, err
 }
 
 // maxLocLength is the maximum URL length allowed in a sitemap <loc> element per the sitemaps.org specification.

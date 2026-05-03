@@ -26,7 +26,10 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 ## Formats supported
 - `robots.txt`
 - XML `.xml`
-- Gzip compressed XML `.xml.gz`
+- RSS 2.0
+- Atom 1.0
+- Plain text `.txt`
+- Gzip compressed files (e.g., `.xml.gz`, `.txt.gz`)
 
 ## Installation
 
