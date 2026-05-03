@@ -9,9 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"reflect"
-	"regexp/syntax"
 	"sort"
 	"strings"
 	"sync"
@@ -902,7 +900,7 @@ func TestNews_validateNews(t *testing.T) {
 
 	t.Run("nil input returns nil", func(t *testing.T) {
 		s := New()
-		got, errs := s.validateNews(nil)
+		got, errs := s.validateNews("", nil)
 		if got != nil || len(errs) != 0 {
 			t.Errorf("expected nil, nil for nil input")
 		}
@@ -915,7 +913,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "Article",
 		}
-		got, errs := s.validateNews(n)
+		got, errs := s.validateNews("https://example.com/page", n)
 		if got != n {
 			t.Error("expected same news pointer")
 		}
@@ -927,7 +925,7 @@ func TestNews_validateNews(t *testing.T) {
 	t.Run("tolerant: missing fields produce no errors", func(t *testing.T) {
 		s := New()
 		n := &News{}
-		got, errs := s.validateNews(n)
+		got, errs := s.validateNews("https://example.com/page", n)
 		if got != n {
 			t.Error("expected same news pointer")
 		}
@@ -943,7 +941,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03T10:00:00Z"),
 			Title:           "Article Title",
 		}
-		got, errs := s.validateNews(n)
+		got, errs := s.validateNews("https://example.com/page", n)
 		if got != n {
 			t.Error("expected same news pointer")
 		}
@@ -959,7 +957,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "",
 		}
-		_, errs := s.validateNews(n)
+		_, errs := s.validateNews("https://example.com/page", n)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for empty title, got %d", len(errs))
 		}
@@ -972,7 +970,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "Article",
 		}
-		_, errs := s.validateNews(n)
+		_, errs := s.validateNews("https://example.com/page", n)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for empty publication name, got %d", len(errs))
 		}
@@ -985,7 +983,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "Article",
 		}
-		_, errs := s.validateNews(n)
+		_, errs := s.validateNews("https://example.com/page", n)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for empty publication language, got %d", len(errs))
 		}
@@ -998,7 +996,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: nil,
 			Title:           "Article",
 		}
-		_, errs := s.validateNews(n)
+		_, errs := s.validateNews("https://example.com/page", n)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for nil publication_date, got %d", len(errs))
 		}
@@ -1007,7 +1005,7 @@ func TestNews_validateNews(t *testing.T) {
 	t.Run("strict: all required fields missing produces four errors", func(t *testing.T) {
 		s := New().SetStrict(true)
 		n := &News{}
-		got, errs := s.validateNews(n)
+		got, errs := s.validateNews("https://example.com/page", n)
 		if got != n {
 			t.Error("expected news entry to be kept despite errors")
 		}
@@ -1251,6 +1249,22 @@ func TestNews_Parse_integration(t *testing.T) {
 
 func pointerOfInt(i int) *int                  { return &i }
 func pointerOfFloat32Video(f float32) *float32 { return &f }
+
+// compareErrorStrings compares two error slices by their Error() strings.
+// It is used in place of reflect.DeepEqual for error slices so that typed
+// error wrappers (e.g. *ValidationError, *NetworkError) can be compared with
+// plain fmt.Errorf expectations as long as their Error() output matches.
+func compareErrorStrings(got, want []error) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i].Error() != want[i].Error() {
+			return false
+		}
+	}
+	return true
+}
 
 func TestVideo_validateAndFilterVideos(t *testing.T) {
 	t.Run("empty input returns empty", func(t *testing.T) {
@@ -2291,13 +2305,13 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			err:                  pointerOfString("invalid URL: parse \"%%\": invalid URL escape \"%%\""),
+			err:                  pointerOfString("validate \"%%\": parse \"%%\": invalid URL escape \"%%\""),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
-				fmt.Errorf("invalid URL: %w", &url.Error{Op: "parse", URL: "%%", Err: url.EscapeError("%%")}),
+				errors.New("validate \"%%\": parse \"%%\": invalid URL escape \"%%\""),
 			},
 		},
 		{
@@ -2306,13 +2320,13 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			err:                  pointerOfString("invalid URL scheme \"\": only http and https are supported"),
+			err:                  pointerOfString("validate \"invalid_url\": invalid URL scheme \"\": only http and https are supported"),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
-				fmt.Errorf("invalid URL scheme %q: only http and https are supported", ""),
+				errors.New("validate \"invalid_url\": invalid URL scheme \"\": only http and https are supported"),
 			},
 		},
 		{
@@ -2321,13 +2335,13 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			err:                  pointerOfString("invalid URL scheme \"\": only http and https are supported"),
+			err:                  pointerOfString("validate \"\": invalid URL scheme \"\": only http and https are supported"),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
-				fmt.Errorf("invalid URL scheme %q: only http and https are supported", ""),
+				errors.New("validate \"\": invalid URL scheme \"\": only http and https are supported"),
 			},
 		},
 		{
@@ -2336,13 +2350,13 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			err:                  pointerOfString("invalid URL scheme \"\": only http and https are supported"),
+			err:                  pointerOfString("validate \"/just/a/path\": invalid URL scheme \"\": only http and https are supported"),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
-				fmt.Errorf("invalid URL scheme %q: only http and https are supported", ""),
+				errors.New("validate \"/just/a/path\": invalid URL scheme \"\": only http and https are supported"),
 			},
 		},
 		{
@@ -2351,13 +2365,13 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			err:                  pointerOfString("invalid URL: missing host"),
+			err:                  pointerOfString("validate \"http://\": missing host"),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
-				fmt.Errorf("invalid URL: missing host"),
+				errors.New("validate \"http://\": missing host"),
 			},
 		},
 		{
@@ -2366,13 +2380,13 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			err:                  pointerOfString("invalid URL scheme \"ftp\": only http and https are supported"),
+			err:                  pointerOfString("validate \"ftp://example.com/sitemap.xml\": invalid URL scheme \"ftp\": only http and https are supported"),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
-				fmt.Errorf("invalid URL scheme %q: only http and https are supported", "ftp"),
+				errors.New("validate \"ftp://example.com/sitemap.xml\": invalid URL scheme \"ftp\": only http and https are supported"),
 			},
 		},
 		{
@@ -2381,12 +2395,12 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          false,
 			follow:               []string{},
 			rules:                []string{},
-			err:                  pointerOfString("received HTTP status 404"),
+			err:                  pointerOfString(fmt.Sprintf("fetch %q: received HTTP status 404", server.URL)),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("received HTTP status 404")},
+			errs:                 []error{errors.New(fmt.Sprintf("fetch %q: received HTTP status 404", server.URL))},
 		},
 		{
 			name:                 "page not found",
@@ -2394,12 +2408,12 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			err:                  pointerOfString("received HTTP status 404"),
+			err:                  pointerOfString(fmt.Sprintf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/404", server.URL))),
 			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("received HTTP status 404")},
+			errs:                 []error{errors.New(fmt.Sprintf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/404", server.URL)))},
 		},
 
 		// robots.txt
@@ -2596,7 +2610,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: []string{fmt.Sprintf("%s/invalid.xml", server.URL)},
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{errors.New("received HTTP status 404")},
+			errs:                 []error{errors.New(fmt.Sprintf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/invalid.xml", server.URL)))},
 		},
 		{
 			name:                 "robots.txt with sitemapindex.xml.gz",
@@ -2663,7 +2677,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty-corrupted.xml.gz", server.URL), "")},
+			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty-corrupted.xml.gz", server.URL), "")},
 		},
 		{
 			name:                 "sitemapindex.xml.gz empty file",
@@ -2675,7 +2689,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("sitemap content is empty at %q", fmt.Sprintf("%s/sitemapindex-empty.xml.gz", server.URL))},
+			errs:                 []error{fmt.Errorf("parse %q: sitemap content is empty", fmt.Sprintf("%s/sitemapindex-empty.xml.gz", server.URL))},
 		},
 		{
 			name:                 "sitemapindex.xml.gz",
@@ -2742,7 +2756,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("sitemap content is empty at %q", fmt.Sprintf("%s/sitemap-empty.xml.gz", server.URL))},
+			errs:                 []error{fmt.Errorf("parse %q: sitemap content is empty", fmt.Sprintf("%s/sitemap-empty.xml.gz", server.URL))},
 		},
 		{
 			name:                 "sitemap.xml.gz",
@@ -2780,7 +2794,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")},
+			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")},
 		},
 		{
 			name:                 "sitemapindex.xml empty content",
@@ -2793,7 +2807,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")},
+			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")},
 		},
 		{
 			name:                 "sitemapindex.xml",
@@ -2862,7 +2876,7 @@ func TestS_Parse(t *testing.T) {
 				fmt.Sprintf("%s/invalid.xml", server.URL),
 			},
 			urls: nil,
-			errs: []error{errors.New("received HTTP status 404")},
+			errs: []error{errors.New(fmt.Sprintf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/invalid.xml", server.URL)))},
 		},
 		{
 			name:                 "sitemapindex with follow and rules",
@@ -2904,10 +2918,7 @@ func TestS_Parse(t *testing.T) {
 			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
-				&syntax.Error{
-					Code: syntax.ErrorCode("missing argument to repetition operator"),
-					Expr: "*",
-				},
+				errors.New("config \"rules\": error parsing regexp: missing argument to repetition operator: `*`"),
 			},
 		},
 		{
@@ -2922,10 +2933,7 @@ func TestS_Parse(t *testing.T) {
 			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
-				&syntax.Error{
-					Code: syntax.ErrorCode("missing closing )"),
-					Expr: "(",
-				},
+				errors.New("config \"follow\": error parsing regexp: missing closing ): `(`"),
 			},
 		},
 
@@ -2940,7 +2948,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")},
+			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")},
 		},
 		{
 			name:                 "sitemap.xml empty content",
@@ -2953,7 +2961,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
-			errs:                 []error{fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")},
+			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")},
 		},
 		{
 			name:                 "sitemap.xml",
@@ -3013,8 +3021,8 @@ func TestS_Parse(t *testing.T) {
 			if !compareURLsArray(sitemap.urls, test.urls) {
 				t.Error("urls is not equal to expected value")
 			}
-			if !reflect.DeepEqual(sitemap.errs, test.errs) {
-				t.Error("errs is not equal to expected value")
+			if !compareErrorStrings(sitemap.errs, test.errs) {
+				t.Errorf("errs mismatch:\n  got:  %v\n  want: %v", sitemap.errs, test.errs)
 			}
 		})
 	}
@@ -3361,7 +3369,7 @@ func TestS_setContent(t *testing.T) {
 			},
 			attrURLContent: nil,
 			wantURLContent: "",
-			wantErr:        fmt.Errorf("received HTTP status 404"),
+			wantErr:        fmt.Errorf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/404", server.URL)),
 		},
 	}
 
@@ -3652,7 +3660,7 @@ func TestS_checkAndUnzipContent(t *testing.T) {
 				errs: []error{},
 			}
 
-			got := s.checkAndUnzipContent(tt.content)
+			got := s.checkAndUnzipContent("", tt.content)
 
 			if !bytes.Equal(got, tt.want) {
 				t.Errorf("checkAndUnzipContent() got = %v, want %v", got, tt.want)
@@ -4580,4 +4588,99 @@ func gzipByte(s string) []byte {
 		panic(err)
 	}
 	return buf.Bytes()
+}
+
+func TestTypedErrors_ConfigError(t *testing.T) {
+	s := New().SetMaxDepth(-1)
+	errs := s.GetErrors()
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d", len(errs))
+	}
+
+	var cfgErr *ConfigError
+	if !errors.As(errs[0], &cfgErr) {
+		t.Fatalf("expected *ConfigError, got %T", errs[0])
+	}
+	if cfgErr.Field != "maxDepth" {
+		t.Errorf("expected field 'maxDepth', got %q", cfgErr.Field)
+	}
+	if cfgErr.Unwrap() == nil {
+		t.Error("expected non-nil Unwrap")
+	}
+	if cfgErr.Err == nil {
+		t.Error("expected non-nil Err")
+	}
+}
+
+func TestTypedErrors_NetworkError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	s := New().SetMultiThread(false)
+	url := server.URL + "/not-found.xml"
+	_, _ = s.Parse(url, nil)
+	errs := s.GetErrors()
+	if len(errs) == 0 {
+		t.Fatal("expected at least 1 error")
+	}
+
+	var netErr *NetworkError
+	if !errors.As(errs[0], &netErr) {
+		t.Fatalf("expected *NetworkError, got %T", errs[0])
+	}
+	if netErr.URL != url {
+		t.Errorf("expected URL %q, got %q", url, netErr.URL)
+	}
+	if netErr.Unwrap() == nil {
+		t.Error("expected non-nil Unwrap")
+	}
+}
+
+func TestTypedErrors_ParseError(t *testing.T) {
+	s := New().SetMultiThread(false)
+	content := "\n" // no XML root element → unrecognized format
+	sitemapURL := "http://example.com/sitemap.xml"
+	_, _ = s.Parse(sitemapURL, &content)
+	errs := s.GetErrors()
+	if len(errs) == 0 {
+		t.Fatal("expected at least 1 error")
+	}
+
+	var parseErr *ParseError
+	if !errors.As(errs[0], &parseErr) {
+		t.Fatalf("expected *ParseError, got %T", errs[0])
+	}
+	if parseErr.URL != sitemapURL {
+		t.Errorf("expected URL %q, got %q", sitemapURL, parseErr.URL)
+	}
+	if parseErr.Unwrap() == nil {
+		t.Error("expected non-nil Unwrap")
+	}
+}
+
+func TestTypedErrors_ValidationError(t *testing.T) {
+	s := New().SetStrict(true)
+	content := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>/relative-path</loc></url>
+</urlset>`
+	sitemapURL := "http://example.com/sitemap.xml"
+	_, _ = s.Parse(sitemapURL, &content)
+	errs := s.GetErrors()
+	if len(errs) == 0 {
+		t.Fatal("expected at least 1 error")
+	}
+
+	var valErr *ValidationError
+	if !errors.As(errs[0], &valErr) {
+		t.Fatalf("expected *ValidationError, got %T", errs[0])
+	}
+	if valErr.URL == "" {
+		t.Error("expected non-empty URL in ValidationError")
+	}
+	if valErr.Unwrap() == nil {
+		t.Error("expected non-nil Unwrap")
+	}
 }

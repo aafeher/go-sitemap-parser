@@ -266,13 +266,13 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 // SetMaxResponseSize sets the maximum allowed HTTP response size in bytes.
 // Responses exceeding this limit will be truncated and may cause parsing errors.
 // The default is 50 MB, matching the sitemaps.org protocol limit.
-// The value must be greater than 0; invalid values are ignored and an error is recorded.
+// The value must be greater than 0; invalid values are ignored and a *ConfigError is recorded.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if maxResponseSize <= 0 {
-		s.errs = append(s.errs, fmt.Errorf("maxResponseSize must be greater than 0, got %d", maxResponseSize))
+		s.errs = append(s.errs, &ConfigError{Field: "maxResponseSize", Err: fmt.Errorf("must be greater than 0, got %d", maxResponseSize)})
 		return s
 	}
 	s.cfg.maxResponseSize = maxResponseSize
@@ -283,13 +283,13 @@ func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
 // SetMaxDepth sets the maximum recursion depth for following sitemap indexes.
 // A sitemap index may reference other sitemap indexes; this limits how many levels deep
 // the parser will follow. The default is 10.
-// The value must be greater than 0; invalid values are ignored and an error is recorded.
+// The value must be greater than 0; invalid values are ignored and a *ConfigError is recorded.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxDepth(maxDepth int) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if maxDepth <= 0 {
-		s.errs = append(s.errs, fmt.Errorf("maxDepth must be greater than 0, got %d", maxDepth))
+		s.errs = append(s.errs, &ConfigError{Field: "maxDepth", Err: fmt.Errorf("must be greater than 0, got %d", maxDepth)})
 		return s
 	}
 	s.cfg.maxDepth = maxDepth
@@ -304,13 +304,13 @@ func (s *S) SetMaxDepth(maxDepth int) *S {
 // traversal, which is recommended for very large sitemap indexes to avoid
 // goroutine and connection blow-up.
 // The value must be greater than or equal to 0; negative values are ignored
-// and an error is recorded.
+// and a *ConfigError is recorded.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if maxConcurrency < 0 {
-		s.errs = append(s.errs, fmt.Errorf("maxConcurrency must be >= 0, got %d", maxConcurrency))
+		s.errs = append(s.errs, &ConfigError{Field: "maxConcurrency", Err: fmt.Errorf("must be >= 0, got %d", maxConcurrency)})
 		return s
 	}
 	s.cfg.maxConcurrency = maxConcurrency
@@ -319,8 +319,8 @@ func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
 }
 
 // SetFollow sets the follow patterns using the provided list of regex strings and compiles them into regex objects.
-// Patterns longer than maxRegexPatternLength characters are rejected with an error.
-// Any errors encountered during compilation are appended to the error list in the struct.
+// Patterns longer than maxRegexPatternLength characters are rejected with a *ConfigError.
+// Any errors encountered during compilation are recorded as *ConfigError values.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetFollow(regexes []string) *S {
 	s.mu.Lock()
@@ -329,12 +329,12 @@ func (s *S) SetFollow(regexes []string) *S {
 	s.cfg.followRegexes = nil
 	for _, followPattern := range s.cfg.follow {
 		if len(followPattern) > maxRegexPatternLength {
-			s.errs = append(s.errs, fmt.Errorf("follow pattern exceeds maximum length of %d characters (%d)", maxRegexPatternLength, len(followPattern)))
+			s.errs = append(s.errs, &ConfigError{Field: "follow", Err: fmt.Errorf("pattern exceeds maximum length of %d characters (%d)", maxRegexPatternLength, len(followPattern))})
 			continue
 		}
 		re, err := regexp.Compile(followPattern)
 		if err != nil {
-			s.errs = append(s.errs, err)
+			s.errs = append(s.errs, &ConfigError{Field: "follow", Err: err})
 			continue
 		}
 		s.cfg.followRegexes = append(s.cfg.followRegexes, re)
@@ -344,8 +344,8 @@ func (s *S) SetFollow(regexes []string) *S {
 }
 
 // SetRules sets the rules patterns using the provided list of regex strings and compiles them into regex objects.
-// Patterns longer than maxRegexPatternLength characters are rejected with an error.
-// Any errors encountered during compilation are appended to the error list in the struct.
+// Patterns longer than maxRegexPatternLength characters are rejected with a *ConfigError.
+// Any errors encountered during compilation are recorded as *ConfigError values.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetRules(regexes []string) *S {
 	s.mu.Lock()
@@ -354,12 +354,12 @@ func (s *S) SetRules(regexes []string) *S {
 	s.cfg.rulesRegexes = nil
 	for _, rulePattern := range s.cfg.rules {
 		if len(rulePattern) > maxRegexPatternLength {
-			s.errs = append(s.errs, fmt.Errorf("rules pattern exceeds maximum length of %d characters (%d)", maxRegexPatternLength, len(rulePattern)))
+			s.errs = append(s.errs, &ConfigError{Field: "rules", Err: fmt.Errorf("pattern exceeds maximum length of %d characters (%d)", maxRegexPatternLength, len(rulePattern))})
 			continue
 		}
 		re, err := regexp.Compile(rulePattern)
 		if err != nil {
-			s.errs = append(s.errs, err)
+			s.errs = append(s.errs, &ConfigError{Field: "rules", Err: err})
 			continue
 		}
 		s.cfg.rulesRegexes = append(s.cfg.rulesRegexes, re)
@@ -447,23 +447,24 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	}
 
 	if urlContent == nil {
-		parsedURL, err := neturl.Parse(url)
-		if err != nil {
-			s.errs = append(s.errs, fmt.Errorf("invalid URL: %w", err))
+		parsedURL, parseErr := neturl.Parse(url)
+		if parseErr != nil {
+			vErr := &ValidationError{URL: url, Err: parseErr}
+			s.errs = append(s.errs, vErr)
 			s.mu.Unlock()
-			return s, s.errs[len(s.errs)-1]
+			return s, vErr
 		}
 		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-			err := fmt.Errorf("invalid URL scheme %q: only http and https are supported", parsedURL.Scheme)
-			s.errs = append(s.errs, err)
+			vErr := &ValidationError{URL: url, Err: fmt.Errorf("invalid URL scheme %q: only http and https are supported", parsedURL.Scheme)}
+			s.errs = append(s.errs, vErr)
 			s.mu.Unlock()
-			return s, err
+			return s, vErr
 		}
 		if parsedURL.Host == "" {
-			err := fmt.Errorf("invalid URL: missing host")
-			s.errs = append(s.errs, err)
+			vErr := &ValidationError{URL: url, Err: errors.New("missing host")}
+			s.errs = append(s.errs, vErr)
 			s.mu.Unlock()
-			return s, err
+			return s, vErr
 		}
 	}
 
@@ -521,7 +522,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 				}
 
 				s.mu.Lock()
-				robotsTXTSitemapContent = s.checkAndUnzipContent(robotsTXTSitemapContent)
+				robotsTXTSitemapContent = s.checkAndUnzipContent(rTXTsmURL, robotsTXTSitemapContent)
 				locations := s.parse(rTXTsmURL, string(robotsTXTSitemapContent))
 				s.mu.Unlock()
 
@@ -535,7 +536,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 		s.mu.Unlock()
 	} else {
 		s.mu.Lock()
-		mainURLContent := s.checkAndUnzipContent([]byte(s.mainURLContent))
+		mainURLContent := s.checkAndUnzipContent(s.mainURL, []byte(s.mainURLContent))
 		s.mainURLContent = string(mainURLContent)
 		locations := s.parse(s.mainURL, s.mainURLContent)
 		s.mu.Unlock()
@@ -740,48 +741,49 @@ func (s *S) fetch(ctx context.Context, url string) ([]byte, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, &NetworkError{URL: url, Err: err}
 	}
 
 	req.Header.Set("User-Agent", userAgent)
 
 	response, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, &NetworkError{URL: url, Err: err}
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(response.Body)
 
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("received HTTP status %d", response.StatusCode)
+		return nil, &NetworkError{URL: url, Err: fmt.Errorf("received HTTP status %d", response.StatusCode)}
 	}
 
 	_, err = io.Copy(&body, io.LimitReader(response.Body, maxResponseSize+1))
 	if err != nil {
-		return nil, err
+		return nil, &NetworkError{URL: url, Err: err}
 	}
 
 	if int64(body.Len()) > maxResponseSize {
-		return nil, fmt.Errorf("response size exceeds limit of %d bytes", maxResponseSize)
+		return nil, &NetworkError{URL: url, Err: fmt.Errorf("response size exceeds limit of %d bytes", maxResponseSize)}
 	}
 
 	return body.Bytes(), nil
 }
 
-// checkAndUnzipContent checks if the content is a gzip file and unzips it if necessary
+// checkAndUnzipContent checks if the content is a gzip file and unzips it if necessary.
 // If the content is a gzip file, it returns the uncompressed content.
-// If an error occurs during unzipping or checking, it returns the original content.
-// It updates the internal error list if an error occurs while unzipping.
+// If an error occurs during unzipping, it appends a *ParseError (with the provided url) and
+// returns the original content.
 //
+// Param url: The URL the content was fetched from (used for error context)
 // Param content: The content to be checked and possibly unzipped
 // Return []byte: The checked and possibly uncompressed content
-func (s *S) checkAndUnzipContent(content []byte) []byte {
+func (s *S) checkAndUnzipContent(url string, content []byte) []byte {
 	gzipPrefix := []byte("\x1f\x8b\x08")
 	if bytes.HasPrefix(content, gzipPrefix) {
 		uncompressed, err := unzip(content)
 		if err != nil {
-			s.errs = append(s.errs, err)
+			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
 			// return the original content if error
 			return content
 		}
@@ -815,7 +817,7 @@ func (s *S) markFetched(url string) bool {
 func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string, depth int) {
 	if depth >= s.cfg.maxDepth {
 		s.mu.Lock()
-		s.errs = append(s.errs, fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth))
+		s.errs = append(s.errs, &ParseError{URL: "", Err: fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth)})
 		s.mu.Unlock()
 		return
 	}
@@ -852,7 +854,7 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 				return
 			}
 			s.mu.Lock()
-			content = s.checkAndUnzipContent(content)
+			content = s.checkAndUnzipContent(loc, content)
 			parsedLocations := s.parse(loc, string(content))
 			s.mu.Unlock()
 			if len(parsedLocations) > 0 {
@@ -872,7 +874,7 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string, depth int) {
 	if depth >= s.cfg.maxDepth {
 		s.mu.Lock()
-		s.errs = append(s.errs, fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth))
+		s.errs = append(s.errs, &ParseError{URL: "", Err: fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth)})
 		s.mu.Unlock()
 		return
 	}
@@ -894,7 +896,7 @@ func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string,
 			continue
 		}
 		s.mu.Lock()
-		content = s.checkAndUnzipContent(content)
+		content = s.checkAndUnzipContent(location, content)
 		parsedLocations := s.parse(location, string(content))
 		s.mu.Unlock()
 		if len(parsedLocations) > 0 {
@@ -935,7 +937,7 @@ func (s *S) parse(url string, content string) []string {
 	case "sitemapindex":
 		smIndex, err := s.parseSitemapIndex(content)
 		if err != nil {
-			s.errs = append(s.errs, fmt.Errorf("failed to parse sitemapindex at %q: %w", url, err))
+			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
 			return sitemapLocationsAdded
 		}
 		s.sitemapLocations = append(s.sitemapLocations, url)
@@ -969,7 +971,7 @@ func (s *S) parse(url string, content string) []string {
 	case "urlset":
 		urlSet, err := s.parseURLSet(content)
 		if err != nil {
-			s.errs = append(s.errs, fmt.Errorf("failed to parse urlset at %q: %w", url, err))
+			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
 			return sitemapLocationsAdded
 		}
 		for _, urlSetURL := range urlSet.URL {
@@ -980,14 +982,14 @@ func (s *S) parse(url string, content string) []string {
 				continue
 			}
 			urlSetURL.Loc = resolvedLoc
-			if err := s.validatePriority(urlSetURL.Priority); err != nil {
+			if err := s.validatePriority(urlSetURL.Loc, urlSetURL.Priority); err != nil {
 				s.errs = append(s.errs, err)
 				continue
 			}
 			validImages, imageErrs := s.validateAndFilterImages(urlSetURL.Images)
 			urlSetURL.Images = validImages
 			s.errs = append(s.errs, imageErrs...)
-			validNews, newsErrs := s.validateNews(urlSetURL.News)
+			validNews, newsErrs := s.validateNews(urlSetURL.Loc, urlSetURL.News)
 			urlSetURL.News = validNews
 			s.errs = append(s.errs, newsErrs...)
 			validVideos, videoErrs := s.validateAndFilterVideos(urlSetURL.Videos)
@@ -1014,9 +1016,9 @@ func (s *S) parse(url string, content string) []string {
 	default:
 		// Unknown root element: report a single error
 		if len(content) == 0 {
-			s.errs = append(s.errs, fmt.Errorf("sitemap content is empty at %q", url))
+			s.errs = append(s.errs, &ParseError{URL: url, Err: errors.New("sitemap content is empty")})
 		} else {
-			s.errs = append(s.errs, fmt.Errorf("unrecognized sitemap format at %q (root element: %q)", url, rootElement))
+			s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("unrecognized sitemap format (root element: %q)", rootElement)})
 		}
 	}
 
@@ -1095,12 +1097,13 @@ const defaultMaxConcurrency = 16
 // validatePriority validates the <priority> value of a URL entry.
 // In strict mode, the value must be between 0.0 and 1.0 inclusive per the sitemaps.org specification.
 // In tolerant mode, any value is accepted and nil is returned.
-func (s *S) validatePriority(priority *float32) error {
+// loc is the page URL used as context in the returned *ValidationError.
+func (s *S) validatePriority(loc string, priority *float32) error {
 	if !s.cfg.strict || priority == nil {
 		return nil
 	}
 	if *priority < 0.0 || *priority > 1.0 {
-		return fmt.Errorf("strict mode: priority %g is out of range [0.0, 1.0]", *priority)
+		return &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: priority %g is out of range [0.0, 1.0]", *priority)}
 	}
 	return nil
 }
@@ -1123,22 +1126,22 @@ func (s *S) validateAndFilterImages(images []Image) ([]Image, []error) {
 	for _, img := range images {
 		if img.Loc == "" {
 			if s.cfg.strict {
-				errs = append(errs, fmt.Errorf("strict mode: image <loc> is empty"))
+				errs = append(errs, &ValidationError{URL: "", Err: errors.New("strict mode: image <loc> is empty")})
 			}
 			continue
 		}
 		if len(img.Loc) > maxLocLength {
-			errs = append(errs, fmt.Errorf("image URL exceeds maximum length of %d characters (%d)", maxLocLength, len(img.Loc)))
+			errs = append(errs, &ValidationError{URL: img.Loc, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(img.Loc))})
 			continue
 		}
 		if s.cfg.strict {
 			parsed, err := neturl.Parse(img.Loc)
 			if err != nil {
-				errs = append(errs, fmt.Errorf("strict mode: invalid image URL %q: %w", img.Loc, err))
+				errs = append(errs, &ValidationError{URL: img.Loc, Err: err})
 				continue
 			}
 			if parsed.Scheme != "http" && parsed.Scheme != "https" {
-				errs = append(errs, fmt.Errorf("strict mode: image URL %q has unsupported scheme %q", img.Loc, parsed.Scheme))
+				errs = append(errs, &ValidationError{URL: img.Loc, Err: fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)})
 				continue
 			}
 		}
@@ -1153,10 +1156,11 @@ func (s *S) validateAndFilterImages(images []Image) ([]Image, []error) {
 // In tolerant mode the entry is returned unchanged with no errors.
 // In strict mode all four fields required by the Google News Sitemap specification
 // must be present: Publication.Name, Publication.Language, PublicationDate, and Title.
-// Missing required fields are each reported as a separate error; the News entry itself
+// Missing required fields are each reported as a separate *ValidationError; the News entry itself
 // is kept so that callers still have access to any data that was successfully parsed.
 // A nil input is a no-op and returns nil, nil.
-func (s *S) validateNews(news *News) (*News, []error) {
+// loc is the parent page URL used as context in the returned *ValidationError values.
+func (s *S) validateNews(loc string, news *News) (*News, []error) {
 	if news == nil {
 		return nil, nil
 	}
@@ -1165,16 +1169,16 @@ func (s *S) validateNews(news *News) (*News, []error) {
 	}
 	var errs []error
 	if news.Title == "" {
-		errs = append(errs, fmt.Errorf("strict mode: news <title> is empty"))
+		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <title> is empty")})
 	}
 	if news.Publication.Name == "" {
-		errs = append(errs, fmt.Errorf("strict mode: news <publication><name> is empty"))
+		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication><name> is empty")})
 	}
 	if news.Publication.Language == "" {
-		errs = append(errs, fmt.Errorf("strict mode: news <publication><language> is empty"))
+		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication><language> is empty")})
 	}
 	if news.PublicationDate == nil {
-		errs = append(errs, fmt.Errorf("strict mode: news <publication_date> is missing"))
+		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication_date> is missing")})
 	}
 	return news, errs
 }
@@ -1200,41 +1204,41 @@ func (s *S) validateAndFilterVideos(videos []Video) ([]Video, []error) {
 	for _, v := range videos {
 		if v.ThumbnailLoc == "" {
 			if s.cfg.strict {
-				errs = append(errs, fmt.Errorf("strict mode: video <thumbnail_loc> is empty"))
+				errs = append(errs, &ValidationError{URL: "", Err: errors.New("strict mode: video <thumbnail_loc> is empty")})
 			}
 			continue
 		}
 		if len(v.ThumbnailLoc) > maxLocLength {
-			errs = append(errs, fmt.Errorf("video thumbnail URL exceeds maximum length of %d characters (%d)", maxLocLength, len(v.ThumbnailLoc)))
+			errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(v.ThumbnailLoc))})
 			continue
 		}
 		if s.cfg.strict {
 			parsed, err := neturl.Parse(v.ThumbnailLoc)
 			if err != nil {
-				errs = append(errs, fmt.Errorf("strict mode: invalid video thumbnail URL %q: %w", v.ThumbnailLoc, err))
+				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: err})
 				continue
 			}
 			if parsed.Scheme != "http" && parsed.Scheme != "https" {
-				errs = append(errs, fmt.Errorf("strict mode: video thumbnail URL %q has unsupported scheme %q", v.ThumbnailLoc, parsed.Scheme))
+				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)})
 				continue
 			}
 			if v.Title == "" {
-				errs = append(errs, fmt.Errorf("strict mode: video <title> is empty"))
+				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video <title> is empty")})
 			}
 			if v.Description == "" {
-				errs = append(errs, fmt.Errorf("strict mode: video <description> is empty"))
+				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video <description> is empty")})
 			}
 			if v.ContentLoc == "" && v.PlayerLoc == "" {
-				errs = append(errs, fmt.Errorf("strict mode: video must have at least one of <content_loc> or <player_loc>"))
+				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video must have at least one of <content_loc> or <player_loc>")})
 			}
 			if v.Duration != nil && (*v.Duration < 1 || *v.Duration > maxVideoDuration) {
-				errs = append(errs, fmt.Errorf("strict mode: video <duration> %d is out of range [1, %d]", *v.Duration, maxVideoDuration))
+				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video <duration> %d is out of range [1, %d]", *v.Duration, maxVideoDuration)})
 			}
 			if v.Rating != nil && (*v.Rating < 0.0 || *v.Rating > maxVideoRating) {
-				errs = append(errs, fmt.Errorf("strict mode: video <rating> %g is out of range [0.0, %g]", *v.Rating, maxVideoRating))
+				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video <rating> %g is out of range [0.0, %g]", *v.Rating, maxVideoRating)})
 			}
 			if len(v.Tags) > maxVideoTags {
-				errs = append(errs, fmt.Errorf("strict mode: video has %d tags, maximum is %d", len(v.Tags), maxVideoTags))
+				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video has %d tags, maximum is %d", len(v.Tags), maxVideoTags)})
 			}
 		}
 		valid = append(valid, v)
@@ -1251,29 +1255,29 @@ func (s *S) validateAndFilterVideos(videos []Video) ([]Video, []error) {
 func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
 	base, err := neturl.Parse(baseURL)
 	if err != nil {
-		return loc, fmt.Errorf("invalid base URL %q: %w", baseURL, err)
+		return loc, &ValidationError{URL: baseURL, Err: err}
 	}
 
 	parsed, err := neturl.Parse(loc)
 	if err != nil {
-		return loc, fmt.Errorf("invalid URL %q: %w", loc, err)
+		return loc, &ValidationError{URL: loc, Err: err}
 	}
 
 	if s.cfg.strict {
 		if parsed.Scheme != "http" && parsed.Scheme != "https" {
-			return loc, fmt.Errorf("strict mode: URL %q has unsupported scheme %q", loc, parsed.Scheme)
+			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)}
 		}
 		if parsed.Host == "" {
-			return loc, fmt.Errorf("strict mode: URL %q is missing host", loc)
+			return loc, &ValidationError{URL: loc, Err: errors.New("strict mode: missing host")}
 		}
 		if parsed.Scheme != base.Scheme {
-			return loc, fmt.Errorf("strict mode: URL %q has scheme %q, expected %q (same as sitemap)", loc, parsed.Scheme, base.Scheme)
+			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: scheme %q does not match sitemap scheme %q", parsed.Scheme, base.Scheme)}
 		}
 		if parsed.Host != base.Host {
-			return loc, fmt.Errorf("strict mode: URL %q has host %q, expected %q (same as sitemap)", loc, parsed.Host, base.Host)
+			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: host %q does not match sitemap host %q", parsed.Host, base.Host)}
 		}
 		if len(loc) > maxLocLength {
-			return loc, fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(loc))
+			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(loc))}
 		}
 		return loc, nil
 	}
@@ -1281,11 +1285,12 @@ func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
 	// Tolerant mode: resolve relative URLs against the base
 	resolved := base.ResolveReference(parsed)
 	if resolved.Scheme != "http" && resolved.Scheme != "https" {
-		return loc, fmt.Errorf("resolved URL %q has unsupported scheme %q", resolved.String(), resolved.Scheme)
+		resolvedStr := resolved.String()
+		return loc, &ValidationError{URL: resolvedStr, Err: fmt.Errorf("unsupported scheme %q", resolved.Scheme)}
 	}
 	resolvedStr := resolved.String()
 	if len(resolvedStr) > maxLocLength {
-		return loc, fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(resolvedStr))
+		return loc, &ValidationError{URL: resolvedStr, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(resolvedStr))}
 	}
 
 	return resolvedStr, nil

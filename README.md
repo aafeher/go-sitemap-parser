@@ -19,6 +19,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Google Image Sitemap extension (`<image:image>`)
 - Google News Sitemap extension (`<news:news>`)
 - Google Video Sitemap extension (`<video:video>`)
+- Typed errors: `*ConfigError`, `*NetworkError`, `*ParseError`, `*ValidationError` — inspectable via `errors.As`
 - Thread-safe
 
 ## Formats supported
@@ -382,6 +383,34 @@ Returns all errors encountered during parsing.
 ```go
 errs := s.GetErrors()
 ```
+
+Errors are typed and can be inspected with `errors.As`:
+
+| Type | When returned | Useful fields |
+|---|---|---|
+| `*ConfigError` | A `Set*` method received an invalid value | `Field` (setting name), `Err` (root cause) |
+| `*NetworkError` | An HTTP fetch failed | `URL` (requested URL), `Err` (root cause) |
+| `*ParseError` | XML or gzip parsing failed | `URL` (sitemap URL), `Err` (root cause) |
+| `*ValidationError` | A URL or field value failed validation | `URL` (value being validated), `Err` (root cause) |
+
+All types implement `Unwrap()`, enabling `errors.Is` traversal to the root cause.
+
+```go
+for _, err := range s.GetErrors() {
+    var netErr *sitemap.NetworkError
+    if errors.As(err, &netErr) {
+        fmt.Printf("fetch failed for %s: %v\n", netErr.URL, netErr.Err)
+        continue
+    }
+    var valErr *sitemap.ValidationError
+    if errors.As(err, &valErr) {
+        fmt.Printf("validation error for %s: %v\n", valErr.URL, valErr.Err)
+        continue
+    }
+}
+```
+
+See [`examples/errors`](examples/errors/main.go) for a runnable example.
 
 #### GetErrorsCount
 

@@ -1,4 +1,4 @@
-# Changelog
+Kérek # Changelog
 
 All notable changes to this project will be documented in this file.
 
@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.9.0] - 2026-05-03
+
+### Added
+- Typed errors: four new exported error types allow callers to distinguish error categories with `errors.As` and inspect structured context:
+  - `*ConfigError` — returned when a `Set*` configuration method receives an invalid value; exposes `Field` (setting name) and `Err` (root cause).
+  - `*NetworkError` — returned when an HTTP fetch fails; exposes `URL` (the requested URL) and `Err` (root cause).
+  - `*ParseError` — returned when XML or gzip parsing of a sitemap document fails; exposes `URL` (the sitemap URL) and `Err` (root cause).
+  - `*ValidationError` — returned when a URL or field value fails validation; exposes `URL` (the value being validated) and `Err` (root cause).
+  - All four types implement `Unwrap()`, enabling `errors.Is` traversal to the root cause.
+- New example: [`examples/errors`](examples/errors/main.go)
+
+### Changed
+- All errors stored in `GetErrors()` and returned by `Parse()` / `ParseContext()` are now wrapped in the appropriate typed error. Error messages have changed format to include error-type context (e.g. `fetch "URL": received HTTP status 404`, `parse "URL": sitemap content is empty`, `validate "URL": strict mode: unsupported scheme "ftp"`, `config "field": must be greater than 0, got -1`). Code that matched on exact error message strings must be updated to use `errors.As` or `strings.Contains`.
 
 ## [0.8.0] - 2026-05-03
 
@@ -151,7 +165,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each parsed `URL` exposes `Loc`, `LastMod`, `ChangeFreq`, and `Priority`
 - Method chaining (fluent interface) on all setters
 
-[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.5.0...v0.6.0
