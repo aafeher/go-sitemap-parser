@@ -117,6 +117,8 @@ s = s.SetMaxDepth(5)
 s := sitemap.New().SetMaxDepth(5)
 ```
 
+See [`examples/maxdepth`](examples/maxdepth/main.go) for a runnable example.
+
 #### Max concurrency
 
 When multi-threaded parsing is enabled, the parser spawns one goroutine per sitemap location and per `robots.txt` sitemap directive. For very large sitemap indexes this can lead to a large number of concurrent goroutines and HTTP connections. To bound the maximum number of in-flight fetches across the whole `Parse()` / `ParseContext()` call, use the `SetMaxConcurrency()` function.

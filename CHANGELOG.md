@@ -7,12 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-04
+
 ### Added
 - Support for RSS 2.0, Atom 1.0, and Plain Text sitemaps: the parser now automatically detects these formats and extracts URLs from them.
 - XHTML hreflang extension support (`<xhtml:link>`): the `URL` struct now exposes a `Hreflangs []AlternateLink` field populated from `xmlns:xhtml="http://www.w3.org/1999/xhtml"` elements. Each `AlternateLink` exposes `Rel`, `Hreflang`, and `Href`.
 - `SECURITY.md`: security policy, vulnerability reporting via GitHub Private Security Advisories, and guidance on SSRF, resource exhaustion, XXE, and TLS verification
 - Hreflang validation: links with an empty `Href` are silently dropped in tolerant mode or produce an error in strict mode. In strict mode, `Rel` must be `"alternate"`, `Hreflang` must not be empty, and `Href` must be a valid absolute HTTP(S) URL.
-- New examples: [`examples/rss`](examples/rss/main.go), [`examples/atom`](examples/atom/main.go), [`examples/text`](examples/text/main.go), and [`examples/hreflang`](examples/hreflang/main.go).
+- New examples: [`examples/rss`](examples/rss/main.go), [`examples/atom`](examples/atom/main.go), [`examples/text`](examples/text/main.go), [`examples/hreflang`](examples/hreflang/main.go), and [`examples/maxdepth`](examples/maxdepth/main.go).
 - Configuration getter methods: `GetUserAgent()`, `GetFetchTimeout()`, `GetMultiThread()`, `GetMaxResponseSize()`, `GetMaxDepth()`, `GetMaxConcurrency()`, `GetFollow()`, `GetRules()`, `GetHTTPClient()`, `GetStrict()` — each returns the current value of the corresponding configuration field. `GetFollow()` and `GetRules()` return copies of the internal slice.
 
 ### Changed
@@ -178,7 +180,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each parsed `URL` exposes `Loc`, `LastMod`, `ChangeFreq`, and `Priority`
 - Method chaining (fluent interface) on all setters
 
-[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.6.0...v0.7.0
