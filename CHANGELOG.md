@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SetFetchTimeout()` now rejects `0` with a `*ConfigError`; the default value is kept unchanged. Previously `0` was silently accepted but caused every HTTP request to time out immediately.
 - `URLSet`, `RSS`, and `Atom` XML parsing structs are now unexported (`urlSet`, `rss`, `atom`). These were internal implementation details used only for XML unmarshalling and were never part of the documented public API.
 - `lastModTime` renamed to `LastModTime` (exported). This type is the value behind `URL.LastMod`, `Video.ExpirationDate`, `Video.PublicationDate`, and `News.PublicationDate`. Callers that stored a `*lastModTime` value must update to `*LastModTime`.
+- Go minimum version bumped from 1.24.0 to 1.25.0; CI matrix updated from `1.24` to `1.25`
+- `golang.org/x/net` updated from v0.45.0 to v0.53.0
+- `golang.org/x/text` (indirect) updated from v0.29.0 to v0.36.0
 
 ## [0.9.0] - 2026-05-03
 
