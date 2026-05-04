@@ -344,7 +344,7 @@ urls := s.GetURLs()
 
 Each `URL` struct contains the following fields:
 - `Loc` (`string`) — the URL location
-- `LastMod` (`*lastModTime`) — last modification time (embeds `time.Time`), may be `nil`
+- `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`
 - `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`
 - `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`
 - `Images` (`[]Image`) — images associated with this URL via the Google Image Sitemap extension, may be `nil`
@@ -365,7 +365,7 @@ Each `News` struct contains:
 - `Publication` (`NewsPublication`) — publication metadata:
   - `Name` (`string`) — publication name (required in strict mode)
   - `Language` (`string`) — BCP 47 language code, e.g. `"en"` (required in strict mode)
-- `PublicationDate` (`*lastModTime`) — article publication date; embeds `time.Time`, may be `nil` if absent (required in strict mode)
+- `PublicationDate` (`*LastModTime`) — article publication date; embeds `time.Time`, may be `nil` if absent (required in strict mode)
 - `Title` (`string`) — article title (required in strict mode)
 
 In strict mode, all four required fields (`Title`, `Publication.Name`, `Publication.Language`, `PublicationDate`) must be present; missing fields are each reported via `GetErrors()` and the `News` entry is still included with whatever data was parsed. In tolerant mode no validation is performed.
@@ -386,10 +386,10 @@ Each `Video` struct contains:
 - `ContentLoc` (`string`) — direct URL to the video file (at least one of `ContentLoc` or `PlayerLoc` required in strict mode)
 - `PlayerLoc` (`string`) — URL of an embedded video player
 - `Duration` (`*int`) — duration in seconds (1–28800); validated in strict mode if present
-- `ExpirationDate` (`*lastModTime`) — date after which the video should not be shown; embeds `time.Time`, may be `nil`
+- `ExpirationDate` (`*LastModTime`) — date after which the video should not be shown; embeds `time.Time`, may be `nil`
 - `Rating` (`*float32`) — rating between 0.0 and 5.0; validated in strict mode if present
 - `ViewCount` (`*int`) — number of views
-- `PublicationDate` (`*lastModTime`) — publication date; embeds `time.Time`, may be `nil`
+- `PublicationDate` (`*LastModTime`) — publication date; embeds `time.Time`, may be `nil`
 - `FamilyFriendly` (`string`) — `"yes"` or `"no"`
 - `Restriction` (`*VideoRestriction`) — country restriction with `Relationship` (`"allow"`/`"deny"`) and `Value` (space-separated country codes)
 - `Platform` (`*VideoPlatform`) — platform restriction with `Relationship` and `Value` (e.g. `"web mobile tv"`)
