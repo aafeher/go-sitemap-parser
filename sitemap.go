@@ -539,6 +539,21 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 // error list and is also returned by ParseContext.
 //
 // All other semantics match Parse.
+// validateInputURL parses url and verifies it uses http or https and has a host.
+func (s *S) validateInputURL(url string) error {
+	parsedURL, parseErr := neturl.Parse(url)
+	if parseErr != nil {
+		return &ValidationError{URL: url, Err: parseErr}
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return &ValidationError{URL: url, Err: fmt.Errorf("invalid URL scheme %q: only http and https are supported", parsedURL.Scheme)}
+	}
+	if parsedURL.Host == "" {
+		return &ValidationError{URL: url, Err: errors.New("missing host")}
+	}
+	return nil
+}
+
 func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*S, error) {
 	s.parseMu.Lock()
 	defer s.parseMu.Unlock()
@@ -557,21 +572,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	}
 
 	if urlContent == nil {
-		parsedURL, parseErr := neturl.Parse(url)
-		if parseErr != nil {
-			vErr := &ValidationError{URL: url, Err: parseErr}
-			s.errs = append(s.errs, vErr)
-			s.mu.Unlock()
-			return s, vErr
-		}
-		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-			vErr := &ValidationError{URL: url, Err: fmt.Errorf("invalid URL scheme %q: only http and https are supported", parsedURL.Scheme)}
-			s.errs = append(s.errs, vErr)
-			s.mu.Unlock()
-			return s, vErr
-		}
-		if parsedURL.Host == "" {
-			vErr := &ValidationError{URL: url, Err: errors.New("missing host")}
+		if vErr := s.validateInputURL(url); vErr != nil {
 			s.errs = append(s.errs, vErr)
 			s.mu.Unlock()
 			return s, vErr
@@ -1039,153 +1040,162 @@ func detectRootElement(content string) string {
 // Parsing errors are added to the error list.
 // It returns a slice of sitemap locations that were added.
 func (s *S) parse(url string, content string) []string {
-	var sitemapLocationsAdded []string
-
 	rootElement := detectRootElement(content)
-
 	switch rootElement {
 	case "sitemapindex":
-		smIndex, err := s.parseSitemapIndex(content)
-		if err != nil {
-			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
-			return sitemapLocationsAdded
-		}
-		s.sitemapLocations = append(s.sitemapLocations, url)
-		for _, sitemapIndexSitemap := range smIndex.Sitemap {
-			sitemapIndexSitemap.Loc = strings.TrimSpace(sitemapIndexSitemap.Loc)
-			resolvedLoc, err := s.resolveAndValidateLoc(sitemapIndexSitemap.Loc, url)
-			if err != nil {
-				s.errs = append(s.errs, err)
-				continue
-			}
-			sitemapIndexSitemap.Loc = resolvedLoc
-			// Check if the sitemapIndexSitemap.Loc matches any of the regular expressions in s.cfg.followRegexes.
-			matches := false
-			if len(s.cfg.followRegexes) > 0 {
-				for _, re := range s.cfg.followRegexes {
-					if re.MatchString(sitemapIndexSitemap.Loc) {
-						matches = true
-						break
-					}
-				}
-			} else {
-				matches = true
-			}
-			if !matches {
-				continue
-			}
-			sitemapLocationsAdded = append(sitemapLocationsAdded, sitemapIndexSitemap.Loc)
-			s.sitemapLocations = append(s.sitemapLocations, sitemapIndexSitemap.Loc)
-		}
-
+		return s.parseSitemapIndexContent(url, content)
 	case "urlset":
-		us, err := s.parseURLSet(content)
-		if err != nil {
-			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
-			return sitemapLocationsAdded
-		}
-		for _, urlSetURL := range us.URL {
-			urlSetURL.Loc = strings.TrimSpace(urlSetURL.Loc)
-			resolvedLoc, err := s.resolveAndValidateLoc(urlSetURL.Loc, url)
-			if err != nil {
-				s.errs = append(s.errs, err)
-				continue
-			}
-			urlSetURL.Loc = resolvedLoc
-			if err := s.validatePriority(urlSetURL.Loc, urlSetURL.Priority); err != nil {
-				s.errs = append(s.errs, err)
-				continue
-			}
-			validImages, imageErrs := s.validateAndFilterImages(urlSetURL.Images)
-			urlSetURL.Images = validImages
-			s.errs = append(s.errs, imageErrs...)
-			validNews, newsErrs := s.validateNews(urlSetURL.Loc, urlSetURL.News)
-			urlSetURL.News = validNews
-			s.errs = append(s.errs, newsErrs...)
-			validVideos, videoErrs := s.validateAndFilterVideos(urlSetURL.Videos)
-			urlSetURL.Videos = validVideos
-			s.errs = append(s.errs, videoErrs...)
-			validHreflangs, hreflangErrs := s.validateAndFilterHreflangs(urlSetURL.Hreflangs)
-			urlSetURL.Hreflangs = validHreflangs
-			s.errs = append(s.errs, hreflangErrs...)
-			// Check if the urlSetURL.Loc matches any of the regular expressions in s.cfg.rulesRegexes.
-			matches := false
-			if len(s.cfg.rulesRegexes) > 0 {
-				for _, re := range s.cfg.rulesRegexes {
-					if re.MatchString(urlSetURL.Loc) {
-						matches = true
-						break
-					}
-				}
-			} else {
-				matches = true
-			}
-			if !matches {
-				continue
-			}
-			s.urls = append(s.urls, urlSetURL)
-		}
-
+		s.parseURLSetContent(url, content)
 	case "rss":
-		rssFeed, err := s.parseRSS(content)
-		if err != nil {
-			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
-			return sitemapLocationsAdded
-		}
-		for _, item := range rssFeed.Channel.Item {
-			s.addURL(strings.TrimSpace(item.Link), url)
-		}
-
+		s.parseRSSContent(url, content)
 	case "feed":
-		atomFeed, err := s.parseAtom(content)
-		if err != nil {
-			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
-			return sitemapLocationsAdded
-		}
-		for _, entry := range atomFeed.Entry {
-			var loc string
-			for _, l := range entry.Link {
-				if l.Rel == "" || l.Rel == "alternate" {
-					loc = l.Href
-					break
-				}
-			}
-			if loc != "" {
-				s.addURL(strings.TrimSpace(loc), url)
-			}
-		}
-
+		s.parseFeedContent(url, content)
 	default:
-		// Unknown root element: check if it's a plain text sitemap
-		// A text sitemap must contain at least one valid absolute URL.
-		lines := strings.Split(content, "\n")
-		var textURLs []string
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			// Minimal check for a URL-like string
-			if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
-				textURLs = append(textURLs, line)
+		s.parseTextContent(url, rootElement, content)
+	}
+	return nil
+}
+
+func (s *S) parseSitemapIndexContent(url, content string) []string {
+	var added []string
+	smIndex, err := s.parseSitemapIndex(content)
+	if err != nil {
+		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+		return added
+	}
+	s.sitemapLocations = append(s.sitemapLocations, url)
+	for _, sm := range smIndex.Sitemap {
+		sm.Loc = strings.TrimSpace(sm.Loc)
+		resolvedLoc, err := s.resolveAndValidateLoc(sm.Loc, url)
+		if err != nil {
+			s.errs = append(s.errs, err)
+			continue
+		}
+		sm.Loc = resolvedLoc
+		if !s.matchesFollowFilter(sm.Loc) {
+			continue
+		}
+		added = append(added, sm.Loc)
+		s.sitemapLocations = append(s.sitemapLocations, sm.Loc)
+	}
+	return added
+}
+
+func (s *S) parseURLSetContent(url, content string) {
+	us, err := s.parseURLSet(content)
+	if err != nil {
+		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+		return
+	}
+	for _, u := range us.URL {
+		u.Loc = strings.TrimSpace(u.Loc)
+		resolvedLoc, err := s.resolveAndValidateLoc(u.Loc, url)
+		if err != nil {
+			s.errs = append(s.errs, err)
+			continue
+		}
+		u.Loc = resolvedLoc
+		if err := s.validatePriority(u.Loc, u.Priority); err != nil {
+			s.errs = append(s.errs, err)
+			continue
+		}
+		validImages, imageErrs := s.validateAndFilterImages(u.Images)
+		u.Images = validImages
+		s.errs = append(s.errs, imageErrs...)
+		validNews, newsErrs := s.validateNews(u.Loc, u.News)
+		u.News = validNews
+		s.errs = append(s.errs, newsErrs...)
+		validVideos, videoErrs := s.validateAndFilterVideos(u.Videos)
+		u.Videos = validVideos
+		s.errs = append(s.errs, videoErrs...)
+		validHreflangs, hreflangErrs := s.validateAndFilterHreflangs(u.Hreflangs)
+		u.Hreflangs = validHreflangs
+		s.errs = append(s.errs, hreflangErrs...)
+		if !s.matchesRulesFilter(u.Loc) {
+			continue
+		}
+		s.urls = append(s.urls, u)
+	}
+}
+
+func (s *S) parseRSSContent(url, content string) {
+	rssFeed, err := s.parseRSS(content)
+	if err != nil {
+		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+		return
+	}
+	for _, item := range rssFeed.Channel.Item {
+		s.addURL(strings.TrimSpace(item.Link), url)
+	}
+}
+
+func (s *S) parseFeedContent(url, content string) {
+	atomFeed, err := s.parseAtom(content)
+	if err != nil {
+		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+		return
+	}
+	for _, entry := range atomFeed.Entry {
+		var loc string
+		for _, l := range entry.Link {
+			if l.Rel == "" || l.Rel == "alternate" {
+				loc = l.Href
+				break
 			}
 		}
-
-		if len(textURLs) > 0 {
-			for _, textURL := range textURLs {
-				s.addURL(textURL, url)
-			}
-		} else {
-			// Unknown root element: report a single error
-			if len(content) == 0 {
-				s.errs = append(s.errs, &ParseError{URL: url, Err: errors.New("sitemap content is empty")})
-			} else {
-				s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("unrecognized sitemap format (root element: %q)", rootElement)})
-			}
+		if loc != "" {
+			s.addURL(strings.TrimSpace(loc), url)
 		}
 	}
+}
 
-	return sitemapLocationsAdded
+func (s *S) parseTextContent(url, rootElement, content string) {
+	lines := strings.Split(content, "\n")
+	var textURLs []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
+			textURLs = append(textURLs, line)
+		}
+	}
+	if len(textURLs) > 0 {
+		for _, textURL := range textURLs {
+			s.addURL(textURL, url)
+		}
+		return
+	}
+	if len(content) == 0 {
+		s.errs = append(s.errs, &ParseError{URL: url, Err: errors.New("sitemap content is empty")})
+	} else {
+		s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("unrecognized sitemap format (root element: %q)", rootElement)})
+	}
+}
+
+func (s *S) matchesFollowFilter(loc string) bool {
+	if len(s.cfg.followRegexes) == 0 {
+		return true
+	}
+	for _, re := range s.cfg.followRegexes {
+		if re.MatchString(loc) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *S) matchesRulesFilter(loc string) bool {
+	if len(s.cfg.rulesRegexes) == 0 {
+		return true
+	}
+	for _, re := range s.cfg.rulesRegexes {
+		if re.MatchString(loc) {
+			return true
+		}
+	}
+	return false
 }
 
 // addURL resolves, validates, filters, and appends a single location to s.urls.
@@ -1196,19 +1206,7 @@ func (s *S) addURL(loc string, baseURL string) {
 		s.errs = append(s.errs, err)
 		return
 	}
-	// Check if the resolvedLoc matches any of the regular expressions in s.cfg.rulesRegexes.
-	matches := false
-	if len(s.cfg.rulesRegexes) > 0 {
-		for _, re := range s.cfg.rulesRegexes {
-			if re.MatchString(resolvedLoc) {
-				matches = true
-				break
-			}
-		}
-	} else {
-		matches = true
-	}
-	if matches {
+	if s.matchesRulesFilter(resolvedLoc) {
 		s.urls = append(s.urls, URL{Loc: resolvedLoc})
 	}
 }
@@ -1420,37 +1418,53 @@ func (s *S) validateAndFilterVideos(videos []Video) ([]Video, []error) {
 			continue
 		}
 		if s.cfg.strict {
-			parsed, err := neturl.Parse(v.ThumbnailLoc)
-			if err != nil {
-				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: err})
+			ok, thumbErrs := s.validateVideoThumbnailStrict(v.ThumbnailLoc)
+			errs = append(errs, thumbErrs...)
+			if !ok {
 				continue
 			}
-			if parsed.Scheme != "http" && parsed.Scheme != "https" {
-				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)})
-				continue
-			}
-			if v.Title == "" {
-				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video <title> is empty")})
-			}
-			if v.Description == "" {
-				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video <description> is empty")})
-			}
-			if v.ContentLoc == "" && v.PlayerLoc == "" {
-				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video must have at least one of <content_loc> or <player_loc>")})
-			}
-			if v.Duration != nil && (*v.Duration < 1 || *v.Duration > maxVideoDuration) {
-				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video <duration> %d is out of range [1, %d]", *v.Duration, maxVideoDuration)})
-			}
-			if v.Rating != nil && (*v.Rating < 0.0 || *v.Rating > maxVideoRating) {
-				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video <rating> %g is out of range [0.0, %g]", *v.Rating, maxVideoRating)})
-			}
-			if len(v.Tags) > maxVideoTags {
-				errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video has %d tags, maximum is %d", len(v.Tags), maxVideoTags)})
-			}
+			errs = append(errs, s.validateVideoFieldsStrict(v)...)
 		}
 		valid = append(valid, v)
 	}
 	return valid, errs
+}
+
+// validateVideoThumbnailStrict validates the ThumbnailLoc URL scheme in strict mode.
+// Returns false if the video should be skipped entirely.
+func (s *S) validateVideoThumbnailStrict(thumbnailLoc string) (bool, []error) {
+	parsed, err := neturl.Parse(thumbnailLoc)
+	if err != nil {
+		return false, []error{&ValidationError{URL: thumbnailLoc, Err: err}}
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false, []error{&ValidationError{URL: thumbnailLoc, Err: fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)}}
+	}
+	return true, nil
+}
+
+// validateVideoFieldsStrict checks non-fatal strict-mode constraints on a video entry.
+func (s *S) validateVideoFieldsStrict(v Video) []error {
+	var errs []error
+	if v.Title == "" {
+		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video <title> is empty")})
+	}
+	if v.Description == "" {
+		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video <description> is empty")})
+	}
+	if v.ContentLoc == "" && v.PlayerLoc == "" {
+		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video must have at least one of <content_loc> or <player_loc>")})
+	}
+	if v.Duration != nil && (*v.Duration < 1 || *v.Duration > maxVideoDuration) {
+		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video <duration> %d is out of range [1, %d]", *v.Duration, maxVideoDuration)})
+	}
+	if v.Rating != nil && (*v.Rating < 0.0 || *v.Rating > maxVideoRating) {
+		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video <rating> %g is out of range [0.0, %g]", *v.Rating, maxVideoRating)})
+	}
+	if len(v.Tags) > maxVideoTags {
+		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video has %d tags, maximum is %d", len(v.Tags), maxVideoTags)})
+	}
+	return errs
 }
 
 // validateAndFilterHreflangs validates the alternate link (hreflang) entries on a parsed URL

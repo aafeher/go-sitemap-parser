@@ -25,131 +25,75 @@ func (fw *failingWriter) Write(p []byte) (n int, err error) {
 	return fw.buffer.Write(p)
 }
 
-func TestTestServer(t *testing.T) {
+func mustGetBody(t *testing.T, url string) (int, []byte) {
+	t.Helper()
+	res, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("HTTP GET failed: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response body: %v", err)
+	}
+	return res.StatusCode, body
+}
 
+func mustUnzip(t *testing.T, data []byte) []byte {
+	t.Helper()
+	result, err := unzip(data)
+	if err != nil {
+		t.Fatalf("Failed to unzip response body: %v", err)
+	}
+	return result
+}
+
+func TestTestServer(t *testing.T) {
 	ts := testServer()
 	defer ts.Close()
 
 	t.Run("index should be not found", func(t *testing.T) {
-		res, err := http.Get(ts.URL + "/")
-		if err != nil {
-			t.Fatalf("HTTP GET failed: %v", err)
-		}
-		defer func() { _ = res.Body.Close() }()
-		if res.StatusCode != http.StatusNotFound {
-			t.Errorf("expected status %d; got %d", http.StatusNotFound, res.StatusCode)
-		}
+		status, _ := mustGetBody(t, ts.URL+"/")
+		mustEqual(t, "status", status, http.StatusNotFound)
 	})
 
 	t.Run("example should return ok", func(t *testing.T) {
-		res, err := http.Get(ts.URL + "/example")
-		if err != nil {
-			t.Fatalf("HTTP GET failed: %v", err)
-		}
-		defer func() { _ = res.Body.Close() }()
-		body, err := io.ReadAll(res.Body)
-		if err != nil {
-			t.Fatalf("Failed to read response body: %v", err)
-		}
-		expected := "example content\n"
-		if string(body) != expected {
-			t.Errorf("expected body %q; got %q", expected, string(body))
-		}
+		_, body := mustGetBody(t, ts.URL+"/example")
+		mustEqual(t, "body", string(body), "example content\n")
 	})
 
 	t.Run("non-existent file should be not found", func(t *testing.T) {
-		res, err := http.Get(ts.URL + "/nonexistent.txt")
-		if err != nil {
-			t.Fatalf("HTTP GET failed: %v", err)
-		}
-		defer func() { _ = res.Body.Close() }()
-		if res.StatusCode != http.StatusNotFound {
-			t.Errorf("expected status %d; got %d", http.StatusNotFound, res.StatusCode)
-		}
+		status, _ := mustGetBody(t, ts.URL+"/nonexistent.txt")
+		mustEqual(t, "status", status, http.StatusNotFound)
 	})
 
 	t.Run("serve plain text file", func(t *testing.T) {
-		res, err := http.Get(ts.URL + "/test.txt")
-		if err != nil {
-			t.Fatalf("HTTP GET failed: %v", err)
-		}
-		defer func() { _ = res.Body.Close() }()
-		body, err := io.ReadAll(res.Body)
-		if err != nil {
-			t.Fatalf("Failed to read response body: %v", err)
-		}
+		_, body := mustGetBody(t, ts.URL+"/test.txt")
 		host := strings.TrimPrefix(ts.URL, "http://")
-		expected := "Hello " + host + "\n"
-		if string(body) != expected {
-			t.Errorf("expected body %q; got %q", expected, string(body))
-		}
+		mustEqual(t, "body", string(body), "Hello "+host+"\n")
 	})
 
 	t.Run("serve gzipped file", func(t *testing.T) {
-		res, err := http.Get(ts.URL + "/test.gz")
-		if err != nil {
-			t.Fatalf("HTTP GET failed: %v", err)
-		}
-		defer func() { _ = res.Body.Close() }()
-		body, err := io.ReadAll(res.Body)
-		if err != nil {
-			t.Fatalf("Failed to read response body: %v", err)
-		}
-
-		unzippedBody, err := unzip(body)
-		if err != nil {
-			t.Fatalf("Failed to unzip response body: %v", err)
-		}
+		_, body := mustGetBody(t, ts.URL+"/test.gz")
+		unzippedBody := mustUnzip(t, body)
 		host := strings.TrimPrefix(ts.URL, "http://")
-		expected := "Gzipped " + host
-		if string(unzippedBody) != expected {
-			t.Errorf("expected body %q; got %q", expected, string(unzippedBody))
-		}
+		mustEqual(t, "body", string(unzippedBody), "Gzipped "+host)
 	})
 
 	t.Run("unzip error should be handled", func(t *testing.T) {
-		res, err := http.Get(ts.URL + "/corrupted.gz")
-		if err != nil {
-			t.Fatalf("HTTP GET failed: %v", err)
-		}
-		defer func() { _ = res.Body.Close() }()
-		body, err := io.ReadAll(res.Body)
-		if err != nil {
-			t.Fatalf("Failed to read response body: %v", err)
-		}
-		// The handler returns the error in "error: %v\n" format
-		expected := "error: gzip: invalid header\n"
-		if string(body) != expected {
-			t.Errorf("expected body %q; got %q", expected, string(body))
-		}
+		_, body := mustGetBody(t, ts.URL+"/corrupted.gz")
+		mustEqual(t, "body", string(body), "error: gzip: invalid header\n")
 	})
 
 	t.Run("handle zip error", func(t *testing.T) {
-		// Replace the original zip function with a mock that returns an error
 		originalZipFunc := zipFunc
 		zipFunc = func(_ []byte, _ io.Writer) ([]byte, error) {
 			return nil, fmt.Errorf("simulated zip error")
 		}
-		// Ensure the original function is restored after the test
 		defer func() { zipFunc = originalZipFunc }()
 
-		// Request a gzipped file to trigger the code path that calls zip
-		res, err := http.Get(ts.URL + "/test.gz")
-		if err != nil {
-			t.Fatalf("HTTP GET failed: %v", err)
-		}
-		defer func() { _ = res.Body.Close() }()
-
-		body, err := io.ReadAll(res.Body)
-		if err != nil {
-			t.Fatalf("Failed to read response body: %v", err)
-		}
-
-		// Check if the handler returned the expected error message
-		expected := "error: simulated zip error\n"
-		if string(body) != expected {
-			t.Errorf("expected body %q; got %q", expected, string(body))
-		}
+		_, body := mustGetBody(t, ts.URL+"/test.gz")
+		mustEqual(t, "body", string(body), "error: simulated zip error\n")
 	})
 }
 

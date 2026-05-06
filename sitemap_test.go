@@ -496,261 +496,111 @@ func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return rt.delegate.RoundTrip(req)
 }
 
-func TestS_GetConfiguration(t *testing.T) {
-	t.Run("defaults", func(t *testing.T) {
-		s := New()
-		if s.GetUserAgent() != "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)" {
-			t.Errorf("unexpected default user agent: %q", s.GetUserAgent())
-		}
-		if s.GetFetchTimeout() != 3 {
-			t.Errorf("unexpected default fetch timeout: %d", s.GetFetchTimeout())
-		}
-		if !s.GetMultiThread() {
-			t.Error("expected multi-thread to be true by default")
-		}
-		if s.GetMaxResponseSize() != 50*1024*1024 {
-			t.Errorf("unexpected default max response size: %d", s.GetMaxResponseSize())
-		}
-		if s.GetMaxDepth() != 10 {
-			t.Errorf("unexpected default max depth: %d", s.GetMaxDepth())
-		}
-		if s.GetMaxConcurrency() != 16 {
-			t.Errorf("unexpected default max concurrency: %d", s.GetMaxConcurrency())
-		}
-		if got := s.GetFollow(); len(got) != 0 {
-			t.Errorf("expected empty follow patterns, got %v", got)
-		}
-		if got := s.GetRules(); len(got) != 0 {
-			t.Errorf("expected empty rules patterns, got %v", got)
-		}
-		if s.GetHTTPClient() != nil {
-			t.Error("expected nil HTTP client by default")
-		}
-		if s.GetStrict() {
-			t.Error("expected strict to be false by default")
-		}
-	})
+func TestS_GetConfiguration_Defaults(t *testing.T) {
+	s := New()
+	mustEqual(t, "GetUserAgent", s.GetUserAgent(), "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)")
+	mustEqual(t, "GetFetchTimeout", s.GetFetchTimeout(), 3)
+	mustEqual(t, "GetMultiThread", s.GetMultiThread(), true)
+	mustEqual(t, "GetMaxResponseSize", s.GetMaxResponseSize(), 50*1024*1024)
+	mustEqual(t, "GetMaxDepth", s.GetMaxDepth(), 10)
+	mustEqual(t, "GetMaxConcurrency", s.GetMaxConcurrency(), 16)
+	mustEqual(t, "GetFollow length", len(s.GetFollow()), 0)
+	mustEqual(t, "GetRules length", len(s.GetRules()), 0)
+	mustEqual(t, "GetHTTPClient is nil", s.GetHTTPClient() == nil, true)
+	mustEqual(t, "GetStrict", s.GetStrict(), false)
+}
 
-	t.Run("after setters", func(t *testing.T) {
-		customClient := &http.Client{}
-		s := New().
-			SetUserAgent("TestAgent/1.0").
-			SetFetchTimeout(30).
-			SetMultiThread(false).
-			SetMaxResponseSize(1024).
-			SetMaxDepth(5).
-			SetMaxConcurrency(8).
-			SetFollow([]string{`\.xml$`}).
-			SetRules([]string{`/product/`}).
-			SetHTTPClient(customClient).
-			SetStrict(true)
+func TestS_GetConfiguration_AfterSetters(t *testing.T) {
+	customClient := &http.Client{}
+	s := New().
+		SetUserAgent("TestAgent/1.0").
+		SetFetchTimeout(30).
+		SetMultiThread(false).
+		SetMaxResponseSize(1024).
+		SetMaxDepth(5).
+		SetMaxConcurrency(8).
+		SetFollow([]string{`\.xml$`}).
+		SetRules([]string{`/product/`}).
+		SetHTTPClient(customClient).
+		SetStrict(true)
 
-		if got := s.GetUserAgent(); got != "TestAgent/1.0" {
-			t.Errorf("GetUserAgent: got %q, want %q", got, "TestAgent/1.0")
-		}
-		if got := s.GetFetchTimeout(); got != 30 {
-			t.Errorf("GetFetchTimeout: got %d, want 30", got)
-		}
-		if s.GetMultiThread() {
-			t.Error("GetMultiThread: expected false")
-		}
-		if got := s.GetMaxResponseSize(); got != 1024 {
-			t.Errorf("GetMaxResponseSize: got %d, want 1024", got)
-		}
-		if got := s.GetMaxDepth(); got != 5 {
-			t.Errorf("GetMaxDepth: got %d, want 5", got)
-		}
-		if got := s.GetMaxConcurrency(); got != 8 {
-			t.Errorf("GetMaxConcurrency: got %d, want 8", got)
-		}
-		if got := s.GetFollow(); len(got) != 1 || got[0] != `\.xml$` {
-			t.Errorf("GetFollow: got %v, want [\\.xml$]", got)
-		}
-		if got := s.GetRules(); len(got) != 1 || got[0] != `/product/` {
-			t.Errorf("GetRules: got %v, want [/product/]", got)
-		}
-		if got := s.GetHTTPClient(); got != customClient {
-			t.Error("GetHTTPClient: did not return the configured client")
-		}
-		if !s.GetStrict() {
-			t.Error("GetStrict: expected true")
-		}
-	})
+	mustEqual(t, "GetUserAgent", s.GetUserAgent(), "TestAgent/1.0")
+	mustEqual(t, "GetFetchTimeout", s.GetFetchTimeout(), 30)
+	mustEqual(t, "GetMultiThread", s.GetMultiThread(), false)
+	mustEqual(t, "GetMaxResponseSize", s.GetMaxResponseSize(), 1024)
+	mustEqual(t, "GetMaxDepth", s.GetMaxDepth(), 5)
+	mustEqual(t, "GetMaxConcurrency", s.GetMaxConcurrency(), 8)
+	follow := s.GetFollow()
+	mustEqual(t, "GetFollow length", len(follow), 1)
+	if len(follow) > 0 {
+		mustEqual(t, "GetFollow[0]", follow[0], `\.xml$`)
+	}
+	rules := s.GetRules()
+	mustEqual(t, "GetRules length", len(rules), 1)
+	if len(rules) > 0 {
+		mustEqual(t, "GetRules[0]", rules[0], `/product/`)
+	}
+	mustEqual(t, "GetHTTPClient", s.GetHTTPClient(), customClient)
+	mustEqual(t, "GetStrict", s.GetStrict(), true)
+}
 
-	t.Run("GetFollow and GetRules return copies", func(t *testing.T) {
-		s := New().SetFollow([]string{`\.xml$`}).SetRules([]string{`/product/`})
-		follow := s.GetFollow()
-		follow[0] = "mutated"
-		if s.GetFollow()[0] != `\.xml$` {
-			t.Error("GetFollow: mutation of returned slice affected internal state")
-		}
-		rules := s.GetRules()
-		rules[0] = "mutated"
-		if s.GetRules()[0] != `/product/` {
-			t.Error("GetRules: mutation of returned slice affected internal state")
-		}
-	})
+func TestS_GetConfiguration_CopySemantics(t *testing.T) {
+	s := New().SetFollow([]string{`\.xml$`}).SetRules([]string{`/product/`})
+	follow := s.GetFollow()
+	follow[0] = "mutated"
+	mustEqual(t, "GetFollow after mutation", s.GetFollow()[0], `\.xml$`)
+	rules := s.GetRules()
+	rules[0] = "mutated"
+	mustEqual(t, "GetRules after mutation", s.GetRules()[0], `/product/`)
 }
 
 func TestImage_validateAndFilterImages(t *testing.T) {
-	t.Run("empty input returns empty", func(t *testing.T) {
-		s := New()
-		got, errs := s.validateAndFilterImages(nil)
-		if len(got) != 0 {
-			t.Errorf("expected 0 images, got %d", len(got))
-		}
-		if len(errs) != 0 {
-			t.Errorf("expected 0 errors, got %d", len(errs))
-		}
-	})
+	tests := []struct {
+		name       string
+		strict     bool
+		images     []Image
+		wantImages int
+		wantErrs   int
+	}{
+		{"empty input returns empty", false, nil, 0, 0},
+		{"tolerant: valid image kept", false, []Image{{Loc: "https://example.com/photo.jpg", Title: "T"}}, 1, 0},
+		{"tolerant: empty loc silently dropped", false, []Image{{Loc: ""}}, 0, 0},
+		{"tolerant: loc exceeding max length rejected with error", false, []Image{{Loc: "http://example.com/" + strings.Repeat("a", maxLocLength)}}, 0, 1},
+		{"tolerant: non-HTTP scheme accepted", false, []Image{{Loc: "ftp://example.com/photo.jpg"}}, 1, 0},
+		{"tolerant: multiple images, one empty loc dropped", false, []Image{{Loc: "https://example.com/a.jpg"}, {Loc: ""}, {Loc: "https://example.com/b.jpg"}}, 2, 0},
+		{"strict: valid HTTP image kept", true, []Image{{Loc: "http://example.com/photo.jpg"}}, 1, 0},
+		{"strict: valid HTTPS image kept", true, []Image{{Loc: "https://cdn.example.com/photo.jpg"}}, 1, 0},
+		{"strict: empty loc produces error and is dropped", true, []Image{{Loc: ""}}, 0, 1},
+		{"strict: non-HTTP scheme rejected", true, []Image{{Loc: "ftp://example.com/photo.jpg"}}, 0, 1},
+		{"strict: loc exceeding max length rejected", true, []Image{{Loc: "https://example.com/" + strings.Repeat("a", maxLocLength)}}, 0, 1},
+		{"strict: unparseable URL rejected with error", true, []Image{{Loc: "http://example.com/path%zzinvalid"}}, 0, 1},
+		{"strict: CDN host (different from page host) accepted", true, []Image{{Loc: "https://cdn.other-host.com/photo.jpg"}}, 1, 0},
+	}
 
-	t.Run("tolerant: valid image kept", func(t *testing.T) {
-		s := New()
-		imgs := []Image{{Loc: "https://example.com/photo.jpg", Title: "T"}}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 1 {
-			t.Errorf("expected 1 image, got %d", len(got))
-		}
-		if len(errs) != 0 {
-			t.Errorf("expected 0 errors, got %d", len(errs))
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New()
+			if tt.strict {
+				s = s.SetStrict(true)
+			}
+			got, errs := s.validateAndFilterImages(tt.images)
+			if len(got) != tt.wantImages {
+				t.Errorf("expected %d images, got %d", tt.wantImages, len(got))
+			}
+			if len(errs) != tt.wantErrs {
+				t.Errorf("expected %d errors, got %d: %v", tt.wantErrs, len(errs), errs)
+			}
+		})
+	}
+}
 
-	t.Run("tolerant: empty loc silently dropped", func(t *testing.T) {
-		s := New()
-		imgs := []Image{{Loc: ""}}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 0 {
-			t.Errorf("expected 0 images, got %d", len(got))
-		}
-		if len(errs) != 0 {
-			t.Errorf("expected 0 errors for empty loc in tolerant mode, got %d", len(errs))
-		}
-	})
-
-	t.Run("tolerant: loc exceeding max length rejected with error", func(t *testing.T) {
-		s := New()
-		imgs := []Image{{Loc: "http://example.com/" + strings.Repeat("a", maxLocLength)}}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 0 {
-			t.Errorf("expected 0 images, got %d", len(got))
-		}
-		if len(errs) != 1 {
-			t.Errorf("expected 1 error, got %d", len(errs))
-		}
-	})
-
-	t.Run("tolerant: non-HTTP scheme accepted", func(t *testing.T) {
-		s := New()
-		imgs := []Image{{Loc: "ftp://example.com/photo.jpg"}}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 1 {
-			t.Errorf("expected 1 image in tolerant mode, got %d", len(got))
-		}
-		if len(errs) != 0 {
-			t.Errorf("expected 0 errors in tolerant mode, got %d", len(errs))
-		}
-	})
-
-	t.Run("tolerant: multiple images, one empty loc dropped", func(t *testing.T) {
-		s := New()
-		imgs := []Image{
-			{Loc: "https://example.com/a.jpg"},
-			{Loc: ""},
-			{Loc: "https://example.com/b.jpg"},
-		}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 2 {
-			t.Errorf("expected 2 images, got %d", len(got))
-		}
-		if len(errs) != 0 {
-			t.Errorf("expected 0 errors, got %d", len(errs))
-		}
-	})
-
-	t.Run("strict: valid HTTP image kept", func(t *testing.T) {
-		s := New().SetStrict(true)
-		imgs := []Image{{Loc: "http://example.com/photo.jpg"}}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 1 {
-			t.Errorf("expected 1 image, got %d", len(got))
-		}
-		if len(errs) != 0 {
-			t.Errorf("expected 0 errors, got %d", len(errs))
-		}
-	})
-
-	t.Run("strict: valid HTTPS image kept", func(t *testing.T) {
-		s := New().SetStrict(true)
-		imgs := []Image{{Loc: "https://cdn.example.com/photo.jpg"}}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 1 {
-			t.Errorf("expected 1 image, got %d", len(got))
-		}
-		if len(errs) != 0 {
-			t.Errorf("expected 0 errors, got %d", len(errs))
-		}
-	})
-
-	t.Run("strict: empty loc produces error and is dropped", func(t *testing.T) {
-		s := New().SetStrict(true)
-		imgs := []Image{{Loc: ""}}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 0 {
-			t.Errorf("expected 0 images, got %d", len(got))
-		}
-		if len(errs) != 1 {
-			t.Errorf("expected 1 error, got %d", len(errs))
-		}
-	})
-
-	t.Run("strict: non-HTTP scheme rejected", func(t *testing.T) {
-		s := New().SetStrict(true)
-		imgs := []Image{{Loc: "ftp://example.com/photo.jpg"}}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 0 {
-			t.Errorf("expected 0 images, got %d", len(got))
-		}
-		if len(errs) != 1 {
-			t.Errorf("expected 1 error, got %d", len(errs))
-		}
-	})
-
-	t.Run("strict: loc exceeding max length rejected", func(t *testing.T) {
-		s := New().SetStrict(true)
-		imgs := []Image{{Loc: "https://example.com/" + strings.Repeat("a", maxLocLength)}}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 0 {
-			t.Errorf("expected 0 images, got %d", len(got))
-		}
-		if len(errs) != 1 {
-			t.Errorf("expected 1 error, got %d", len(errs))
-		}
-	})
-
-	t.Run("strict: unparseable URL rejected with error", func(t *testing.T) {
-		s := New().SetStrict(true)
-		imgs := []Image{{Loc: "http://example.com/path%zzinvalid"}}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 0 {
-			t.Errorf("expected 0 images, got %d", len(got))
-		}
-		if len(errs) != 1 {
-			t.Errorf("expected 1 error for unparseable URL, got %d", len(errs))
-		}
-	})
-
-	t.Run("strict: CDN host (different from page host) accepted", func(t *testing.T) {
-		s := New().SetStrict(true)
-		imgs := []Image{{Loc: "https://cdn.other-host.com/photo.jpg"}}
-		got, errs := s.validateAndFilterImages(imgs)
-		if len(got) != 1 {
-			t.Errorf("expected 1 image (CDN host allowed in strict mode), got %d", len(got))
-		}
-		if len(errs) != 0 {
-			t.Errorf("expected 0 errors, got %d", len(errs))
-		}
-	})
+func assertImageFields(t *testing.T, img Image, loc, title, caption, geoLocation, license string) {
+	t.Helper()
+	mustEqual(t, "image.Loc", img.Loc, loc)
+	mustEqual(t, "image.Title", img.Title, title)
+	mustEqual(t, "image.Caption", img.Caption, caption)
+	mustEqual(t, "image.GeoLocation", img.GeoLocation, geoLocation)
+	mustEqual(t, "image.License", img.License, license)
 }
 
 func TestImage_parseURLSet_WithImages(t *testing.T) {
@@ -772,37 +622,16 @@ func TestImage_parseURLSet_WithImages(t *testing.T) {
         </image:image>
     </url>
 </urlset>`
-		s := New()
-		urlSet, err := s.parseURLSet(data)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		us := requireURLSetParse(t, New(), data)
+		if len(us.URL) != 1 {
+			t.Fatalf("expected 1 URL, got %d", len(us.URL))
 		}
-		if len(urlSet.URL) != 1 {
-			t.Fatalf("expected 1 URL, got %d", len(urlSet.URL))
-		}
-		u := urlSet.URL[0]
+		u := us.URL[0]
 		if len(u.Images) != 2 {
 			t.Fatalf("expected 2 images, got %d", len(u.Images))
 		}
-		img := u.Images[0]
-		if img.Loc != "https://example.com/photo1.jpg" {
-			t.Errorf("expected photo1.jpg loc, got %q", img.Loc)
-		}
-		if img.Title != "First photo" {
-			t.Errorf("expected title %q, got %q", "First photo", img.Title)
-		}
-		if img.Caption != "A caption" {
-			t.Errorf("expected caption %q, got %q", "A caption", img.Caption)
-		}
-		if img.GeoLocation != "Budapest, Hungary" {
-			t.Errorf("expected geo_location %q, got %q", "Budapest, Hungary", img.GeoLocation)
-		}
-		if img.License != "https://creativecommons.org/licenses/by/4.0/" {
-			t.Errorf("expected license %q, got %q", "https://creativecommons.org/licenses/by/4.0/", img.License)
-		}
-		if u.Images[1].Loc != "https://example.com/photo2.jpg" {
-			t.Errorf("expected photo2.jpg, got %q", u.Images[1].Loc)
-		}
+		assertImageFields(t, u.Images[0], "https://example.com/photo1.jpg", "First photo", "A caption", "Budapest, Hungary", "https://creativecommons.org/licenses/by/4.0/")
+		mustEqual(t, "image[1].Loc", u.Images[1].Loc, "https://example.com/photo2.jpg")
 		if u.Images[1].Title != "" || u.Images[1].Caption != "" {
 			t.Errorf("expected empty optional fields on second image")
 		}
@@ -813,14 +642,8 @@ func TestImage_parseURLSet_WithImages(t *testing.T) {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url><loc>https://example.com/page</loc></url>
 </urlset>`
-		s := New()
-		urlSet, err := s.parseURLSet(data)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(urlSet.URL[0].Images) != 0 {
-			t.Errorf("expected 0 images, got %d", len(urlSet.URL[0].Images))
-		}
+		us := requireURLSetParse(t, New(), data)
+		mustEqual(t, "image count", len(us.URL[0].Images), 0)
 	})
 
 	t.Run("image element without namespace is ignored", func(t *testing.T) {
@@ -831,14 +654,8 @@ func TestImage_parseURLSet_WithImages(t *testing.T) {
         <image><loc>https://example.com/photo.jpg</loc></image>
     </url>
 </urlset>`
-		s := New()
-		urlSet, err := s.parseURLSet(data)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(urlSet.URL[0].Images) != 0 {
-			t.Errorf("expected 0 images (no namespace), got %d", len(urlSet.URL[0].Images))
-		}
+		us := requireURLSetParse(t, New(), data)
+		mustEqual(t, "image count (no namespace)", len(us.URL[0].Images), 0)
 	})
 
 	t.Run("multiple URLs with mixed image presence", func(t *testing.T) {
@@ -853,20 +670,12 @@ func TestImage_parseURLSet_WithImages(t *testing.T) {
         <loc>https://example.com/without-image</loc>
     </url>
 </urlset>`
-		s := New()
-		urlSet, err := s.parseURLSet(data)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		us := requireURLSetParse(t, New(), data)
+		if len(us.URL) != 2 {
+			t.Fatalf("expected 2 URLs, got %d", len(us.URL))
 		}
-		if len(urlSet.URL) != 2 {
-			t.Fatalf("expected 2 URLs, got %d", len(urlSet.URL))
-		}
-		if len(urlSet.URL[0].Images) != 1 {
-			t.Errorf("expected 1 image on first URL, got %d", len(urlSet.URL[0].Images))
-		}
-		if len(urlSet.URL[1].Images) != 0 {
-			t.Errorf("expected 0 images on second URL, got %d", len(urlSet.URL[1].Images))
-		}
+		mustEqual(t, "URL[0] image count", len(us.URL[0].Images), 1)
+		mustEqual(t, "URL[1] image count", len(us.URL[1].Images), 0)
 	})
 }
 
@@ -876,20 +685,11 @@ func TestImage_Parse_integration(t *testing.T) {
 
 	t.Run("fixture with images parses correctly", func(t *testing.T) {
 		s := New()
-		_, err := s.Parse(server.URL+"/sitemap-image-01.xml", nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 2 {
-			t.Fatalf("expected 2 URLs, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
-		}
+		requireParse(t, s, server.URL+"/sitemap-image-01.xml", nil)
+		assertCounts(t, s, 2, 0)
 
-		urls := s.GetURLs()
 		var pageWithImages, pageWithout URL
-		for _, u := range urls {
+		for _, u := range s.GetURLs() {
 			if strings.HasSuffix(u.Loc, "/page-with-images") {
 				pageWithImages = u
 			} else {
@@ -904,24 +704,14 @@ func TestImage_Parse_integration(t *testing.T) {
 		if !strings.HasSuffix(img.Loc, "/photo1.jpg") {
 			t.Errorf("unexpected image loc: %q", img.Loc)
 		}
-		if img.Title != "First photo" {
-			t.Errorf("expected title %q, got %q", "First photo", img.Title)
-		}
-		if img.Caption != "A caption" {
-			t.Errorf("expected caption %q, got %q", "A caption", img.Caption)
-		}
-		if img.GeoLocation != "Budapest, Hungary" {
-			t.Errorf("expected geo_location %q, got %q", "Budapest, Hungary", img.GeoLocation)
-		}
-		if img.License != "https://creativecommons.org/licenses/by/4.0/" {
-			t.Errorf("expected license URL, got %q", img.License)
-		}
+		mustEqual(t, "image.Title", img.Title, "First photo")
+		mustEqual(t, "image.Caption", img.Caption, "A caption")
+		mustEqual(t, "image.GeoLocation", img.GeoLocation, "Budapest, Hungary")
+		mustEqual(t, "image.License", img.License, "https://creativecommons.org/licenses/by/4.0/")
 		if !strings.HasSuffix(pageWithImages.Images[1].Loc, "/photo2.jpg") {
 			t.Errorf("unexpected second image loc: %q", pageWithImages.Images[1].Loc)
 		}
-		if len(pageWithout.Images) != 0 {
-			t.Errorf("expected 0 images on page-without-images, got %d", len(pageWithout.Images))
-		}
+		mustEqual(t, "pageWithout image count", len(pageWithout.Images), 0)
 	})
 
 	t.Run("tolerant: image with empty loc dropped silently", func(t *testing.T) {
@@ -935,21 +725,13 @@ func TestImage_Parse_integration(t *testing.T) {
         <image:image><image:loc>%s/photo.jpg</image:loc></image:image>
     </url>
 </urlset>`, server.URL, server.URL)
-		sitemapURL := server.URL + "/sitemap.xml"
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		requireParse(t, s, server.URL+"/sitemap.xml", &content)
 		urls := s.GetURLs()
 		if len(urls) != 1 {
 			t.Fatalf("expected 1 URL, got %d", len(urls))
 		}
-		if len(urls[0].Images) != 1 {
-			t.Errorf("expected 1 valid image (empty loc dropped), got %d", len(urls[0].Images))
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors in tolerant mode, got %d", s.GetErrorsCount())
-		}
+		mustEqual(t, "image count (empty loc dropped)", len(urls[0].Images), 1)
+		mustEqual(t, "error count", s.GetErrorsCount(), int64(0))
 	})
 
 	t.Run("strict: image with empty loc produces error", func(t *testing.T) {
@@ -962,14 +744,8 @@ func TestImage_Parse_integration(t *testing.T) {
         <image:image><image:loc></image:loc></image:image>
     </url>
 </urlset>`, server.URL)
-		sitemapURL := server.URL + "/sitemap.xml"
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetErrorsCount() != 1 {
-			t.Errorf("expected 1 error for empty image loc in strict mode, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, server.URL+"/sitemap.xml", &content)
+		mustEqual(t, "error count", s.GetErrorsCount(), int64(1))
 	})
 
 	t.Run("strict: image with invalid scheme produces error", func(t *testing.T) {
@@ -982,17 +758,9 @@ func TestImage_Parse_integration(t *testing.T) {
         <image:image><image:loc>ftp://example.com/photo.jpg</image:loc></image:image>
     </url>
 </urlset>`, server.URL)
-		sitemapURL := server.URL + "/sitemap.xml"
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetErrorsCount() != 1 {
-			t.Errorf("expected 1 error for ftp image loc in strict mode, got %d", s.GetErrorsCount())
-		}
-		if len(s.GetURLs()[0].Images) != 0 {
-			t.Errorf("expected image to be dropped, got %d", len(s.GetURLs()[0].Images))
-		}
+		requireParse(t, s, server.URL+"/sitemap.xml", &content)
+		mustEqual(t, "error count", s.GetErrorsCount(), int64(1))
+		mustEqual(t, "image count (ftp dropped)", len(s.GetURLs()[0].Images), 0)
 	})
 }
 
@@ -1231,20 +999,11 @@ func TestNews_Parse_integration(t *testing.T) {
 
 	t.Run("fixture with news parses correctly", func(t *testing.T) {
 		s := New()
-		_, err := s.Parse(server.URL+"/sitemap-news-01.xml", nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 2 {
-			t.Fatalf("expected 2 URLs, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
-		}
+		requireParse(t, s, server.URL+"/sitemap-news-01.xml", nil)
+		assertCounts(t, s, 2, 0)
 
-		urls := s.GetURLs()
 		var article, plain URL
-		for _, u := range urls {
+		for _, u := range s.GetURLs() {
 			if strings.HasSuffix(u.Loc, "/article-1") {
 				article = u
 			} else {
@@ -1255,21 +1014,11 @@ func TestNews_Parse_integration(t *testing.T) {
 		if article.News == nil {
 			t.Fatal("expected News on article URL")
 		}
-		if article.News.Title != "Breaking: Example Article" {
-			t.Errorf("unexpected title: %q", article.News.Title)
-		}
-		if article.News.Publication.Name != "Example News" {
-			t.Errorf("unexpected publication name: %q", article.News.Publication.Name)
-		}
-		if article.News.Publication.Language != "en" {
-			t.Errorf("unexpected language: %q", article.News.Publication.Language)
-		}
-		if article.News.PublicationDate == nil {
-			t.Error("expected non-nil PublicationDate")
-		}
-		if plain.News != nil {
-			t.Errorf("expected nil News on plain URL")
-		}
+		mustEqual(t, "news.Title", article.News.Title, "Breaking: Example Article")
+		mustEqual(t, "news.Publication.Name", article.News.Publication.Name, "Example News")
+		mustEqual(t, "news.Publication.Language", article.News.Publication.Language, "en")
+		mustEqual(t, "news.PublicationDate is set", article.News.PublicationDate != nil, true)
+		mustEqual(t, "plain.News is nil", plain.News == nil, true)
 	})
 
 	t.Run("strict: all required fields present — no errors", func(t *testing.T) {
@@ -1289,16 +1038,9 @@ func TestNews_Parse_integration(t *testing.T) {
         </news:news>
     </url>
 </urlset>`, server.URL)
-		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
-		}
-		if s.GetURLs()[0].News == nil {
-			t.Error("expected News to be set")
-		}
+		requireParse(t, s, server.URL+"/sitemap.xml", &content)
+		assertCounts(t, s, 1, 0)
+		mustEqual(t, "news is set", s.GetURLs()[0].News != nil, true)
 	})
 
 	t.Run("strict: missing required fields produce errors, news entry kept", func(t *testing.T) {
@@ -1311,20 +1053,11 @@ func TestNews_Parse_integration(t *testing.T) {
         <news:news></news:news>
     </url>
 </urlset>`, server.URL)
-		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetErrorsCount() != 4 {
-			t.Errorf("expected 4 errors (title, name, language, date), got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, server.URL+"/sitemap.xml", &content)
+		mustEqual(t, "error count", s.GetErrorsCount(), int64(4))
 		urls := s.GetURLs()
-		if len(urls) != 1 {
-			t.Errorf("expected URL to be kept despite errors, got %d URLs", len(urls))
-		}
-		if urls[0].News == nil {
-			t.Error("expected News entry to be kept despite missing fields")
-		}
+		mustEqual(t, "URL count", len(urls), 1)
+		mustEqual(t, "news entry kept", urls[0].News != nil, true)
 	})
 
 	t.Run("tolerant: missing fields produce no errors", func(t *testing.T) {
@@ -1337,19 +1070,13 @@ func TestNews_Parse_integration(t *testing.T) {
         <news:news><news:title>Only Title</news:title></news:news>
     </url>
 </urlset>`, server.URL)
-		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors in tolerant mode, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, server.URL+"/sitemap.xml", &content)
+		mustEqual(t, "error count", s.GetErrorsCount(), int64(0))
 		urls := s.GetURLs()
 		if len(urls) != 1 || urls[0].News == nil {
 			t.Error("expected URL with News in tolerant mode")
-		}
-		if urls[0].News.Title != "Only Title" {
-			t.Errorf("expected title %q, got %q", "Only Title", urls[0].News.Title)
+		} else {
+			mustEqual(t, "news.Title", urls[0].News.Title, "Only Title")
 		}
 	})
 }
@@ -1373,269 +1100,196 @@ func compareErrorStrings(got, want []error) bool {
 	return true
 }
 
+// mustEqual is a generic test helper that fails if got != want.
+func mustEqual[T comparable](t *testing.T, name string, got, want T) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%s: got %v, want %v", name, got, want)
+	}
+}
+
+// requireParse calls Parse and fatals on error.
+func requireParse(t *testing.T, s *S, url string, content *string) {
+	t.Helper()
+	_, err := s.Parse(url, content)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+}
+
+// assertCounts verifies GetURLCount and GetErrorsCount on s.
+func assertCounts(t *testing.T, s *S, wantURLs int64, wantErrs int64) {
+	t.Helper()
+	if s.GetURLCount() != wantURLs {
+		t.Fatalf("expected %d URLs, got %d", wantURLs, s.GetURLCount())
+	}
+	if s.GetErrorsCount() != wantErrs {
+		t.Errorf("expected %d errors, got %d: %v", wantErrs, s.GetErrorsCount(), s.GetErrors())
+	}
+}
+
+// requireURLSetParse calls parseURLSet and fatals on error.
+func requireURLSetParse(t *testing.T, s *S, data string) urlSet {
+	t.Helper()
+	result, err := s.parseURLSet(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return result
+}
+
+func assertPtrInt(t *testing.T, name string, got *int, want int) {
+	t.Helper()
+	if got == nil || *got != want {
+		t.Errorf("%s: got %v, want %d", name, got, want)
+	}
+}
+
+func assertPtrFloat32(t *testing.T, name string, got *float32, want float32) {
+	t.Helper()
+	if got == nil || *got != want {
+		t.Errorf("%s: got %v, want %f", name, got, want)
+	}
+}
+
+func assertVideoRestriction(t *testing.T, r *VideoRestriction, wantRel, wantVal string) {
+	t.Helper()
+	if r == nil {
+		t.Error("Restriction: unexpected nil")
+		return
+	}
+	if wantRel != "" {
+		mustEqual(t, "Restriction.Relationship", r.Relationship, wantRel)
+	}
+	if wantVal != "" {
+		mustEqual(t, "Restriction.Value", r.Value, wantVal)
+	}
+}
+
+func assertVideoPlatform(t *testing.T, p *VideoPlatform, wantRel, wantVal string) {
+	t.Helper()
+	if p == nil {
+		t.Error("Platform: unexpected nil")
+		return
+	}
+	if wantRel != "" {
+		mustEqual(t, "Platform.Relationship", p.Relationship, wantRel)
+	}
+	if wantVal != "" {
+		mustEqual(t, "Platform.Value", p.Value, wantVal)
+	}
+}
+
+func assertVideoUploader(t *testing.T, u *VideoUploader, wantVal, wantInfo string) {
+	t.Helper()
+	if u == nil {
+		t.Error("Uploader: unexpected nil")
+		return
+	}
+	if wantVal != "" {
+		mustEqual(t, "Uploader.Value", u.Value, wantVal)
+	}
+	if wantInfo != "" {
+		mustEqual(t, "Uploader.Info", u.Info, wantInfo)
+	}
+}
+
+func assertStringSlice(t *testing.T, name string, got, want []string) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("%s: got %v, want %v", name, got, want)
+	}
+}
+
+func assertHasSuffix(t *testing.T, name, got, suffix string) {
+	t.Helper()
+	if !strings.HasSuffix(got, suffix) {
+		t.Errorf("%s: %q does not end with %q", name, got, suffix)
+	}
+}
+
 func TestVideo_validateAndFilterVideos(t *testing.T) {
-	t.Run("empty input returns empty", func(t *testing.T) {
-		s := New()
-		got, errs := s.validateAndFilterVideos(nil)
-		if len(got) != 0 || len(errs) != 0 {
-			t.Errorf("expected empty result for nil input")
-		}
-	})
+	dur300 := 300
+	rat45 := float32(4.5)
+	manyTags := make([]string, maxVideoTags+1)
+	for i := range manyTags {
+		manyTags[i] = fmt.Sprintf("tag%d", i)
+	}
 
-	t.Run("tolerant: valid video kept", func(t *testing.T) {
-		s := New()
-		videos := []Video{{ThumbnailLoc: "https://example.com/thumb.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4"}}
-		got, errs := s.validateAndFilterVideos(videos)
-		if len(got) != 1 || len(errs) != 0 {
-			t.Errorf("expected 1 video, 0 errors; got %d, %d", len(got), len(errs))
-		}
-	})
+	tests := []struct {
+		name       string
+		strict     bool
+		videos     []Video
+		wantVideos int
+		wantErrs   int
+	}{
+		{"empty input returns empty", false, nil, 0, 0},
+		{"tolerant: valid video kept", false, []Video{{ThumbnailLoc: "https://example.com/thumb.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4"}}, 1, 0},
+		{"tolerant: empty ThumbnailLoc silently dropped", false, []Video{{ThumbnailLoc: ""}}, 0, 0},
+		{"tolerant: ThumbnailLoc exceeding max length rejected with error", false, []Video{{ThumbnailLoc: "https://example.com/" + strings.Repeat("a", maxLocLength)}}, 0, 1},
+		{"tolerant: non-HTTP scheme accepted", false, []Video{{ThumbnailLoc: "ftp://example.com/thumb.jpg"}}, 1, 0},
+		{"tolerant: multiple videos one without ThumbnailLoc dropped", false, []Video{{ThumbnailLoc: "https://example.com/a.jpg"}, {ThumbnailLoc: ""}, {ThumbnailLoc: "https://example.com/b.jpg"}}, 2, 0},
+		{"strict: valid video kept without errors", true, []Video{{ThumbnailLoc: "https://example.com/thumb.jpg", Title: "Title", Description: "Description", ContentLoc: "https://example.com/video.mp4", Duration: &dur300, Rating: &rat45, Tags: []string{"a", "b"}}}, 1, 0},
+		{"strict: empty ThumbnailLoc produces error and drops video", true, []Video{{ThumbnailLoc: ""}}, 0, 1},
+		{"strict: ThumbnailLoc exceeding max length rejected", true, []Video{{ThumbnailLoc: "https://example.com/" + strings.Repeat("a", maxLocLength)}}, 0, 1},
+		{"strict: non-HTTP scheme rejected", true, []Video{{ThumbnailLoc: "ftp://example.com/thumb.jpg"}}, 0, 1},
+		{"strict: unparseable ThumbnailLoc rejected", true, []Video{{ThumbnailLoc: "https://example.com/path%zzinvalid"}}, 0, 1},
+		{"strict: empty title produces error, video kept", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "", Description: "D", ContentLoc: "https://example.com/v.mp4"}}, 1, 1},
+		{"strict: empty description produces error, video kept", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "", ContentLoc: "https://example.com/v.mp4"}}, 1, 1},
+		{"strict: no ContentLoc and no PlayerLoc produces error, video kept", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D"}}, 1, 1},
+		{"strict: PlayerLoc alone satisfies content requirement", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", PlayerLoc: "https://example.com/player"}}, 1, 0},
+		{"strict: Duration below 1 produces error", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Duration: pointerOfInt(0)}}, 1, 1},
+		{"strict: Duration above 28800 produces error", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Duration: pointerOfInt(maxVideoDuration + 1)}}, 1, 1},
+		{"strict: Rating below 0 produces error", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Rating: pointerOfFloat32Video(-0.1)}}, 1, 1},
+		{"strict: Rating above 5.0 produces error", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Rating: pointerOfFloat32Video(5.1)}}, 1, 1},
+		{"strict: Tags exceeding 32 produces error, video kept", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Tags: manyTags}}, 1, 1},
+	}
 
-	t.Run("tolerant: empty ThumbnailLoc silently dropped", func(t *testing.T) {
-		s := New()
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: ""}})
-		if len(got) != 0 || len(errs) != 0 {
-			t.Errorf("expected 0 videos, 0 errors; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("tolerant: ThumbnailLoc exceeding max length rejected with error", func(t *testing.T) {
-		s := New()
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/" + strings.Repeat("a", maxLocLength)}})
-		if len(got) != 0 || len(errs) != 1 {
-			t.Errorf("expected 0 videos, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("tolerant: non-HTTP scheme accepted", func(t *testing.T) {
-		s := New()
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "ftp://example.com/thumb.jpg"}})
-		if len(got) != 1 || len(errs) != 0 {
-			t.Errorf("expected 1 video, 0 errors in tolerant mode; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("tolerant: multiple videos one without ThumbnailLoc dropped", func(t *testing.T) {
-		s := New()
-		videos := []Video{
-			{ThumbnailLoc: "https://example.com/a.jpg"},
-			{ThumbnailLoc: ""},
-			{ThumbnailLoc: "https://example.com/b.jpg"},
-		}
-		got, errs := s.validateAndFilterVideos(videos)
-		if len(got) != 2 || len(errs) != 0 {
-			t.Errorf("expected 2 videos, 0 errors; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: valid video kept without errors", func(t *testing.T) {
-		s := New().SetStrict(true)
-		dur := 300
-		rat := float32(4.5)
-		videos := []Video{{
-			ThumbnailLoc: "https://example.com/thumb.jpg",
-			Title:        "Title",
-			Description:  "Description",
-			ContentLoc:   "https://example.com/video.mp4",
-			Duration:     &dur,
-			Rating:       &rat,
-			Tags:         []string{"a", "b"},
-		}}
-		got, errs := s.validateAndFilterVideos(videos)
-		if len(got) != 1 || len(errs) != 0 {
-			t.Errorf("expected 1 video, 0 errors; got %d, %d: %v", len(got), len(errs), errs)
-		}
-	})
-
-	t.Run("strict: empty ThumbnailLoc produces error and drops video", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: ""}})
-		if len(got) != 0 || len(errs) != 1 {
-			t.Errorf("expected 0 videos, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: ThumbnailLoc exceeding max length rejected", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/" + strings.Repeat("a", maxLocLength)}})
-		if len(got) != 0 || len(errs) != 1 {
-			t.Errorf("expected 0 videos, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: non-HTTP scheme rejected", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "ftp://example.com/thumb.jpg"}})
-		if len(got) != 0 || len(errs) != 1 {
-			t.Errorf("expected 0 videos, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: unparseable ThumbnailLoc rejected", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/path%zzinvalid"}})
-		if len(got) != 0 || len(errs) != 1 {
-			t.Errorf("expected 0 videos, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: empty title produces error, video kept", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "", Description: "D", ContentLoc: "https://example.com/v.mp4"}})
-		if len(got) != 1 || len(errs) != 1 {
-			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: empty description produces error, video kept", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "", ContentLoc: "https://example.com/v.mp4"}})
-		if len(got) != 1 || len(errs) != 1 {
-			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: no ContentLoc and no PlayerLoc produces error, video kept", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D"}})
-		if len(got) != 1 || len(errs) != 1 {
-			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: PlayerLoc alone satisfies content requirement", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", PlayerLoc: "https://example.com/player"}})
-		if len(got) != 1 || len(errs) != 0 {
-			t.Errorf("expected 1 video, 0 errors; got %d, %d: %v", len(got), len(errs), errs)
-		}
-	})
-
-	t.Run("strict: Duration below 1 produces error", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Duration: pointerOfInt(0)}})
-		if len(got) != 1 || len(errs) != 1 {
-			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: Duration above 28800 produces error", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Duration: pointerOfInt(maxVideoDuration + 1)}})
-		if len(got) != 1 || len(errs) != 1 {
-			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: Rating below 0 produces error", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Rating: pointerOfFloat32Video(-0.1)}})
-		if len(got) != 1 || len(errs) != 1 {
-			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: Rating above 5.0 produces error", func(t *testing.T) {
-		s := New().SetStrict(true)
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Rating: pointerOfFloat32Video(5.1)}})
-		if len(got) != 1 || len(errs) != 1 {
-			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict: Tags exceeding 32 produces error, video kept", func(t *testing.T) {
-		s := New().SetStrict(true)
-		tags := make([]string, maxVideoTags+1)
-		for i := range tags {
-			tags[i] = fmt.Sprintf("tag%d", i)
-		}
-		got, errs := s.validateAndFilterVideos([]Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Tags: tags}})
-		if len(got) != 1 || len(errs) != 1 {
-			t.Errorf("expected 1 video, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New()
+			if tt.strict {
+				s = s.SetStrict(true)
+			}
+			got, errs := s.validateAndFilterVideos(tt.videos)
+			if len(got) != tt.wantVideos || len(errs) != tt.wantErrs {
+				t.Errorf("expected %d videos, %d errors; got %d, %d: %v", tt.wantVideos, tt.wantErrs, len(got), len(errs), errs)
+			}
+		})
+	}
 }
 
 func TestHreflang_validateAndFilterHreflangs(t *testing.T) {
-	t.Run("nil or empty", func(t *testing.T) {
-		s := New()
-		got, errs := s.validateAndFilterHreflangs(nil)
-		if len(got) != 0 || len(errs) != 0 {
-			t.Errorf("expected 0 links, 0 errors; got %d, %d", len(got), len(errs))
-		}
-	})
+	tests := []struct {
+		name      string
+		strict    bool
+		links     []AlternateLink
+		wantLinks int
+		wantErrs  int
+	}{
+		{"nil or empty", false, nil, 0, 0},
+		{"tolerant mode: drop empty href", false, []AlternateLink{{Href: ""}, {Href: "http://example.com/"}}, 1, 0},
+		{"both modes: reject oversized href", false, []AlternateLink{{Href: "http://example.com/" + strings.Repeat("a", maxLocLength)}}, 0, 1},
+		{"strict mode: valid link", true, []AlternateLink{{Rel: "alternate", Hreflang: "en", Href: "http://example.com/"}}, 1, 0},
+		{"strict mode: reject empty href", true, []AlternateLink{{Href: ""}}, 0, 1},
+		{"strict mode: reject invalid rel", true, []AlternateLink{{Rel: "canonical", Hreflang: "en", Href: "http://example.com/"}}, 0, 1},
+		{"strict mode: reject empty hreflang", true, []AlternateLink{{Rel: "alternate", Hreflang: "", Href: "http://example.com/"}}, 0, 1},
+		{"strict mode: reject invalid URL", true, []AlternateLink{{Rel: "alternate", Hreflang: "en", Href: "http://example.com/%%invalid"}}, 0, 1},
+		{"strict mode: reject unsupported scheme", true, []AlternateLink{{Rel: "alternate", Hreflang: "en", Href: "ftp://example.com/"}}, 0, 1},
+	}
 
-	t.Run("tolerant mode: drop empty href", func(t *testing.T) {
-		s := New()
-		links := []AlternateLink{{Href: ""}, {Href: "http://example.com/"}}
-		got, errs := s.validateAndFilterHreflangs(links)
-		if len(got) != 1 || len(errs) != 0 {
-			t.Errorf("expected 1 link, 0 errors; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("both modes: reject oversized href", func(t *testing.T) {
-		s := New()
-		links := []AlternateLink{{Href: "http://example.com/" + strings.Repeat("a", maxLocLength)}}
-		got, errs := s.validateAndFilterHreflangs(links)
-		if len(got) != 0 || len(errs) != 1 {
-			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict mode: valid link", func(t *testing.T) {
-		s := New().SetStrict(true)
-		links := []AlternateLink{{Rel: "alternate", Hreflang: "en", Href: "http://example.com/"}}
-		got, errs := s.validateAndFilterHreflangs(links)
-		if len(got) != 1 || len(errs) != 0 {
-			t.Errorf("expected 1 link, 0 errors; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict mode: reject empty href", func(t *testing.T) {
-		s := New().SetStrict(true)
-		links := []AlternateLink{{Href: ""}}
-		got, errs := s.validateAndFilterHreflangs(links)
-		if len(got) != 0 || len(errs) != 1 {
-			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict mode: reject invalid rel", func(t *testing.T) {
-		s := New().SetStrict(true)
-		links := []AlternateLink{{Rel: "canonical", Hreflang: "en", Href: "http://example.com/"}}
-		got, errs := s.validateAndFilterHreflangs(links)
-		if len(got) != 0 || len(errs) != 1 {
-			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict mode: reject empty hreflang", func(t *testing.T) {
-		s := New().SetStrict(true)
-		links := []AlternateLink{{Rel: "alternate", Hreflang: "", Href: "http://example.com/"}}
-		got, errs := s.validateAndFilterHreflangs(links)
-		if len(got) != 0 || len(errs) != 1 {
-			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict mode: reject invalid URL", func(t *testing.T) {
-		s := New().SetStrict(true)
-		links := []AlternateLink{{Rel: "alternate", Hreflang: "en", Href: "http://example.com/%%invalid"}}
-		got, errs := s.validateAndFilterHreflangs(links)
-		if len(got) != 0 || len(errs) != 1 {
-			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
-
-	t.Run("strict mode: reject unsupported scheme", func(t *testing.T) {
-		s := New().SetStrict(true)
-		links := []AlternateLink{{Rel: "alternate", Hreflang: "en", Href: "ftp://example.com/"}}
-		got, errs := s.validateAndFilterHreflangs(links)
-		if len(got) != 0 || len(errs) != 1 {
-			t.Errorf("expected 0 links, 1 error; got %d, %d", len(got), len(errs))
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New()
+			if tt.strict {
+				s = s.SetStrict(true)
+			}
+			got, errs := s.validateAndFilterHreflangs(tt.links)
+			if len(got) != tt.wantLinks || len(errs) != tt.wantErrs {
+				t.Errorf("expected %d links, %d errors; got %d, %d", tt.wantLinks, tt.wantErrs, len(got), len(errs))
+			}
+		})
+	}
 }
 
 func TestHreflang_parseURLSet_WithHreflang(t *testing.T) {
@@ -1692,60 +1346,27 @@ func TestVideo_parseURLSet_WithVideos(t *testing.T) {
     </url>
 </urlset>`
 		s := New()
-		urlSet, err := s.parseURLSet(data)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		urlSet := requireURLSetParse(t, s, data)
 		u := urlSet.URL[0]
 		if len(u.Videos) != 1 {
 			t.Fatalf("expected 1 video, got %d", len(u.Videos))
 		}
 		v := u.Videos[0]
-		if v.ThumbnailLoc != "https://example.com/thumb.jpg" {
-			t.Errorf("unexpected ThumbnailLoc: %q", v.ThumbnailLoc)
-		}
-		if v.Title != "Example Video" {
-			t.Errorf("unexpected Title: %q", v.Title)
-		}
-		if v.Description != "A description" {
-			t.Errorf("unexpected Description: %q", v.Description)
-		}
-		if v.ContentLoc != "https://example.com/video.mp4" {
-			t.Errorf("unexpected ContentLoc: %q", v.ContentLoc)
-		}
-		if v.PlayerLoc != "https://example.com/player" {
-			t.Errorf("unexpected PlayerLoc: %q", v.PlayerLoc)
-		}
-		if v.Duration == nil || *v.Duration != 600 {
-			t.Errorf("unexpected Duration: %v", v.Duration)
-		}
-		if v.Rating == nil || *v.Rating != 4.5 {
-			t.Errorf("unexpected Rating: %v", v.Rating)
-		}
-		if v.ViewCount == nil || *v.ViewCount != 1000 {
-			t.Errorf("unexpected ViewCount: %v", v.ViewCount)
-		}
-		if v.FamilyFriendly != "yes" {
-			t.Errorf("unexpected FamilyFriendly: %q", v.FamilyFriendly)
-		}
-		if v.Restriction == nil || v.Restriction.Relationship != "allow" || v.Restriction.Value != "HU AT" {
-			t.Errorf("unexpected Restriction: %v", v.Restriction)
-		}
-		if v.Platform == nil || v.Platform.Relationship != "allow" || v.Platform.Value != "web mobile" {
-			t.Errorf("unexpected Platform: %v", v.Platform)
-		}
-		if v.RequiresSubscription != "no" {
-			t.Errorf("unexpected RequiresSubscription: %q", v.RequiresSubscription)
-		}
-		if v.Uploader == nil || v.Uploader.Value != "Channel" || v.Uploader.Info != "https://example.com/uploader" {
-			t.Errorf("unexpected Uploader: %v", v.Uploader)
-		}
-		if v.Live != "no" {
-			t.Errorf("unexpected Live: %q", v.Live)
-		}
-		if len(v.Tags) != 2 || v.Tags[0] != "golang" || v.Tags[1] != "sitemap" {
-			t.Errorf("unexpected Tags: %v", v.Tags)
-		}
+		mustEqual(t, "ThumbnailLoc", v.ThumbnailLoc, "https://example.com/thumb.jpg")
+		mustEqual(t, "Title", v.Title, "Example Video")
+		mustEqual(t, "Description", v.Description, "A description")
+		mustEqual(t, "ContentLoc", v.ContentLoc, "https://example.com/video.mp4")
+		mustEqual(t, "PlayerLoc", v.PlayerLoc, "https://example.com/player")
+		assertPtrInt(t, "Duration", v.Duration, 600)
+		assertPtrFloat32(t, "Rating", v.Rating, 4.5)
+		assertPtrInt(t, "ViewCount", v.ViewCount, 1000)
+		mustEqual(t, "FamilyFriendly", v.FamilyFriendly, "yes")
+		assertVideoRestriction(t, v.Restriction, "allow", "HU AT")
+		assertVideoPlatform(t, v.Platform, "allow", "web mobile")
+		mustEqual(t, "RequiresSubscription", v.RequiresSubscription, "no")
+		assertVideoUploader(t, v.Uploader, "Channel", "https://example.com/uploader")
+		mustEqual(t, "Live", v.Live, "no")
+		assertStringSlice(t, "Tags", v.Tags, []string{"golang", "sitemap"})
 	})
 
 	t.Run("URL without video has nil Videos slice", func(t *testing.T) {
@@ -1754,13 +1375,8 @@ func TestVideo_parseURLSet_WithVideos(t *testing.T) {
     <url><loc>https://example.com/page</loc></url>
 </urlset>`
 		s := New()
-		urlSet, err := s.parseURLSet(data)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(urlSet.URL[0].Videos) != 0 {
-			t.Errorf("expected 0 videos, got %d", len(urlSet.URL[0].Videos))
-		}
+		urlSet := requireURLSetParse(t, s, data)
+		mustEqual(t, "Videos count", len(urlSet.URL[0].Videos), 0)
 	})
 
 	t.Run("video element without namespace is ignored", func(t *testing.T) {
@@ -1772,13 +1388,8 @@ func TestVideo_parseURLSet_WithVideos(t *testing.T) {
     </url>
 </urlset>`
 		s := New()
-		urlSet, err := s.parseURLSet(data)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(urlSet.URL[0].Videos) != 0 {
-			t.Errorf("expected 0 videos (no namespace), got %d", len(urlSet.URL[0].Videos))
-		}
+		urlSet := requireURLSetParse(t, s, data)
+		mustEqual(t, "Videos count (no namespace)", len(urlSet.URL[0].Videos), 0)
 	})
 
 	t.Run("multiple URLs with mixed video presence", func(t *testing.T) {
@@ -1794,16 +1405,9 @@ func TestVideo_parseURLSet_WithVideos(t *testing.T) {
     </url>
 </urlset>`
 		s := New()
-		urlSet, err := s.parseURLSet(data)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(urlSet.URL[0].Videos) != 1 {
-			t.Errorf("expected 1 video on first URL, got %d", len(urlSet.URL[0].Videos))
-		}
-		if len(urlSet.URL[1].Videos) != 0 {
-			t.Errorf("expected 0 videos on second URL, got %d", len(urlSet.URL[1].Videos))
-		}
+		urlSet := requireURLSetParse(t, s, data)
+		mustEqual(t, "Videos count on first URL", len(urlSet.URL[0].Videos), 1)
+		mustEqual(t, "Videos count on second URL", len(urlSet.URL[1].Videos), 0)
 	})
 }
 
@@ -1813,16 +1417,8 @@ func TestVideo_Parse_integration(t *testing.T) {
 
 	t.Run("fixture with video parses correctly", func(t *testing.T) {
 		s := New()
-		_, err := s.Parse(server.URL+"/sitemap-video-01.xml", nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 2 {
-			t.Fatalf("expected 2 URLs, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
-		}
+		requireParse(t, s, server.URL+"/sitemap-video-01.xml", nil)
+		assertCounts(t, s, 2, 0)
 
 		urls := s.GetURLs()
 		var videoPage, plain URL
@@ -1838,36 +1434,16 @@ func TestVideo_Parse_integration(t *testing.T) {
 			t.Fatalf("expected 1 video on video-page, got %d", len(videoPage.Videos))
 		}
 		v := videoPage.Videos[0]
-		if !strings.HasSuffix(v.ThumbnailLoc, "/thumb.jpg") {
-			t.Errorf("unexpected ThumbnailLoc: %q", v.ThumbnailLoc)
-		}
-		if v.Title != "Example Video" {
-			t.Errorf("unexpected Title: %q", v.Title)
-		}
-		if v.Duration == nil || *v.Duration != 600 {
-			t.Errorf("unexpected Duration: %v", v.Duration)
-		}
-		if v.Rating == nil || *v.Rating != 4.5 {
-			t.Errorf("unexpected Rating: %v", v.Rating)
-		}
-		if v.ViewCount == nil || *v.ViewCount != 1000 {
-			t.Errorf("unexpected ViewCount: %v", v.ViewCount)
-		}
-		if v.Restriction == nil || v.Restriction.Relationship != "allow" {
-			t.Errorf("unexpected Restriction: %v", v.Restriction)
-		}
-		if v.Platform == nil || v.Platform.Relationship != "allow" {
-			t.Errorf("unexpected Platform: %v", v.Platform)
-		}
-		if v.Uploader == nil || v.Uploader.Value != "ExampleChannel" {
-			t.Errorf("unexpected Uploader: %v", v.Uploader)
-		}
-		if len(v.Tags) != 2 {
-			t.Errorf("expected 2 tags, got %d", len(v.Tags))
-		}
-		if len(plain.Videos) != 0 {
-			t.Errorf("expected 0 videos on plain page")
-		}
+		assertHasSuffix(t, "ThumbnailLoc", v.ThumbnailLoc, "/thumb.jpg")
+		mustEqual(t, "Title", v.Title, "Example Video")
+		assertPtrInt(t, "Duration", v.Duration, 600)
+		assertPtrFloat32(t, "Rating", v.Rating, 4.5)
+		assertPtrInt(t, "ViewCount", v.ViewCount, 1000)
+		assertVideoRestriction(t, v.Restriction, "allow", "")
+		assertVideoPlatform(t, v.Platform, "allow", "")
+		assertVideoUploader(t, v.Uploader, "ExampleChannel", "")
+		mustEqual(t, "Tags count", len(v.Tags), 2)
+		mustEqual(t, "plain Videos count", len(plain.Videos), 0)
 	})
 
 	t.Run("strict: valid video produces no errors", func(t *testing.T) {
@@ -1885,16 +1461,9 @@ func TestVideo_Parse_integration(t *testing.T) {
         </video:video>
     </url>
 </urlset>`, server.URL, server.URL, server.URL)
-		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
-		}
-		if len(s.GetURLs()[0].Videos) != 1 {
-			t.Errorf("expected 1 video, got %d", len(s.GetURLs()[0].Videos))
-		}
+		requireParse(t, s, server.URL+"/sitemap.xml", &content)
+		mustEqual(t, "errors count", s.GetErrorsCount(), int64(0))
+		mustEqual(t, "Videos count", len(s.GetURLs()[0].Videos), 1)
 	})
 
 	t.Run("tolerant: video with only ThumbnailLoc kept without errors", func(t *testing.T) {
@@ -1909,16 +1478,9 @@ func TestVideo_Parse_integration(t *testing.T) {
         </video:video>
     </url>
 </urlset>`, server.URL, server.URL)
-		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors in tolerant mode, got %d", s.GetErrorsCount())
-		}
-		if len(s.GetURLs()[0].Videos) != 1 {
-			t.Errorf("expected 1 video, got %d", len(s.GetURLs()[0].Videos))
-		}
+		requireParse(t, s, server.URL+"/sitemap.xml", &content)
+		mustEqual(t, "errors count", s.GetErrorsCount(), int64(0))
+		mustEqual(t, "Videos count", len(s.GetURLs()[0].Videos), 1)
 	})
 
 	t.Run("strict: missing required fields produce errors, video kept", func(t *testing.T) {
@@ -1933,17 +1495,10 @@ func TestVideo_Parse_integration(t *testing.T) {
         </video:video>
     </url>
 </urlset>`, server.URL, server.URL)
-		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		requireParse(t, s, server.URL+"/sitemap.xml", &content)
 		// title, description, content_loc+player_loc = 3 errors
-		if s.GetErrorsCount() != 3 {
-			t.Errorf("expected 3 errors, got %d: %v", s.GetErrorsCount(), s.GetErrors())
-		}
-		if len(s.GetURLs()[0].Videos) != 1 {
-			t.Errorf("expected video to be kept despite errors, got %d", len(s.GetURLs()[0].Videos))
-		}
+		mustEqual(t, "errors count", s.GetErrorsCount(), int64(3))
+		mustEqual(t, "Videos count", len(s.GetURLs()[0].Videos), 1)
 	})
 
 	t.Run("tolerant: empty ThumbnailLoc dropped silently", func(t *testing.T) {
@@ -1957,178 +1512,66 @@ func TestVideo_Parse_integration(t *testing.T) {
         <video:video><video:thumbnail_loc>%s/thumb.jpg</video:thumbnail_loc></video:video>
     </url>
 </urlset>`, server.URL, server.URL)
-		_, err := s.Parse(server.URL+"/sitemap.xml", &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors, got %d", s.GetErrorsCount())
-		}
-		if len(s.GetURLs()[0].Videos) != 1 {
-			t.Errorf("expected 1 valid video (empty thumb dropped), got %d", len(s.GetURLs()[0].Videos))
-		}
+		requireParse(t, s, server.URL+"/sitemap.xml", &content)
+		mustEqual(t, "errors count", s.GetErrorsCount(), int64(0))
+		mustEqual(t, "Videos count", len(s.GetURLs()[0].Videos), 1)
 	})
 }
 
 func TestS_resolveAndValidateLoc(t *testing.T) {
-	baseURL := "https://example.com/sitemaps/index.xml"
+	const baseURL = "https://example.com/sitemaps/index.xml"
+	longURL2049 := "https://example.com/" + strings.Repeat("a", 2049-len("https://example.com/"))
+	longURL2048 := "https://example.com/" + strings.Repeat("a", 2048-len("https://example.com/"))
+	longRelPath := "/" + strings.Repeat("a", 2049-len("https://example.com/"))
 
-	t.Run("tolerant absolute URL", func(t *testing.T) {
-		s := New()
-		resolved, err := s.resolveAndValidateLoc("https://example.com/page1", baseURL)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if resolved != "https://example.com/page1" {
-			t.Errorf("expected https://example.com/page1, got %s", resolved)
-		}
-	})
+	tests := []struct {
+		name         string
+		strict       bool
+		loc          string
+		base         string
+		wantErr      bool
+		wantResolved string
+	}{
+		{"tolerant absolute URL", false, "https://example.com/page1", baseURL, false, "https://example.com/page1"},
+		{"tolerant relative URL with leading slash", false, "/products/page1.html", baseURL, false, "https://example.com/products/page1.html"},
+		{"tolerant relative URL without leading slash", false, "page2.html", baseURL, false, "https://example.com/sitemaps/page2.html"},
+		{"tolerant ftp URL rejected", false, "ftp://example.com/file", baseURL, true, ""},
+		{"tolerant unparseable loc", false, "%%", baseURL, true, ""},
+		{"tolerant unparseable base URL", false, "/page", "%%", true, ""},
+		{"strict valid absolute URL", true, "https://example.com/page1", baseURL, false, "https://example.com/page1"},
+		{"strict rejects relative URL", true, "/products/page1.html", baseURL, true, ""},
+		{"strict rejects ftp scheme", true, "ftp://example.com/file", baseURL, true, ""},
+		{"strict rejects different host", true, "https://other.com/page", baseURL, true, ""},
+		{"strict rejects different protocol", true, "http://example.com/page", baseURL, true, ""},
+		{"strict rejects URL exceeding 2048 chars", true, longURL2049, baseURL, true, ""},
+		{"strict accepts URL at exactly 2048 chars", true, longURL2048, baseURL, false, ""},
+		{"strict rejects missing host", true, "https:///path", baseURL, true, ""},
+		{"tolerant rejects resolved URL exceeding 2048 chars", false, longURL2049, baseURL, true, ""},
+		{"tolerant accepts resolved URL at exactly 2048 chars", false, longURL2048, baseURL, false, ""},
+		{"tolerant rejects relative URL that resolves beyond 2048 chars", false, longRelPath, baseURL, true, ""},
+	}
 
-	t.Run("tolerant relative URL with leading slash", func(t *testing.T) {
-		s := New()
-		resolved, err := s.resolveAndValidateLoc("/products/page1.html", baseURL)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if resolved != "https://example.com/products/page1.html" {
-			t.Errorf("expected https://example.com/products/page1.html, got %s", resolved)
-		}
-	})
-
-	t.Run("tolerant relative URL without leading slash", func(t *testing.T) {
-		s := New()
-		resolved, err := s.resolveAndValidateLoc("page2.html", baseURL)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if resolved != "https://example.com/sitemaps/page2.html" {
-			t.Errorf("expected https://example.com/sitemaps/page2.html, got %s", resolved)
-		}
-	})
-
-	t.Run("tolerant ftp URL rejected", func(t *testing.T) {
-		s := New()
-		_, err := s.resolveAndValidateLoc("ftp://example.com/file", baseURL)
-		if err == nil {
-			t.Error("expected error for ftp URL in tolerant mode")
-		}
-	})
-
-	t.Run("tolerant unparseable loc", func(t *testing.T) {
-		s := New()
-		_, err := s.resolveAndValidateLoc("%%", baseURL)
-		if err == nil {
-			t.Error("expected error for unparseable URL")
-		}
-	})
-
-	t.Run("tolerant unparseable base URL", func(t *testing.T) {
-		s := New()
-		_, err := s.resolveAndValidateLoc("/page", "%%")
-		if err == nil {
-			t.Error("expected error for unparseable base URL")
-		}
-	})
-
-	t.Run("strict valid absolute URL", func(t *testing.T) {
-		s := New().SetStrict(true)
-		resolved, err := s.resolveAndValidateLoc("https://example.com/page1", baseURL)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if resolved != "https://example.com/page1" {
-			t.Errorf("expected https://example.com/page1, got %s", resolved)
-		}
-	})
-
-	t.Run("strict rejects relative URL", func(t *testing.T) {
-		s := New().SetStrict(true)
-		_, err := s.resolveAndValidateLoc("/products/page1.html", baseURL)
-		if err == nil {
-			t.Error("expected error for relative URL in strict mode")
-		}
-	})
-
-	t.Run("strict rejects ftp scheme", func(t *testing.T) {
-		s := New().SetStrict(true)
-		_, err := s.resolveAndValidateLoc("ftp://example.com/file", baseURL)
-		if err == nil {
-			t.Error("expected error for ftp URL in strict mode")
-		}
-	})
-
-	t.Run("strict rejects different host", func(t *testing.T) {
-		s := New().SetStrict(true)
-		_, err := s.resolveAndValidateLoc("https://other.com/page", baseURL)
-		if err == nil {
-			t.Error("expected error for different host in strict mode")
-		}
-	})
-
-	t.Run("strict rejects different protocol", func(t *testing.T) {
-		s := New().SetStrict(true)
-		_, err := s.resolveAndValidateLoc("http://example.com/page", baseURL)
-		if err == nil {
-			t.Error("expected error for different protocol in strict mode")
-		}
-	})
-
-	t.Run("strict rejects URL exceeding 2048 chars", func(t *testing.T) {
-		s := New().SetStrict(true)
-		longPath := strings.Repeat("a", 2049-len("https://example.com/"))
-		longURL := "https://example.com/" + longPath
-		_, err := s.resolveAndValidateLoc(longURL, baseURL)
-		if err == nil {
-			t.Error("expected error for URL exceeding 2048 characters")
-		}
-	})
-
-	t.Run("strict accepts URL at exactly 2048 chars", func(t *testing.T) {
-		s := New().SetStrict(true)
-		longPath := strings.Repeat("a", 2048-len("https://example.com/"))
-		longURL := "https://example.com/" + longPath
-		_, err := s.resolveAndValidateLoc(longURL, baseURL)
-		if err != nil {
-			t.Errorf("unexpected error for URL at exactly 2048 characters: %v", err)
-		}
-	})
-
-	t.Run("strict rejects missing host", func(t *testing.T) {
-		s := New().SetStrict(true)
-		_, err := s.resolveAndValidateLoc("https:///path", baseURL)
-		if err == nil {
-			t.Error("expected error for URL with missing host in strict mode")
-		}
-	})
-
-	t.Run("tolerant rejects resolved URL exceeding 2048 chars", func(t *testing.T) {
-		s := New()
-		longPath := strings.Repeat("a", 2049-len("https://example.com/"))
-		longURL := "https://example.com/" + longPath
-		_, err := s.resolveAndValidateLoc(longURL, baseURL)
-		if err == nil {
-			t.Error("expected error for resolved URL exceeding 2048 characters in tolerant mode")
-		}
-	})
-
-	t.Run("tolerant accepts resolved URL at exactly 2048 chars", func(t *testing.T) {
-		s := New()
-		longPath := strings.Repeat("a", 2048-len("https://example.com/"))
-		longURL := "https://example.com/" + longPath
-		_, err := s.resolveAndValidateLoc(longURL, baseURL)
-		if err != nil {
-			t.Errorf("unexpected error for resolved URL at exactly 2048 characters: %v", err)
-		}
-	})
-
-	t.Run("tolerant rejects relative URL that resolves beyond 2048 chars", func(t *testing.T) {
-		s := New()
-		longPath := "/" + strings.Repeat("a", 2049-len("https://example.com/"))
-		_, err := s.resolveAndValidateLoc(longPath, baseURL)
-		if err == nil {
-			t.Error("expected error for relative URL resolving to more than 2048 characters")
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New()
+			if tt.strict {
+				s = s.SetStrict(true)
+			}
+			resolved, err := s.resolveAndValidateLoc(tt.loc, tt.base)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil (resolved=%q)", resolved)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				if tt.wantResolved != "" && resolved != tt.wantResolved {
+					t.Errorf("expected %q, got %q", tt.wantResolved, resolved)
+				}
+			}
+		})
+	}
 }
 
 func TestS_Parse_Deduplication(t *testing.T) {
@@ -2299,17 +1742,8 @@ func TestS_Parse_StrictMode(t *testing.T) {
     <url><loc>/page-01</loc></url>
     <url><loc>/page-02</loc></url>
 </urlset>`
-		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 0 {
-			t.Errorf("expected 0 URLs in strict mode, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 2 {
-			t.Errorf("expected 2 errors in strict mode, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, fmt.Sprintf("%s/sitemap.xml", server.URL), &content)
+		assertCounts(t, s, 0, 2)
 	})
 
 	t.Run("strict rejects cross-host loc", func(t *testing.T) {
@@ -2318,17 +1752,8 @@ func TestS_Parse_StrictMode(t *testing.T) {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url><loc>https://other-domain.com/page-01</loc></url>
 </urlset>`
-		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 0 {
-			t.Errorf("expected 0 URLs, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 1 {
-			t.Errorf("expected 1 error, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, fmt.Sprintf("%s/sitemap.xml", server.URL), &content)
+		assertCounts(t, s, 0, 1)
 	})
 
 	t.Run("strict rejects relative loc in sitemapindex", func(t *testing.T) {
@@ -2337,17 +1762,8 @@ func TestS_Parse_StrictMode(t *testing.T) {
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <sitemap><loc>/sub-sitemap.xml</loc></sitemap>
 </sitemapindex>`
-		sitemapURL := fmt.Sprintf("%s/sitemapindex.xml", server.URL)
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 0 {
-			t.Errorf("expected 0 URLs, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 1 {
-			t.Errorf("expected 1 error, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, fmt.Sprintf("%s/sitemapindex.xml", server.URL), &content)
+		assertCounts(t, s, 0, 1)
 	})
 
 	t.Run("strict accepts same-host absolute URLs", func(t *testing.T) {
@@ -2357,17 +1773,8 @@ func TestS_Parse_StrictMode(t *testing.T) {
     <url><loc>%s/page-01</loc></url>
     <url><loc>%s/page-02</loc></url>
 </urlset>`, server.URL, server.URL)
-		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 2 {
-			t.Errorf("expected 2 URLs, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, fmt.Sprintf("%s/sitemap.xml", server.URL), &content)
+		assertCounts(t, s, 2, 0)
 	})
 
 	t.Run("strict rejects priority below 0.0", func(t *testing.T) {
@@ -2376,17 +1783,8 @@ func TestS_Parse_StrictMode(t *testing.T) {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url><loc>%s/page-01</loc><priority>-0.1</priority></url>
 </urlset>`, server.URL)
-		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 0 {
-			t.Errorf("expected 0 URLs, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 1 {
-			t.Errorf("expected 1 error, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, fmt.Sprintf("%s/sitemap.xml", server.URL), &content)
+		assertCounts(t, s, 0, 1)
 	})
 
 	t.Run("strict rejects priority above 1.0", func(t *testing.T) {
@@ -2395,17 +1793,8 @@ func TestS_Parse_StrictMode(t *testing.T) {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url><loc>%s/page-01</loc><priority>1.1</priority></url>
 </urlset>`, server.URL)
-		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 0 {
-			t.Errorf("expected 0 URLs, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 1 {
-			t.Errorf("expected 1 error, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, fmt.Sprintf("%s/sitemap.xml", server.URL), &content)
+		assertCounts(t, s, 0, 1)
 	})
 
 	t.Run("strict accepts priority at 0.0", func(t *testing.T) {
@@ -2414,17 +1803,8 @@ func TestS_Parse_StrictMode(t *testing.T) {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url><loc>%s/page-01</loc><priority>0.0</priority></url>
 </urlset>`, server.URL)
-		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 1 {
-			t.Errorf("expected 1 URL, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, fmt.Sprintf("%s/sitemap.xml", server.URL), &content)
+		assertCounts(t, s, 1, 0)
 	})
 
 	t.Run("strict accepts priority at 1.0", func(t *testing.T) {
@@ -2433,17 +1813,8 @@ func TestS_Parse_StrictMode(t *testing.T) {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url><loc>%s/page-01</loc><priority>1.0</priority></url>
 </urlset>`, server.URL)
-		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 1 {
-			t.Errorf("expected 1 URL, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, fmt.Sprintf("%s/sitemap.xml", server.URL), &content)
+		assertCounts(t, s, 1, 0)
 	})
 
 	t.Run("strict accepts URL without priority", func(t *testing.T) {
@@ -2452,17 +1823,8 @@ func TestS_Parse_StrictMode(t *testing.T) {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url><loc>%s/page-01</loc></url>
 </urlset>`, server.URL)
-		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 1 {
-			t.Errorf("expected 1 URL, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, fmt.Sprintf("%s/sitemap.xml", server.URL), &content)
+		assertCounts(t, s, 1, 0)
 	})
 
 	t.Run("tolerant accepts out-of-range priority", func(t *testing.T) {
@@ -2472,17 +1834,8 @@ func TestS_Parse_StrictMode(t *testing.T) {
     <url><loc>%s/page-01</loc><priority>-0.5</priority></url>
     <url><loc>%s/page-02</loc><priority>1.5</priority></url>
 </urlset>`, server.URL, server.URL)
-		sitemapURL := fmt.Sprintf("%s/sitemap.xml", server.URL)
-		_, err := s.Parse(sitemapURL, &content)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if s.GetURLCount() != 2 {
-			t.Errorf("expected 2 URLs in tolerant mode, got %d", s.GetURLCount())
-		}
-		if s.GetErrorsCount() != 0 {
-			t.Errorf("expected 0 errors in tolerant mode, got %d", s.GetErrorsCount())
-		}
+		requireParse(t, s, fmt.Sprintf("%s/sitemap.xml", server.URL), &content)
+		assertCounts(t, s, 2, 0)
 	})
 }
 
