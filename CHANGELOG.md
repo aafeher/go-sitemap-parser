@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-05-06
+
+### Changed
+- Internal refactoring of `sitemap.go` to reduce cyclomatic complexity across all functions to ≤ 15 (gocyclo threshold). `parse()` was split into dedicated handlers: `parseSitemapIndexContent`, `parseURLSetContent`, `parseRSSContent`, `parseFeedContent`, and `parseTextContent`. URL validation logic was extracted into `validateInputURL`. Video validation was split into `validateVideoThumbnailStrict` and `validateVideoFieldsStrict`. Regex filter logic was centralised into `matchesFollowFilter` and `matchesRulesFilter` helpers. No public API changes.
+- Internal refactoring of test files (`sitemap_test.go`, `test_server_test.go`) to reduce cyclomatic complexity: added generic `mustEqual`, `requireParse`, `assertCounts`, `requireURLSetParse`, `assertImageFields`, `assertPtrInt`, `assertPtrFloat32`, `assertVideoRestriction`, `assertVideoPlatform`, `assertVideoUploader`, `assertStringSlice`, `assertHasSuffix`, `mustGetBody`, and `mustUnzip` helpers; converted high-complexity test functions to table-driven style.
+
 ## [1.0.0] - 2026-05-04
 
 ### Added
