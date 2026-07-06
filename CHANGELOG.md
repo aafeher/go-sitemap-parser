@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `golang.org/x/net` updated from v0.53.0 to v0.56.0 — resolves OSV advisories GO-2026-5025 through GO-2026-5030; `golang.org/x/text` (indirect) updated from v0.36.0 to v0.38.0
+- CI: `govulncheck` installation pinned to exact version v1.5.0 instead of `@latest` (addresses the Scorecard Pinned-Dependencies check)
+
 ## [1.0.2] - 2026-07-06
 
 ### Added
