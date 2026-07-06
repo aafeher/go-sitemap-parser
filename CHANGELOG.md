@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-07-06
+
+### Added
+- OpenSSF Scorecard workflow (`.github/workflows/scorecard.yml`): weekly and on-push supply-chain security analysis, with results published to [scorecard.dev](https://scorecard.dev/viewer/?uri=github.com/aafeher/go-sitemap-parser); Scorecard badge added to `README.md`
+- CodeQL code-scanning workflow (`.github/workflows/codeql.yml`): analyses Go code and GitHub Actions workflows on push, pull request, and a weekly schedule
+- Dependabot configuration (`.github/dependabot.yml`): weekly update checks for the `gomod` and `github-actions` ecosystems
+
+### Changed
+- CI workflow (`go.yml`) hardened: added a least-privilege `permissions: contents: read` block and pinned all GitHub Actions to full commit SHAs (addresses the Scorecard Token-Permissions and Pinned-Dependencies checks)
+
 ## [1.0.1] - 2026-05-06
 
 ### Changed
@@ -189,7 +199,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each parsed `URL` exposes `Loc`, `LastMod`, `ChangeFreq`, and `Priority`
 - Method chaining (fluent interface) on all setters
 
-[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.7.0...v0.8.0
