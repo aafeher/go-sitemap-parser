@@ -11,7 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `golang.org/x/net` updated from v0.53.0 to v0.56.0 — resolves OSV advisories GO-2026-5025 through GO-2026-5030; `golang.org/x/text` (indirect) updated from v0.36.0 to v0.38.0
 - CI: `govulncheck` installation pinned to exact version v1.5.0 instead of `@latest` (addresses the Scorecard Pinned-Dependencies check)
 - CI: `github/codeql-action/init` and `.../analyze` updated from v3.36.3 to v4.37.7 — both steps are bumped together, as CodeQL reports a configuration error when the workflow's action versions do not match
-- CI: `golangci/golangci-lint-action` updated from v6.5.2 to v9.3.0, which installs golangci-lint v2
+- CI: `golangci/golangci-lint-action` updated from v6.5.2 to v9.3.0 with golangci-lint pinned to v2.13.2. This resolves the `typecheck` failures on `main` (`undefined: sitemap`, `undefined: rand`) caused by golangci-lint v1.64.8 being unable to analyse code built with the current `stable` Go toolchain
+- CI: the lint step now runs only on the `stable` Go matrix leg — golangci-lint v2.13.2 declares `go 1.26.0`, while `actions/setup-go` sets `GOTOOLCHAIN=local`, so it cannot be built on the Go 1.25 leg
+- CI: `fail-fast: false` added to the build matrix so one failing Go version no longer cancels the other leg's results
 - `.golangci.yml` migrated to the golangci-lint v2 configuration schema (`version: "2"`, `linters.default: none`, `linters.exclusions`); `gosimple` removed from the enabled linters as it was merged into `staticcheck` in v2, so check coverage is unchanged
 - Dependabot: `github/codeql-action*` updates are now grouped into a single pull request, preventing the mismatched-version failures caused by `init` and `analyze` being bumped separately
 
