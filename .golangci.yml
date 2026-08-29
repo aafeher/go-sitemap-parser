@@ -1,19 +1,36 @@
+version: "2"
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - govet
-    - staticcheck
     - ineffassign
     - misspell
-    - unused
-    - gosimple
     - revive
-
-issues:
-  exclude-rules:
-    # Standard test function signature — t *testing.T is required even when not called directly.
-    - linters: [revive]
-      text: "unused-parameter"
-      path: "_test\\.go"
-      source: "func Test.*\\(t \\*testing\\.T\\)"
+    - staticcheck
+    - unused
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Standard test function signature — t *testing.T is required even when not called directly.
+      - linters:
+          - revive
+        path: _test\.go
+        text: unused-parameter
+        source: func Test.*\(t \*testing\.T\)
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

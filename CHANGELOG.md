@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `golang.org/x/net` updated from v0.53.0 to v0.56.0 — resolves OSV advisories GO-2026-5025 through GO-2026-5030; `golang.org/x/text` (indirect) updated from v0.36.0 to v0.38.0
 - CI: `govulncheck` installation pinned to exact version v1.5.0 instead of `@latest` (addresses the Scorecard Pinned-Dependencies check)
+- CI: `github/codeql-action/init` and `.../analyze` updated from v3.36.3 to v4.37.7 — both steps are bumped together, as CodeQL reports a configuration error when the workflow's action versions do not match
+- CI: `golangci/golangci-lint-action` updated from v6.5.2 to v9.3.0, which installs golangci-lint v2
+- `.golangci.yml` migrated to the golangci-lint v2 configuration schema (`version: "2"`, `linters.default: none`, `linters.exclusions`); `gosimple` removed from the enabled linters as it was merged into `staticcheck` in v2, so check coverage is unchanged
+- Dependabot: `github/codeql-action*` updates are now grouped into a single pull request, preventing the mismatched-version failures caused by `init` and `analyze` being bumped separately
 
 ## [1.0.2] - 2026-07-06
 
