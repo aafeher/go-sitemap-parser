@@ -14,6 +14,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         go-version: ['1.25', 'stable']
     steps:
@@ -30,10 +31,14 @@ jobs:
     - name: Vet
       run: go vet ./...
 
+    # golangci-lint v2 requires a Go toolchain newer than the oldest supported
+    # Go version in the matrix, and setup-go pins GOTOOLCHAIN=local, so the lint
+    # step can only build on the `stable` leg. Linting once is enough.
     - name: Lint
+      if: matrix.go-version == 'stable'
       uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
       with:
-        version: latest
+        version: v2.13.2
         install-mode: goinstall
 
     - name: Build examples
