@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-21
+
 ### Added
 - Go native fuzz targets (`sitemap_fuzz_test.go`): `FuzzParse`, `FuzzDetectRootElement`, `FuzzUnzip` and `FuzzParseRobotsTXT`. They assert that every location the parser returns stays within the 2,048-character limit and uses an http/https scheme, that parsing is deterministic, and that gzip payloads round trip unchanged. Seeds are drawn from the fixtures in `test/`, so the seed corpus runs as part of the normal `go test` suite. This also addresses the OpenSSF Scorecard `Fuzzing` check
 
 ### Changed
 - **Minimum supported Go version raised to 1.26.** `golang.org/x/net` v0.59.0 declares `go 1.26.0`, so the dependency update raises this package's own floor; Go 1.25 is no longer supported upstream either (the Go project currently maintains 1.26 and 1.27). Documented under `Requirements` in `README.md`
 - CI: the build matrix now runs Go `1.26` and `stable` instead of `1.25` and `stable`
-- `golang.org/x/net` updated from v0.53.0 to v0.56.0 — resolves OSV advisories GO-2026-5025 through GO-2026-5030; `golang.org/x/text` (indirect) updated from v0.36.0 to v0.38.0
+- `golang.org/x/net` updated from v0.53.0 to v0.59.0, and `golang.org/x/text` (indirect) from v0.36.0 to v0.42.0. The v0.56.0 step along the way resolved OSV advisories GO-2026-5025 through GO-2026-5030
 - CI: `govulncheck` installation pinned to exact version v1.5.0 instead of `@latest` (addresses the Scorecard Pinned-Dependencies check)
 - CI: `github/codeql-action/init` and `.../analyze` updated from v3.36.3 to v4.37.7 — both steps are bumped together, as CodeQL reports a configuration error when the workflow's action versions do not match
 - CI: `golangci/golangci-lint-action` updated from v6.5.2 to v9.3.0 with golangci-lint pinned to v2.13.2. This resolves the `typecheck` failures on `main` (`undefined: sitemap`, `undefined: rand`) caused by golangci-lint v1.64.8 being unable to analyse code built with the current `stable` Go toolchain
@@ -214,7 +216,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each parsed `URL` exposes `Loc`, `LastMod`, `ChangeFreq`, and `Priority`
 - Method chaining (fluent interface) on all setters
 
-[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/aafeher/go-sitemap-parser/compare/v0.9.0...v1.0.0
