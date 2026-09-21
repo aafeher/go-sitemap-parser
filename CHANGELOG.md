@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Go native fuzz targets (`sitemap_fuzz_test.go`): `FuzzParse`, `FuzzDetectRootElement`, `FuzzUnzip` and `FuzzParseRobotsTXT`. They assert that every location the parser returns stays within the 2,048-character limit and uses an http/https scheme, that parsing is deterministic, and that gzip payloads round trip unchanged. Seeds are drawn from the fixtures in `test/`, so the seed corpus runs as part of the normal `go test` suite. This also addresses the OpenSSF Scorecard `Fuzzing` check
+
 ### Changed
 - **Minimum supported Go version raised to 1.26.** `golang.org/x/net` v0.59.0 declares `go 1.26.0`, so the dependency update raises this package's own floor; Go 1.25 is no longer supported upstream either (the Go project currently maintains 1.26 and 1.27). Documented under `Requirements` in `README.md`
 - CI: the build matrix now runs Go `1.26` and `stable` instead of `1.25` and `stable`
