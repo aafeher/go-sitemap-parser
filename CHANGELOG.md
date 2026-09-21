@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Minimum supported Go version raised to 1.26.** `golang.org/x/net` v0.59.0 declares `go 1.26.0`, so the dependency update raises this package's own floor; Go 1.25 is no longer supported upstream either (the Go project currently maintains 1.26 and 1.27). Documented under `Requirements` in `README.md`
+- CI: the build matrix now runs Go `1.26` and `stable` instead of `1.25` and `stable`
 - `golang.org/x/net` updated from v0.53.0 to v0.56.0 — resolves OSV advisories GO-2026-5025 through GO-2026-5030; `golang.org/x/text` (indirect) updated from v0.36.0 to v0.38.0
 - CI: `govulncheck` installation pinned to exact version v1.5.0 instead of `@latest` (addresses the Scorecard Pinned-Dependencies check)
 - CI: `github/codeql-action/init` and `.../analyze` updated from v3.36.3 to v4.37.7 — both steps are bumped together, as CodeQL reports a configuration error when the workflow's action versions do not match

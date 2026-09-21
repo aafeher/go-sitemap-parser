@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.25', 'stable']
+        go-version: ['1.26', 'stable']
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -31,9 +31,10 @@ jobs:
     - name: Vet
       run: go vet ./...
 
-    # golangci-lint v2 requires a Go toolchain newer than the oldest supported
-    # Go version in the matrix, and setup-go pins GOTOOLCHAIN=local, so the lint
-    # step can only build on the `stable` leg. Linting once is enough.
+    # golangci-lint's minimum Go version tracks the latest Go release, so the
+    # oldest leg of the matrix periodically becomes too old to build it while
+    # setup-go pins GOTOOLCHAIN=local. Gating the step to `stable` keeps that
+    # from blocking CI; linting once per push is enough.
     - name: Lint
       if: matrix.go-version == 'stable'
       uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0

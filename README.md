@@ -33,6 +33,10 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Plain text `.txt`
 - Gzip compressed files (e.g., `.xml.gz`, `.txt.gz`)
 
+## Requirements
+
+Go 1.26 or later.
+
 ## Installation
 
 ```bash
