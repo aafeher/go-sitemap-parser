@@ -62,7 +62,8 @@ func (e *NetworkError) Unwrap() error {
 //	    fmt.Println("failed to parse sitemap:", parseErr.URL)
 //	}
 type ParseError struct {
-	// URL is the sitemap URL that was being parsed when the error occurred.
+	// URL is the sitemap URL that was being parsed when the error occurred. For a sitemap
+	// reached through a redirect it is the URL the sitemap was served from.
 	// May be empty when the error is not tied to a specific URL (e.g. max depth reached).
 	URL string
 	// Err is the underlying parse error.
@@ -90,7 +91,8 @@ func (e *ParseError) Unwrap() error {
 type ValidationError struct {
 	// URL is the URL value being validated. When it is not a URL that was rejected, it is the
 	// URL the rejected value belongs to: the page for a value of a <url> entry, the sitemap
-	// for an entry without a location.
+	// for an entry without a location. For a sitemap reached through a redirect that is the
+	// URL the sitemap was served from.
 	// May be empty for field-level errors where no specific URL is available.
 	URL string
 	// Err is the underlying validation error.

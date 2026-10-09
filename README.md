@@ -244,7 +244,7 @@ By default, the parser operates in **tolerant mode**: relative URLs found in `<l
 
 To enable **strict mode**, use the `SetStrict()` function. In strict mode, all URL entries are validated per the [sitemaps.org protocol](http://www.sitemaps.org/protocol.html):
 - `<loc>` must be an absolute HTTP or HTTPS URL
-- `<loc>` must use the same host and protocol as the sitemap file
+- `<loc>` must use the same host and protocol as the sitemap file (for a sitemap reached through a redirect: as the URL it was served from, see [Redirects](#redirects))
 - `<loc>` must not exceed 2,048 characters
 - `<priority>` must be between `0.0` and `1.0` inclusive (if present)
 - `<lastmod>` and `<priority>` must hold a value that can be parsed (if present)
@@ -365,6 +365,22 @@ Already-parsed URLs accumulated before cancellation remain available via
 returned by `ParseContext`.
 
 See [`examples/context`](examples/context/main.go) for a runnable example.
+
+### Redirects
+
+HTTP redirects are followed. A sitemap that is reached through a redirect is treated as located at the URL it was finally served from, not at the URL that was requested:
+
+- relative URLs in it are resolved against that URL (tolerant mode),
+- the URLs it lists have to use the host and protocol of that URL (strict mode),
+- the errors about the document name that URL.
+
+So when `http://example.com/sitemap.xml` redirects to `https://www.example.com/sitemap.xml`, a `<loc>/page</loc>` in it yields `https://www.example.com/page`. Strict mode accepts the URLs on `https://www.example.com` and rejects those on `http://example.com`, the sitemap file not being there.
+
+This goes for the URL passed to `Parse()` and for every sitemap fetched on the way alike: the sitemaps of a sitemap index and those a `robots.txt` names. When the content is passed in through `urlContent`, nothing is fetched and the document is located at the URL given.
+
+Which redirects are followed is up to the HTTP client. The default one stops after 10 consecutive requests, as Go's `http.Client` does by default; a client set with `SetHTTPClient()` decides in its `CheckRedirect`. A fetch that fails is reported as a `*NetworkError` naming the URL that was requested.
+
+See [`examples/redirect`](examples/redirect/main.go) for a runnable example.
 
 ### Reusing an instance
 
@@ -524,7 +540,7 @@ Errors are typed and can be inspected with `errors.As`:
 |---|---|---|
 | `*ConfigError` | A `Set*` method received an invalid value | `Field` (setting name), `Err` (root cause) |
 | `*NetworkError` | An HTTP fetch failed | `URL` (requested URL), `Err` (root cause) |
-| `*ParseError` | XML or gzip parsing failed | `URL` (sitemap URL), `Err` (root cause) |
+| `*ParseError` | XML or gzip parsing failed | `URL` (sitemap URL; after a redirect, the URL the sitemap was served from), `Err` (root cause) |
 | `*ValidationError` | A URL or field value failed validation | `URL` (the rejected URL, or the page or sitemap the rejected value belongs to), `Err` (root cause) |
 
 All types implement `Unwrap()`, enabling `errors.Is` traversal to the root cause.

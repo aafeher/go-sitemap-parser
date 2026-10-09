@@ -3590,7 +3590,7 @@ func TestS_setContent(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			s := test.setup()
-			retURLContent, err := s.setContent(context.Background(), test.attrURLContent)
+			retURLContent, _, err := s.setContent(context.Background(), test.attrURLContent)
 			if retURLContent != test.wantURLContent {
 				t.Errorf("unexpected urlContent: got %v, want %v", retURLContent, test.wantURLContent)
 			}
@@ -3757,7 +3757,7 @@ func TestS_fetch(t *testing.T) {
 			s := &S{
 				cfg: test.fields.cfg,
 			}
-			_, err := s.fetch(context.Background(), test.url)
+			_, _, err := s.fetch(context.Background(), test.url)
 			if (err != nil) != test.wantErr {
 				t.Errorf("fetch() error = %v, wantErr %v", err, test.wantErr)
 				return
@@ -3775,7 +3775,7 @@ func TestS_fetch_ResponseSizeLimit(t *testing.T) {
 
 	t.Run("within limit", func(t *testing.T) {
 		s := New().SetMaxResponseSize(2048)
-		_, err := s.fetch(context.Background(), server.URL)
+		_, _, err := s.fetch(context.Background(), server.URL)
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
@@ -3783,7 +3783,7 @@ func TestS_fetch_ResponseSizeLimit(t *testing.T) {
 
 	t.Run("exceeds limit", func(t *testing.T) {
 		s := New().SetMaxResponseSize(512)
-		_, err := s.fetch(context.Background(), server.URL)
+		_, _, err := s.fetch(context.Background(), server.URL)
 		if err == nil {
 			t.Error("expected error for oversized response, got nil")
 		}
@@ -3796,7 +3796,7 @@ func TestS_fetch_ResponseSizeLimit(t *testing.T) {
 func TestS_fetch_NewRequestError(t *testing.T) {
 	e := New()
 
-	_, err := e.fetch(context.Background(), "://invalid-url")
+	_, _, err := e.fetch(context.Background(), "://invalid-url")
 	if err == nil {
 		t.Error("expected error for invalid URL but got none")
 	}
@@ -3824,7 +3824,7 @@ func TestS_fetch_IOCopyError(t *testing.T) {
 	e := New()
 	e.SetFetchTimeout(1)
 
-	_, err := e.fetch(context.Background(), server.URL)
+	_, _, err := e.fetch(context.Background(), server.URL)
 	if err == nil {
 		t.Error("expected io.Copy error but got none")
 	}
@@ -5380,7 +5380,7 @@ func TestS_fetch_ContextCancel(t *testing.T) {
 		cancel()
 	}()
 
-	_, err := s.fetch(ctx, server.URL)
+	_, _, err := s.fetch(ctx, server.URL)
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")
 	}
@@ -5422,7 +5422,7 @@ func TestS_fetch_NilContext(t *testing.T) {
 
 	s := New()
 	//nolint:staticcheck // intentionally passing nil to exercise the defensive branch
-	body, err := s.fetch(nil, server.URL)
+	body, _, err := s.fetch(nil, server.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5813,6 +5813,223 @@ func TestS_Parse_RobotsTXT_MaxDepth(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+// roundTripperFunc is an http.RoundTripper made of a function.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// movedAndTarget starts two servers, which are two hosts, as they listen on
+// different ports. The one at movedURL redirects every request to the same
+// path at targetURL; the one at targetURL answers with the handler that
+// handle makes of the two URLs.
+func movedAndTarget(t *testing.T, handle func(movedURL, targetURL string) http.HandlerFunc) (movedURL, targetURL string) {
+	t.Helper()
+	moved := httptest.NewUnstartedServer(nil)
+	target := httptest.NewUnstartedServer(nil)
+	movedURL = "http://" + moved.Listener.Addr().String()
+	targetURL = "http://" + target.Listener.Addr().String()
+	moved.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, targetURL+r.URL.Path, http.StatusMovedPermanently)
+	})
+	target.Config.Handler = handle(movedURL, targetURL)
+	moved.Start()
+	target.Start()
+	t.Cleanup(moved.Close)
+	t.Cleanup(target.Close)
+	return movedURL, targetURL
+}
+
+// sortedCopy returns the elements of list in sorted order, in a slice that is
+// never nil.
+func sortedCopy(list []string) []string {
+	sorted := append([]string{}, list...)
+	sort.Strings(sorted)
+	return sorted
+}
+
+// TestS_fetch_ServedFrom verifies the URL that fetch reports a document was
+// served from: the requested URL, as it was passed in, or the URL the request
+// was redirected to.
+func TestS_fetch_ServedFrom(t *testing.T) {
+	movedURL, targetURL := movedAndTarget(t, func(_, _ string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/twice" {
+				http.Redirect(w, r, "/sitemap.xml", http.StatusFound)
+				return
+			}
+			_, _ = fmt.Fprint(w, r.URL.Path)
+		}
+	})
+	// The scheme is not written the way a parsed URL prints it.
+	upperCaseURL := strings.Replace(targetURL, "http://", "HTTP://", 1) + "/sitemap.xml"
+
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"not redirected", targetURL + "/sitemap.xml", targetURL + "/sitemap.xml"},
+		{"not redirected, URL kept as it was passed in", upperCaseURL, upperCaseURL},
+		{"redirected", movedURL + "/sitemap.xml", targetURL + "/sitemap.xml"},
+		{"redirected twice", movedURL + "/twice", targetURL + "/sitemap.xml"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content, servedFrom, err := New().fetch(context.Background(), tt.url)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			mustEqual(t, "served from", servedFrom, tt.want)
+			mustEqual(t, "content", string(content), "/sitemap.xml")
+		})
+	}
+
+	// A RoundTripper is free to leave Response.Request unset. The requested
+	// URL is all there is to go by then.
+	requests := map[string]*http.Request{
+		"transport that names no request":            nil,
+		"transport that names a request without URL": {},
+	}
+	for name, request := range requests {
+		t.Run(name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: request}, nil
+			})}
+			_, servedFrom, err := New().SetHTTPClient(client).fetch(context.Background(), "https://example.com/sitemap.xml")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			mustEqual(t, "served from", servedFrom, "https://example.com/sitemap.xml")
+		})
+	}
+}
+
+// TestS_Parse_Redirect verifies that a sitemap reached through a redirect is
+// treated as located where it was served from: relative URLs are resolved
+// against that URL, strict mode compares the URLs with it, and the errors
+// about the document name it.
+func TestS_Parse_Redirect(t *testing.T) {
+	movedURL, targetURL := movedAndTarget(t, func(movedURL, targetURL string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/robots.txt":
+				// The sitemap index is listed at the host it has moved from.
+				_, _ = fmt.Fprintf(w, "Sitemap: %s/index.xml\n", movedURL)
+			case "/index.xml":
+				_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%s/pages.xml</loc></sitemap><sitemap><loc>/relative.xml</loc></sitemap></sitemapindex>`, targetURL)
+			case "/pages.xml":
+				_, _ = fmt.Fprintf(w, `<urlset><url><loc>%s/page-1</loc></url><url><loc>%s/page-2</loc></url></urlset>`, targetURL, movedURL)
+			case "/relative.xml":
+				_, _ = fmt.Fprint(w, `<urlset><url><loc>/page-3</loc></url></urlset>`)
+			case "/faulty/robots.txt":
+				_, _ = fmt.Fprintf(w, "Sitemap: %[1]s/no-loc.xml\nSitemap: %[1]s/corrupt.xml.gz\n", movedURL)
+			case "/no-loc.xml":
+				_, _ = fmt.Fprint(w, `<urlset><url><lastmod>2024-01-15</lastmod></url></urlset>`)
+			case "/corrupt.xml.gz":
+				_, _ = w.Write([]byte("\x1f\x8b\x08 not gzip"))
+			default:
+				http.NotFound(w, r)
+			}
+		}
+	})
+	movedHost, targetHost := strings.TrimPrefix(movedURL, "http://"), strings.TrimPrefix(targetURL, "http://")
+
+	noLoc := fmt.Sprintf(`validate "%s/no-loc.xml": <loc> of an entry is empty or missing`, targetURL)
+	corrupt := []string{
+		fmt.Sprintf(`parse "%s/corrupt.xml.gz": gzip decompression failed: unexpected EOF`, targetURL),
+		fmt.Sprintf(`parse "%s/corrupt.xml.gz": unrecognized sitemap format (root element: "")`, targetURL),
+	}
+	otherHost := fmt.Sprintf(`validate "%s/page-2": strict mode: host %q does not match sitemap host %q`, movedURL, movedHost, targetHost)
+	relativeSitemap := `validate "/relative.xml": strict mode: unsupported scheme ""`
+
+	tests := []struct {
+		name     string
+		strict   bool
+		url      string
+		wantURLs []string
+		wantErrs []string
+	}{
+		{
+			name:     "relative URL of a redirected sitemap",
+			url:      movedURL + "/relative.xml",
+			wantURLs: []string{targetURL + "/page-3"},
+		},
+		{
+			name:     "relative sitemap of a redirected sitemap index",
+			url:      movedURL + "/index.xml",
+			wantURLs: []string{targetURL + "/page-1", movedURL + "/page-2", targetURL + "/page-3"},
+		},
+		{
+			name:     "redirected sitemap index of a robots.txt",
+			url:      targetURL + "/robots.txt",
+			wantURLs: []string{targetURL + "/page-1", movedURL + "/page-2", targetURL + "/page-3"},
+		},
+		{
+			name:     "redirected robots.txt",
+			url:      movedURL + "/robots.txt",
+			wantURLs: []string{targetURL + "/page-1", movedURL + "/page-2", targetURL + "/page-3"},
+		},
+		{
+			name:     "strict mode, redirected sitemap",
+			strict:   true,
+			url:      movedURL + "/pages.xml",
+			wantURLs: []string{targetURL + "/page-1"},
+			wantErrs: []string{otherHost},
+		},
+		{
+			name:     "strict mode, redirected sitemap index",
+			strict:   true,
+			url:      movedURL + "/index.xml",
+			wantURLs: []string{targetURL + "/page-1"},
+			wantErrs: []string{otherHost, relativeSitemap},
+		},
+		{
+			name:     "strict mode, redirected sitemap index of a robots.txt",
+			strict:   true,
+			url:      targetURL + "/robots.txt",
+			wantURLs: []string{targetURL + "/page-1"},
+			wantErrs: []string{otherHost, relativeSitemap},
+		},
+		{
+			name:     "error about a redirected sitemap",
+			url:      movedURL + "/no-loc.xml",
+			wantErrs: []string{noLoc},
+		},
+		{
+			name:     "error about the gzip content of a redirected sitemap",
+			url:      movedURL + "/corrupt.xml.gz",
+			wantErrs: corrupt,
+		},
+		{
+			name:     "errors about the redirected sitemaps of a robots.txt",
+			url:      targetURL + "/faulty/robots.txt",
+			wantErrs: append([]string{noLoc}, corrupt...),
+		},
+	}
+
+	for _, tt := range tests {
+		for _, multiThread := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, multiThread=%v", tt.name, multiThread), func(t *testing.T) {
+				s := New().SetStrict(tt.strict).SetMultiThread(multiThread)
+				requireParse(t, s, tt.url, nil)
+
+				var gotURLs, gotErrs []string
+				for _, u := range s.GetURLs() {
+					gotURLs = append(gotURLs, u.Loc)
+				}
+				for _, err := range s.GetErrors() {
+					gotErrs = append(gotErrs, err.Error())
+				}
+				assertStringSlice(t, "URLs", sortedCopy(gotURLs), sortedCopy(tt.wantURLs))
+				assertStringSlice(t, "errors", sortedCopy(gotErrs), sortedCopy(tt.wantErrs))
+			})
 		}
 	}
 }

@@ -608,6 +608,12 @@ func (s *S) GetStrict() bool {
 // is outstanding Parse does not parse anything and returns an error with the
 // message "errors occurred before parsing, see GetErrors() for details".
 // Calling the same setter again with a valid value clears its error.
+//
+// A sitemap that is reached through a redirect is located at the URL it was
+// served from, not at the URL that was requested: relative URLs in it are
+// resolved against that URL, strict mode compares the URLs it lists with that
+// URL, and the errors about the document name it.
+//
 // It sets the mainURL field to the given URL and the mainURLContent field to
 // the given URL content. It returns an error if there was an error setting
 // the content.
@@ -698,7 +704,8 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	s.mu.Unlock()
 
 	s.mainURL = url
-	s.mainURLContent, err = s.setContent(ctx, urlContent)
+	var servedFrom string
+	s.mainURLContent, servedFrom, err = s.setContent(ctx, urlContent)
 	if err != nil {
 		s.mu.Lock()
 		s.errs = append(s.errs, err)
@@ -714,9 +721,9 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 		parseAndFetchUrls(ctx, s.robotsTxtSitemapURLs, robotsTXTDepth)
 	} else {
 		s.mu.Lock()
-		mainURLContent := s.checkAndUnzipContent(s.mainURL, []byte(s.mainURLContent))
+		mainURLContent := s.checkAndUnzipContent(servedFrom, []byte(s.mainURLContent))
 		s.mainURLContent = string(mainURLContent)
-		locations := s.parse(s.mainURL, s.mainURLContent)
+		locations := s.parse(servedFrom, s.mainURLContent)
 		s.mu.Unlock()
 
 		parseAndFetchUrls(ctx, locations, 0)
@@ -807,17 +814,19 @@ func (s *S) GetRandomURLs(n int) []URL {
 
 // setContent extracts the main URL content or returns the provided URL content if not nil.
 // It returns the extracted content as a string or an error if there was a problem fetching the content.
+// Next to the content it returns the URL the content was served from: the main URL, or the URL
+// the request for it was redirected to.
 // The supplied context is propagated to the underlying HTTP request when fetching is required.
-func (s *S) setContent(ctx context.Context, urlContent *string) (string, error) {
+func (s *S) setContent(ctx context.Context, urlContent *string) (string, string, error) {
 	if urlContent != nil {
-		return *urlContent, nil
+		return *urlContent, s.mainURL, nil
 	}
-	mainURLContent, err := s.fetch(ctx, s.mainURL)
+	mainURLContent, servedFrom, err := s.fetch(ctx, s.mainURL)
 
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return string(mainURLContent), nil
+	return string(mainURLContent), servedFrom, nil
 }
 
 // parseRobotsTXT retrieves the sitemap URLs from the provided robots.txt content.
@@ -883,12 +892,15 @@ func (s *S) releaseSlot() {
 }
 
 // fetch retrieves the content of the specified URL using an HTTP GET request.
-// It returns the content as a []byte and an error if there was a problem fetching the URL.
+// It returns the content as a []byte, the URL the content was served from and an error if
+// there was a problem fetching the URL.
+// The URL the content was served from is url itself, unless the request was redirected: then
+// it is the URL the last redirect led to.
 // The HTTP status must be 200 (OK) for the request to be successful.
 // The response body is automatically closed after reading using a defer statement.
 // The supplied context is attached to the HTTP request, so cancelling it aborts
 // the in-flight transfer.
-func (s *S) fetch(ctx context.Context, url string) ([]byte, error) {
+func (s *S) fetch(ctx context.Context, url string) ([]byte, string, error) {
 	var body bytes.Buffer
 
 	if ctx == nil {
@@ -913,33 +925,52 @@ func (s *S) fetch(ctx context.Context, url string) ([]byte, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, &NetworkError{URL: url, Err: err}
+		return nil, "", &NetworkError{URL: url, Err: err}
 	}
 
 	req.Header.Set("User-Agent", userAgent)
 
 	response, err := client.Do(req)
 	if err != nil {
-		return nil, &NetworkError{URL: url, Err: err}
+		return nil, "", &NetworkError{URL: url, Err: err}
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(response.Body)
 
 	if response.StatusCode != http.StatusOK {
-		return nil, &NetworkError{URL: url, Err: fmt.Errorf("received HTTP status %d", response.StatusCode)}
+		return nil, "", &NetworkError{URL: url, Err: fmt.Errorf("received HTTP status %d", response.StatusCode)}
 	}
 
 	_, err = io.Copy(&body, io.LimitReader(response.Body, maxResponseSize+1))
 	if err != nil {
-		return nil, &NetworkError{URL: url, Err: err}
+		return nil, "", &NetworkError{URL: url, Err: err}
 	}
 
 	if int64(body.Len()) > maxResponseSize {
-		return nil, &NetworkError{URL: url, Err: fmt.Errorf("response size exceeds limit of %d bytes", maxResponseSize)}
+		return nil, "", &NetworkError{URL: url, Err: fmt.Errorf("response size exceeds limit of %d bytes", maxResponseSize)}
 	}
 
-	return body.Bytes(), nil
+	return body.Bytes(), finalURL(url, req, response), nil
+}
+
+// finalURL returns the URL the response to req was served from: url, the URL req was made for,
+// or the URL the request ended at when it was redirected.
+// A document is located where it was served from, not where the request for it began.
+// Relative URLs in it are resolved against that URL (RFC 3986, section 5.1.3), and it is the
+// location the URLs a sitemap lists are compared with in strict mode.
+// When no redirect took place, url is returned as it was passed in, so that the URL of a
+// document stays spelled the way the caller or the sitemap naming it spelled it.
+func finalURL(url string, req *http.Request, response *http.Response) string {
+	// A RoundTripper is not required to name the request it answered; http.Transport does.
+	last := response.Request
+	if last == nil || last.URL == nil {
+		return url
+	}
+	if final := last.URL.String(); final != req.URL.String() {
+		return final
+	}
+	return url
 }
 
 // checkAndUnzipContent checks if the content is a gzip file and unzips it if necessary.
@@ -1036,7 +1067,7 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 				s.mu.Unlock()
 				return
 			}
-			content, err := s.fetch(ctx, loc)
+			content, servedFrom, err := s.fetch(ctx, loc)
 			s.releaseSlot()
 			if err != nil {
 				s.mu.Lock()
@@ -1045,8 +1076,8 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 				return
 			}
 			s.mu.Lock()
-			content = s.checkAndUnzipContent(loc, content)
-			parsedLocations := s.parse(loc, string(content))
+			content = s.checkAndUnzipContent(servedFrom, content)
+			parsedLocations := s.parse(servedFrom, string(content))
 			s.mu.Unlock()
 			if len(parsedLocations) > 0 {
 				s.parseAndFetchUrlsMultiThread(ctx, parsedLocations, depth+1)
@@ -1076,7 +1107,7 @@ func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string,
 			continue
 		}
 		s.mu.Unlock()
-		content, err := s.fetch(ctx, location)
+		content, servedFrom, err := s.fetch(ctx, location)
 		if err != nil {
 			s.mu.Lock()
 			s.errs = append(s.errs, err)
@@ -1084,8 +1115,8 @@ func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string,
 			continue
 		}
 		s.mu.Lock()
-		content = s.checkAndUnzipContent(location, content)
-		parsedLocations := s.parse(location, string(content))
+		content = s.checkAndUnzipContent(servedFrom, content)
+		parsedLocations := s.parse(servedFrom, string(content))
 		s.mu.Unlock()
 		if len(parsedLocations) > 0 {
 			s.parseAndFetchUrlsSequential(ctx, parsedLocations, depth+1)
@@ -1146,6 +1177,8 @@ func detectRootElement(content string) string {
 }
 
 // parse parses the provided URL and its content.
+// The URL is the one the content was served from, which is not the one that was requested
+// when the request was redirected.
 // It determines whether the content is a sitemap index or a sitemap by inspecting
 // the root XML element, then only invokes the appropriate parser.
 // If it is a sitemap index, it adds the URLs from the sitemap index to the sitemap locations.
@@ -1727,6 +1760,8 @@ func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, 
 // In tolerant mode (strict=false), relative URLs are resolved against baseURL before the length check.
 // In strict mode (strict=true), URLs must additionally be absolute HTTP(S), on the same host
 // and protocol as baseURL.
+// baseURL is the URL the sitemap was served from: the location of the sitemap, whichever URL
+// the request for it began at.
 // Returns the resolved URL string and an error if validation fails.
 func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
 	if loc == "" {
