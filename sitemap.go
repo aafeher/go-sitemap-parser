@@ -48,6 +48,21 @@ type (
 		// It is created at the start of ParseContext and is nil when
 		// concurrency is unlimited.
 		sem chan struct{}
+		// limits holds the limits of the current Parse call on the sitemaps it
+		// fetches and the URLs it collects, and whether they were reached.
+		limits callLimits
+	}
+
+	// callLimits are the limits of a Parse call on what it fetches and collects. They are the
+	// values set with SetMaxSitemaps and SetMaxURLs as they stand when the call starts, so
+	// that one limit applies to the whole call; 0 means no limit.
+	// sitemapsLeftOut and urlsLeftOut tell that a limit was not only reached, but kept the
+	// call from fetching a sitemap or from collecting a URL: the results are not complete.
+	callLimits struct {
+		maxSitemaps     int
+		maxURLs         int
+		sitemapsLeftOut bool
+		urlsLeftOut     bool
 	}
 
 	// config is a structure that holds configuration settings.
@@ -64,6 +79,8 @@ type (
 		maxResponseSize int64
 		maxDepth        int
 		maxConcurrency  int
+		maxSitemaps     int
+		maxURLs         int
 		multiThread     bool
 		strict          bool
 		httpClient      *http.Client
@@ -288,6 +305,8 @@ func (s *S) setConfigDefaults() {
 		maxResponseSize: defaultMaxResponseSize,
 		maxDepth:        10,
 		maxConcurrency:  defaultMaxConcurrency,
+		maxSitemaps:     defaultMaxSitemaps,
+		maxURLs:         defaultMaxURLs,
 		multiThread:     true,
 		follow:          []string{},
 		rules:           []string{},
@@ -399,6 +418,75 @@ func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
 		return s
 	}
 	s.cfg.maxConcurrency = maxConcurrency
+
+	return s
+}
+
+// SetMaxSitemaps sets the maximum number of sitemaps a Parse or ParseContext call fetches.
+// The default is 50,000, which is as many sitemaps as a sitemap index may list according to
+// the sitemaps.org protocol. A value of 0 means no limit.
+//
+// The sitemaps a robots.txt or a sitemap index lists count, on every level together: each one
+// the call requests, whether or not the request succeeds. A sitemap that is listed more than
+// once is requested and counted once. The document the call is made for does not count.
+//
+// Once the limit is reached, the sitemaps that are left are not fetched, and a *ParseError
+// naming the URL the call was made for is recorded, once for the call. The call does not
+// fail: what the sitemaps fetched until then yielded is returned. With multi-threading off,
+// the sitemaps are fetched in the order they are listed, so it is the first ones that are
+// fetched; with multi-threading on, which ones are depends on how fast the server answers.
+// Nothing is recorded if no sitemap had to be left out.
+//
+// The limit bounds the number of requests a document can make the parser send. Without it, a
+// server can keep a call busy for as long as it likes by listing sitemaps that list ever
+// further sitemaps.
+//
+// Negative values are rejected and a *ConfigError is recorded; a later call with a valid
+// value clears it. The value that applies to a call is the one set when the call starts.
+// The function returns a pointer to the S structure to allow method chaining.
+func (s *S) SetMaxSitemaps(maxSitemaps int) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clearConfigErrors("maxSitemaps")
+	if maxSitemaps < 0 {
+		s.errs = append(s.errs, &ConfigError{Field: "maxSitemaps", Err: fmt.Errorf("must be >= 0, got %d", maxSitemaps)})
+		return s
+	}
+	s.cfg.maxSitemaps = maxSitemaps
+
+	return s
+}
+
+// SetMaxURLs sets the maximum number of URLs a Parse or ParseContext call collects.
+// The default is 10,000,000. A value of 0 means no limit.
+//
+// The URLs that GetURLs returns count. An entry that is not valid does not, and neither does
+// a URL that the patterns set with SetRules leave out.
+//
+// Once the limit is reached, the call stops collecting: what is left of the document that
+// reached the limit is left out unread, so it adds no errors either, the sitemaps that are
+// left are not fetched, and a *ParseError naming the URL the call was made for is recorded,
+// once for the call. The call does not fail: the URLs collected until then are returned. With
+// multi-threading off, they are the first ones in the order the sitemaps list them; with
+// multi-threading on, which ones they are depends on how fast the server answers.
+// Nothing is recorded if nothing had to be left out.
+//
+// The limit bounds the memory the URLs of a call take up, whatever the documents list. The
+// default is a last resort rather than a tight bound: ten million URLs take up gigabytes.
+// Set a lower limit for documents that are not trusted.
+//
+// Negative values are rejected and a *ConfigError is recorded; a later call with a valid
+// value clears it. The value that applies to a call is the one set when the call starts.
+// The function returns a pointer to the S structure to allow method chaining.
+func (s *S) SetMaxURLs(maxURLs int) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clearConfigErrors("maxURLs")
+	if maxURLs < 0 {
+		s.errs = append(s.errs, &ConfigError{Field: "maxURLs", Err: fmt.Errorf("must be >= 0, got %d", maxURLs)})
+		return s
+	}
+	s.cfg.maxURLs = maxURLs
 
 	return s
 }
@@ -560,6 +648,22 @@ func (s *S) GetMaxConcurrency() int {
 	return s.cfg.maxConcurrency
 }
 
+// GetMaxSitemaps returns the maximum number of sitemaps a Parse or ParseContext call fetches.
+// A value of 0 means no limit.
+func (s *S) GetMaxSitemaps() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.maxSitemaps
+}
+
+// GetMaxURLs returns the maximum number of URLs a Parse or ParseContext call collects.
+// A value of 0 means no limit.
+func (s *S) GetMaxURLs() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.maxURLs
+}
+
 // GetFollow returns a copy of the current follow regex pattern strings.
 func (s *S) GetFollow() []string {
 	s.mu.Lock()
@@ -617,6 +721,10 @@ func (s *S) GetStrict() bool {
 // If the URL does not end with "/robots.txt", the content is checked
 // and unzipped if necessary, then parsed and fetched.
 // The content of a document is not kept once the document is parsed.
+//
+// A call fetches no more sitemaps than SetMaxSitemaps allows, and collects no
+// more URLs than SetMaxURLs allows, so that it comes to an end whatever the
+// documents list.
 //
 // It returns the S structure, and a nil error if the document at the given
 // URL was fetched and parsed. Otherwise the error tells why it was not:
@@ -691,6 +799,9 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	s.fetchedURLs = make(map[string]struct{})
 	s.urls = nil
 	s.errs = filterErrors(s.errs, isConfigError)
+	// The limits of the call are those set by now: a SetMaxSitemaps or SetMaxURLs call made
+	// while this one runs applies to the next one.
+	s.limits = callLimits{maxSitemaps: s.cfg.maxSitemaps, maxURLs: s.cfg.maxURLs}
 
 	if len(s.errs) > 0 {
 		s.mu.Unlock()
@@ -747,6 +858,10 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 
 		parseAndFetchUrls(ctx, servedFrom, locations, 0)
 	}
+
+	s.mu.Lock()
+	s.reportLimits(url)
+	s.mu.Unlock()
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		// The cancellation is recorded here, and nowhere else: once for the call, whichever
@@ -1073,19 +1188,58 @@ func (s *S) checkAndUnzipContent(url string, content string) string {
 	return content
 }
 
-// markFetched marks url as fetched and returns true if it was not yet seen.
-// Returns false if the URL was already fetched (duplicate). Must be called with s.mu held.
-// If fetchedURLs has not been initialised (e.g. in direct unit tests), the URL is always
-// considered new and the map is lazily initialised.
-func (s *S) markFetched(url string) bool {
+// claimSitemap decides whether the sitemap at url is to be fetched, and counts it as fetched
+// if it is. It returns fetch as false for a sitemap that was fetched already: a sitemap is
+// fetched once in a call, however many documents list it.
+//
+// It returns limited as true if a limit of the call is reached, which goes for every sitemap
+// that is still to come as well, and notes that a sitemap had to be left out for it. The limit
+// is the one set with SetMaxSitemaps on the sitemaps the call fetches, or the one set with
+// SetMaxURLs: a call that cannot collect any more URLs has no use for further sitemaps.
+//
+// If fetchedURLs has not been initialised (e.g. in direct unit tests), it is initialised here.
+func (s *S) claimSitemap(url string) (fetch, limited bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, fetched := s.fetchedURLs[url]; fetched {
+		return false, false
+	}
+	if s.limits.maxSitemaps > 0 && len(s.fetchedURLs) >= s.limits.maxSitemaps {
+		s.limits.sitemapsLeftOut = true
+		return false, true
+	}
+	if !s.hasRoomForURL() {
+		return false, true
+	}
 	if s.fetchedURLs == nil {
 		s.fetchedURLs = make(map[string]struct{})
 	}
-	if _, seen := s.fetchedURLs[url]; seen {
+	s.fetchedURLs[url] = struct{}{}
+	return true, false
+}
+
+// hasRoomForURL reports whether s may collect another URL. If the limit set with SetMaxURLs
+// is reached, it notes that something had to be left out for it.
+// Must be called with s.mu held, unless no other goroutine has access to s.
+func (s *S) hasRoomForURL() bool {
+	if s.limits.maxURLs > 0 && len(s.urls) >= s.limits.maxURLs {
+		s.limits.urlsLeftOut = true
 		return false
 	}
-	s.fetchedURLs[url] = struct{}{}
 	return true
+}
+
+// reportLimits records the limits that kept the call for url from fetching a sitemap or from
+// collecting a URL. Each is recorded once, however many sitemaps and URLs were left out, and
+// names the URL the call was made for: it is the call as a whole that the limits are about.
+// Must be called with s.mu held.
+func (s *S) reportLimits(url string) {
+	if s.limits.sitemapsLeftOut {
+		s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("limit of %d sitemaps reached", s.limits.maxSitemaps)})
+	}
+	if s.limits.urlsLeftOut {
+		s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("limit of %d URLs reached", s.limits.maxURLs)})
+	}
 }
 
 // withinMaxDepth reports whether the sitemaps found at the given depth may still be fetched.
@@ -1117,6 +1271,8 @@ func (s *S) withinMaxDepth(url string, depth int) bool {
 // sitemap, and those waiting to go on with the sitemaps a sitemap index of theirs lists.
 // If the context is done, also while a slot is waited for, the remaining locations are left
 // alone. Nothing is recorded for them: that the call was cut short is recorded by ParseContext.
+// The same goes for the locations that are left when a limit of the call is reached, see
+// claimSitemap.
 // If there is an error during the fetch operation, the error is appended to the "errs" field of the S structure.
 // This method does not return any value.
 func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, url string, locations []string, depth int) {
@@ -1128,12 +1284,13 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, url string, locati
 		if ctx.Err() != nil {
 			break
 		}
-		s.mu.Lock()
-		if !s.markFetched(location) {
-			s.mu.Unlock()
+		fetch, limited := s.claimSitemap(location)
+		if limited {
+			break
+		}
+		if !fetch {
 			continue
 		}
-		s.mu.Unlock()
 		// acquireSlot also honours ctx cancellation, so a single check
 		// here covers both the unlimited-concurrency and bounded paths.
 		if s.acquireSlot(ctx) != nil {
@@ -1163,8 +1320,9 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, url string, locati
 // parseAndFetchUrlsSequential sequentially parses and fetches the URLs specified in the "locations" parameter.
 // url is the document that lists them, as it was served.
 // For each location, it fetches and parses the document with fetchAndParse.
-// If the context is done, the remaining locations are left alone. Nothing is recorded for
-// them: that the call was cut short is recorded by ParseContext.
+// If the context is done, or a limit of the call is reached (see claimSitemap), the remaining
+// locations are left alone. Nothing is recorded for them: that the call was cut short is
+// recorded by ParseContext.
 // If there is an error during the fetch operation, the error is appended to the "errs" field of the S structure.
 // This method does not return any value.
 func (s *S) parseAndFetchUrlsSequential(ctx context.Context, url string, locations []string, depth int) {
@@ -1175,12 +1333,13 @@ func (s *S) parseAndFetchUrlsSequential(ctx context.Context, url string, locatio
 		if ctx.Err() != nil {
 			return
 		}
-		s.mu.Lock()
-		if !s.markFetched(location) {
-			s.mu.Unlock()
+		fetch, limited := s.claimSitemap(location)
+		if limited {
+			return
+		}
+		if !fetch {
 			continue
 		}
-		s.mu.Unlock()
 		servedFrom, parsedLocations, err := s.fetchAndParse(ctx, location)
 		if err != nil {
 			s.mu.Lock()
@@ -1221,28 +1380,69 @@ func (s *S) fetchAndParse(ctx context.Context, url string) (string, []string, er
 // the whole document. What it collects is added to s with the lock held and in one step, which
 // keeps the URLs of a document together and in the order the document lists them.
 //
+// A call that has collected as many URLs as the limit set with SetMaxURLs allows has no use
+// for the document: it is not parsed then, and nothing is returned.
+//
 // Must be called without s.mu held.
 func (s *S) parseDocument(url string, content string) ([]string, error) {
-	s.mu.Lock()
-	document := &S{cfg: s.cfg}
-	s.mu.Unlock()
+	document := s.newDocument()
+	if document == nil {
+		return nil, nil
+	}
 
 	locations := document.parse(url, document.checkAndUnzipContent(url, content))
+	s.addDocument(document)
 
+	return locations, documentError(document.errs)
+}
+
+// newDocument returns the instance a document is processed by, see parseDocument. It returns
+// nil if s has no room for another URL.
+//
+// The instance may collect as many URLs as s has room for at this point, so that a document
+// does not pile up URLs only to have them dropped when they are added to s.
+//
+// Must be called without s.mu held.
+func (s *S) newDocument() *S {
 	s.mu.Lock()
-	s.sitemapLocations = append(s.sitemapLocations, document.sitemapLocations...)
+	defer s.mu.Unlock()
+	if !s.hasRoomForURL() {
+		return nil
+	}
+
+	document := &S{cfg: s.cfg}
+	if s.limits.maxURLs > 0 {
+		document.limits.maxURLs = s.limits.maxURLs - len(s.urls)
+	}
+	return document
+}
+
+// addDocument adds what document, an instance made by newDocument, collected to s.
+//
+// Must be called without s.mu held.
+func (s *S) addDocument(document *S) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	urls := document.urls
+	if room := s.limits.maxURLs - len(s.urls); s.limits.maxURLs > 0 && len(urls) > room {
+		// There was room for these URLs when the document was begun, but other documents
+		// were added in the meantime. The URLs there is no room for any more are given up.
+		clear(urls[room:])
+		urls = urls[:room]
+		s.limits.urlsLeftOut = true
+	}
 	if s.urls == nil {
 		// Nothing is collected yet, so the URLs of the document are taken over as they are
 		// rather than copied: a call that parses a single sitemap is spared a second copy of
 		// all of its URLs.
-		s.urls = document.urls
+		s.urls = urls
 	} else {
-		s.urls = append(s.urls, document.urls...)
+		s.urls = append(s.urls, urls...)
 	}
+	s.limits.urlsLeftOut = s.limits.urlsLeftOut || document.limits.urlsLeftOut
+	s.sitemapLocations = append(s.sitemapLocations, document.sitemapLocations...)
 	s.errs = append(s.errs, document.errs...)
-	s.mu.Unlock()
-
-	return locations, documentError(document.errs)
 }
 
 // documentError returns the error that tells a document could not be parsed, out of errs, the
@@ -1376,20 +1576,25 @@ func (s *S) parseSitemapIndexContent(url, content string) []string {
 func (s *S) parseURLSetContent(url, content string) {
 	// The entries are dealt with one by one while the document is read, yet a document that
 	// cannot be read to its end yields nothing but the error: what its entries added until
-	// then is dropped again.
-	urls, errs := s.urls, s.errs
+	// then is dropped again, and with it the note that a URL of it had to be left out.
+	urls, errs, limits := s.urls, s.errs, s.limits
 	err := s.parseURLSet(content, func(entry *urlEntry) {
 		s.addURLEntry(entry, url)
 	})
 	if err != nil {
-		s.urls, s.errs = urls, errs
+		s.urls, s.errs, s.limits = urls, errs, limits
 		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
 	}
 }
 
 // addURLEntry resolves, validates and filters an entry of the <urlset> served from baseURL,
 // and appends the URL it stands for to s.urls. What is wrong with the entry is added to s.errs.
+// Once s has no room for another URL, the entries are left out as they come: unread, so that
+// they add no errors either.
 func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
+	if !s.hasRoomForURL() {
+		return
+	}
 	u := entry.URL
 	u.Loc = strings.TrimSpace(u.Loc)
 	resolvedLoc, err := s.resolveAndValidateLoc(u.Loc, baseURL)
@@ -1510,9 +1715,10 @@ func (s *S) matchesRulesFilter(loc string) bool {
 // Used by RSS, Atom, and Text parsers.
 // An empty location is skipped without an error: the link of a feed item is optional, so an
 // item without one is not a mistake, it merely names no page.
+// Once s has no room for another URL, the locations are left out as they come, see addURLEntry.
 func (s *S) addURL(loc string, baseURL string) {
 	loc = strings.TrimSpace(loc)
-	if loc == "" {
+	if loc == "" || !s.hasRoomForURL() {
 		return
 	}
 	resolvedLoc, err := s.resolveAndValidateLoc(loc, baseURL)
@@ -1713,6 +1919,16 @@ const defaultMaxResponseSize = 50 * 1024 * 1024
 // Limiting concurrency by default prevents unbounded goroutine and connection growth when parsing
 // large sitemap indexes. Pass 0 to SetMaxConcurrency to restore unlimited concurrency.
 const defaultMaxConcurrency = 16
+
+// defaultMaxSitemaps is the default maximum number of sitemaps a Parse call fetches. 50,000 is
+// the number of sitemaps a sitemap index may list according to the sitemaps.org specification.
+// Pass 0 to SetMaxSitemaps to lift the limit.
+const defaultMaxSitemaps = 50000
+
+// defaultMaxURLs is the default maximum number of URLs a Parse call collects. It is more than
+// all but the largest sites list, and there to keep a call from collecting URLs without end.
+// Pass 0 to SetMaxURLs to lift the limit.
+const defaultMaxURLs = 10000000
 
 // robotsTXTDepth is the depth at which the sitemaps listed in a robots.txt are fetched: one
 // level above 0, the depth of the sitemaps a sitemap index names. A sitemap listed in a

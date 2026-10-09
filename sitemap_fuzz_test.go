@@ -8,6 +8,7 @@ import (
 	neturl "net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -108,11 +109,52 @@ func assertReturnedError(t *testing.T, mode string, strict bool, content string)
 	}
 }
 
+// assertURLLimit checks that a limit on the URLs of a call takes nothing but
+// the end off what the call collects: the URLs are the first ones it collects
+// without a limit, and the limit is reported whenever there are more of them.
+func assertURLLimit(t *testing.T, mode string, strict bool, content string) {
+	t.Helper()
+
+	parse := func(limit int) *S {
+		s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(offlineClient).SetMaxURLs(limit)
+		_, _ = s.Parse(fuzzBaseURL, &content)
+		return s
+	}
+
+	all := parse(0).GetURLs()
+	limit := len(all)/2 + 1
+	limited := parse(limit)
+
+	want := all
+	if len(all) > limit {
+		want = all[:limit]
+	}
+	if got := limited.GetURLs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s mode: with a limit of %d URLs, expected the first %d of %d URLs, got %d: %v",
+			mode, limit, len(want), len(all), len(got), got)
+	}
+
+	reported := false
+	for _, err := range limited.GetErrors() {
+		var parseErr *ParseError
+		if errors.As(err, &parseErr) && parseErr.URL == fuzzBaseURL && strings.HasSuffix(parseErr.Err.Error(), " URLs reached") {
+			reported = true
+		}
+	}
+	switch {
+	case len(all) > limit && !reported:
+		t.Fatalf("%s mode: %d of %d URLs were left out without the limit being reported", mode, len(all)-limit, len(all))
+	case len(all) < limit && reported:
+		t.Fatalf("%s mode: the limit of %d URLs was reported with %d URLs", mode, limit, len(all))
+	}
+}
+
 // FuzzParse exercises the full format-dispatch path — sitemap index, urlset,
 // RSS, Atom and plain text — with untrusted content. Every location the parser
 // hands back must satisfy the documented URL invariants in both tolerant and
-// strict mode, parsing must be deterministic, and the call must fail exactly
-// when the document cannot be parsed.
+// strict mode, parsing must be deterministic, the call must fail exactly when
+// the document cannot be parsed, and a limit on the URLs must leave the first
+// ones as they are.
 func FuzzParse(f *testing.F) {
 	seeds := []string{
 		`<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://example.com/sitemap-1.xml</loc><lastmod>2024-01-01</lastmod></sitemap></sitemapindex>`,
@@ -162,6 +204,7 @@ func FuzzParse(f *testing.F) {
 			}
 
 			assertReturnedError(t, mode, strict, content)
+			assertURLLimit(t, mode, strict, content)
 		}
 	})
 }

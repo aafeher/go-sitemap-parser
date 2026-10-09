@@ -38,6 +38,8 @@ func TestS_setConfigDefaults(t *testing.T) {
 				maxResponseSize: 50 * 1024 * 1024,
 				maxDepth:        10,
 				maxConcurrency:  defaultMaxConcurrency,
+				maxSitemaps:     50000,
+				maxURLs:         10000000,
 				multiThread:     true,
 				follow:          []string{},
 				rules:           []string{},
@@ -413,6 +415,8 @@ func TestS_Setters_ConfigErrors(t *testing.T) {
 		{"maxResponseSize", func(s *S) { s.SetMaxResponseSize(0) }, func(s *S) { s.SetMaxResponseSize(1024) }},
 		{"maxDepth", func(s *S) { s.SetMaxDepth(0) }, func(s *S) { s.SetMaxDepth(5) }},
 		{"maxConcurrency", func(s *S) { s.SetMaxConcurrency(-1) }, func(s *S) { s.SetMaxConcurrency(4) }},
+		{"maxSitemaps", func(s *S) { s.SetMaxSitemaps(-1) }, func(s *S) { s.SetMaxSitemaps(100) }},
+		{"maxURLs", func(s *S) { s.SetMaxURLs(-1) }, func(s *S) { s.SetMaxURLs(1000) }},
 		{"follow", func(s *S) { s.SetFollow([]string{`(`}) }, func(s *S) { s.SetFollow([]string{`alpha`}) }},
 		{"rules", func(s *S) { s.SetRules([]string{`(`}) }, func(s *S) { s.SetRules([]string{`alpha`}) }},
 	}
@@ -575,6 +579,8 @@ func TestS_GetConfiguration_Defaults(t *testing.T) {
 	mustEqual(t, "GetMaxResponseSize", s.GetMaxResponseSize(), 50*1024*1024)
 	mustEqual(t, "GetMaxDepth", s.GetMaxDepth(), 10)
 	mustEqual(t, "GetMaxConcurrency", s.GetMaxConcurrency(), 16)
+	mustEqual(t, "GetMaxSitemaps", s.GetMaxSitemaps(), 50000)
+	mustEqual(t, "GetMaxURLs", s.GetMaxURLs(), 10000000)
 	mustEqual(t, "GetFollow length", len(s.GetFollow()), 0)
 	mustEqual(t, "GetRules length", len(s.GetRules()), 0)
 	mustEqual(t, "GetHTTPClient is nil", s.GetHTTPClient() == nil, true)
@@ -590,6 +596,8 @@ func TestS_GetConfiguration_AfterSetters(t *testing.T) {
 		SetMaxResponseSize(1024).
 		SetMaxDepth(5).
 		SetMaxConcurrency(8).
+		SetMaxSitemaps(100).
+		SetMaxURLs(1000).
 		SetFollow([]string{`\.xml$`}).
 		SetRules([]string{`/product/`}).
 		SetHTTPClient(customClient).
@@ -601,6 +609,8 @@ func TestS_GetConfiguration_AfterSetters(t *testing.T) {
 	mustEqual(t, "GetMaxResponseSize", s.GetMaxResponseSize(), 1024)
 	mustEqual(t, "GetMaxDepth", s.GetMaxDepth(), 5)
 	mustEqual(t, "GetMaxConcurrency", s.GetMaxConcurrency(), 8)
+	mustEqual(t, "GetMaxSitemaps", s.GetMaxSitemaps(), 100)
+	mustEqual(t, "GetMaxURLs", s.GetMaxURLs(), 1000)
 	follow := s.GetFollow()
 	mustEqual(t, "GetFollow length", len(follow), 1)
 	if len(follow) > 0 {
@@ -5720,6 +5730,63 @@ func TestS_SetMaxConcurrency(t *testing.T) {
 	})
 }
 
+// TestS_SetMaxSitemaps_SetMaxURLs verifies what the setters of the two limits
+// of a call accept, and that a value they reject leaves the setting as it was.
+func TestS_SetMaxSitemaps_SetMaxURLs(t *testing.T) {
+	settings := []struct {
+		field    string
+		set      func(s *S, value int) *S
+		get      func(s *S) int
+		standard int
+	}{
+		{"maxSitemaps", (*S).SetMaxSitemaps, (*S).GetMaxSitemaps, defaultMaxSitemaps},
+		{"maxURLs", (*S).SetMaxURLs, (*S).GetMaxURLs, defaultMaxURLs},
+	}
+
+	for _, setting := range settings {
+		t.Run(setting.field+", default", func(t *testing.T) {
+			mustEqual(t, "value", setting.get(New()), setting.standard)
+		})
+
+		for _, value := range []int{1, 25, math.MaxInt} {
+			t.Run(fmt.Sprintf("%s, %d", setting.field, value), func(t *testing.T) {
+				s := setting.set(New(), value)
+				mustEqual(t, "value", setting.get(s), value)
+				mustEqual(t, "errors", len(s.GetErrors()), 0)
+			})
+		}
+
+		t.Run(setting.field+", 0 lifts the limit", func(t *testing.T) {
+			s := setting.set(New(), 0)
+			mustEqual(t, "value", setting.get(s), 0)
+			mustEqual(t, "errors", len(s.GetErrors()), 0)
+		})
+
+		t.Run(setting.field+", negative value is rejected", func(t *testing.T) {
+			s := setting.set(setting.set(New(), 25), -1)
+			mustEqual(t, "value", setting.get(s), 25)
+
+			errs := s.GetErrors()
+			if len(errs) != 1 {
+				t.Fatalf("expected 1 error, got %v", errs)
+			}
+			var configErr *ConfigError
+			if !errors.As(errs[0], &configErr) {
+				t.Fatalf("expected *ConfigError, got %T: %v", errs[0], errs[0])
+			}
+			mustEqual(t, "field", configErr.Field, setting.field)
+			mustEqual(t, "error", errs[0].Error(), fmt.Sprintf("config %q: must be >= 0, got -1", setting.field))
+		})
+
+		t.Run(setting.field+", returns the instance", func(t *testing.T) {
+			s := New()
+			if setting.set(s, 5) != s || setting.set(s, -5) != s {
+				t.Error("expected the setter to return the instance it was called on")
+			}
+		})
+	}
+}
+
 func TestS_acquireSlot_NilSem(t *testing.T) {
 	s := New() // sem is nil by default
 	if err := s.acquireSlot(context.Background()); err != nil {
@@ -7193,12 +7260,814 @@ func TestS_Parse_ContentNotKept(t *testing.T) {
 	}
 }
 
+// siteServer is a test server for a site whose robots.txt files and sitemap
+// indexes list the sitemaps given in lists, by path: a path that ends with
+// "/robots.txt" is served as a robots.txt, any other path in lists as a
+// sitemap index. Every other path is a sitemap of as many pages as pages
+// gives for it, 2 if it gives none, except for the ones that start with
+// "/missing", which are not found.
+type siteServer struct {
+	*httptest.Server
+	lists map[string][]string
+	pages map[string]int
+	// onRequest, unless it is nil, is called for every request before it is
+	// answered.
+	onRequest func(path string)
+
+	mu        sync.Mutex
+	requested []string
+}
+
+func newSiteServer(t *testing.T, lists map[string][]string, pages map[string]int) *siteServer {
+	t.Helper()
+
+	site := &siteServer{lists: lists, pages: pages}
+	site.Server = httptest.NewServer(http.HandlerFunc(site.serve))
+	t.Cleanup(site.Close)
+
+	return site
+}
+
+func (site *siteServer) serve(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	site.mu.Lock()
+	site.requested = append(site.requested, path)
+	site.mu.Unlock()
+	if site.onRequest != nil {
+		site.onRequest(path)
+	}
+
+	listed, lists := site.lists[path]
+	switch {
+	case lists && strings.HasSuffix(path, "/robots.txt"):
+		for _, sitemap := range listed {
+			_, _ = fmt.Fprintf(w, "Sitemap: %s%s\n", site.URL, sitemap)
+		}
+	case lists:
+		_, _ = fmt.Fprint(w, `<sitemapindex>`)
+		for _, sitemap := range listed {
+			_, _ = fmt.Fprintf(w, `<sitemap><loc>%s%s</loc></sitemap>`, site.URL, sitemap)
+		}
+		_, _ = fmt.Fprint(w, `</sitemapindex>`)
+	case strings.HasPrefix(path, "/missing"):
+		http.NotFound(w, r)
+	default:
+		_, _ = fmt.Fprint(w, `<urlset>`)
+		for _, page := range site.pagesOf(path) {
+			_, _ = fmt.Fprintf(w, `<url><loc>%s</loc></url>`, page)
+		}
+		_, _ = fmt.Fprint(w, `</urlset>`)
+	}
+}
+
+// pagesOf returns the pages the sitemap at path lists.
+func (site *siteServer) pagesOf(path string) []string {
+	count, ok := site.pages[path]
+	if !ok {
+		count = 2
+	}
+
+	var pages []string
+	for i := 1; i <= count; i++ {
+		pages = append(pages, fmt.Sprintf("%s%s/%d", site.URL, path, i))
+	}
+	return pages
+}
+
+// pagesOfAll returns the pages the sitemaps at paths list, in that order.
+func (site *siteServer) pagesOfAll(paths ...string) []string {
+	var pages []string
+	for _, path := range paths {
+		pages = append(pages, site.pagesOf(path)...)
+	}
+	return pages
+}
+
+// fetched returns the paths requested since the last call, in the order they
+// were requested.
+func (site *siteServer) fetched() []string {
+	site.mu.Lock()
+	defer site.mu.Unlock()
+
+	requested := site.requested
+	site.requested = nil
+	return requested
+}
+
+// locsOf returns the locations of the URLs s has collected, in a slice that is
+// never nil.
+func locsOf(s *S) []string {
+	locs := []string{}
+	for _, u := range s.GetURLs() {
+		locs = append(locs, u.Loc)
+	}
+	return locs
+}
+
+// limitErrors returns the errors among those of s that tell a limit of the
+// call for url was reached, by what they say, and the other errors.
+func limitErrors(t *testing.T, s *S, url string) (limits []string, others []string) {
+	t.Helper()
+
+	limits, others = []string{}, []string{}
+	for _, err := range s.GetErrors() {
+		var parseErr *ParseError
+		if errors.As(err, &parseErr) && strings.HasPrefix(parseErr.Err.Error(), "limit of ") {
+			mustEqual(t, "URL of the limit error", parseErr.URL, url)
+			limits = append(limits, parseErr.Err.Error())
+			continue
+		}
+		others = append(others, err.Error())
+	}
+	return limits, others
+}
+
+// limitTestLists is the site most tests of the limits of a call parse:
+//
+//	/robots.txt -> /index-a.xml -> /a1.xml, /a2.xml, /a3.xml
+//	            -> /index-b.xml -> /b1.xml
+//	                            -> /index-c.xml -> /c1.xml, /c2.xml
+//	                            -> /b2.xml
+//
+// which makes 10 sitemaps of 14 pages. /repeated/robots.txt lists two of the
+// sitemaps more than once, /missing/robots.txt two that are not found.
+var limitTestLists = map[string][]string{
+	"/robots.txt":          {"/index-a.xml", "/index-b.xml"},
+	"/index-a.xml":         {"/a1.xml", "/a2.xml", "/a3.xml"},
+	"/index-b.xml":         {"/b1.xml", "/index-c.xml", "/b2.xml"},
+	"/index-c.xml":         {"/c1.xml", "/c2.xml"},
+	"/repeated/robots.txt": {"/a1.xml", "/a1.xml", "/a2.xml", "/a1.xml", "/a2.xml"},
+	"/missing/robots.txt":  {"/missing-1.xml", "/missing-2.xml", "/a1.xml"},
+}
+
+// TestS_Parse_MaxSitemaps verifies that a call fetches no more sitemaps than
+// the limit set with SetMaxSitemaps allows, on all levels together, and that
+// it reports the limit once if a sitemap had to be left out for it.
+func TestS_Parse_MaxSitemaps(t *testing.T) {
+	site := newSiteServer(t, limitTestLists, nil)
+	// The order in which the sitemaps are fetched one at a time.
+	all := []string{"/index-a.xml", "/a1.xml", "/a2.xml", "/a3.xml", "/index-b.xml", "/b1.xml", "/index-c.xml", "/c1.xml", "/c2.xml", "/b2.xml"}
+	missing := func(path string) string {
+		return fmt.Sprintf("fetch %q: received HTTP status 404", site.URL+path)
+	}
+
+	tests := []struct {
+		name  string
+		path  string
+		limit int
+		// fetched are the sitemaps that are fetched when they are fetched one at a time.
+		fetched []string
+		leftOut bool
+		others  []string
+	}{
+		{name: "no limit", path: "/robots.txt", limit: 0, fetched: all},
+		{name: "more than there are", path: "/robots.txt", limit: 11, fetched: all},
+		{name: "as many as there are", path: "/robots.txt", limit: 10, fetched: all},
+		{name: "one less than there are", path: "/robots.txt", limit: 9, fetched: all[:9], leftOut: true},
+		{name: "sitemaps of several levels", path: "/robots.txt", limit: 6, fetched: all[:6], leftOut: true},
+		{name: "part of a sitemap index", path: "/robots.txt", limit: 3, fetched: all[:3], leftOut: true},
+		{name: "one", path: "/robots.txt", limit: 1, fetched: all[:1], leftOut: true},
+		{name: "sitemap index, part of it", path: "/index-a.xml", limit: 2, fetched: []string{"/a1.xml", "/a2.xml"}, leftOut: true},
+		{name: "sitemap index, all of it", path: "/index-a.xml", limit: 3, fetched: []string{"/a1.xml", "/a2.xml", "/a3.xml"}},
+		{name: "the document of the call does not count", path: "/a1.xml", limit: 1, fetched: []string{}},
+		{name: "a sitemap listed again does not count", path: "/repeated/robots.txt", limit: 2, fetched: []string{"/a1.xml", "/a2.xml"}},
+		{name: "a sitemap listed again is not left out", path: "/repeated/robots.txt", limit: 1, fetched: []string{"/a1.xml"}, leftOut: true},
+		{
+			name: "a sitemap that is not found counts", path: "/missing/robots.txt", limit: 2,
+			fetched: []string{"/missing-1.xml", "/missing-2.xml"}, leftOut: true,
+			others: []string{missing("/missing-1.xml"), missing("/missing-2.xml")},
+		},
+	}
+
+	for _, tt := range tests {
+		for _, multiThread := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, multiThread=%v", tt.name, multiThread), func(t *testing.T) {
+				url := site.URL + tt.path
+				s := New().SetMaxSitemaps(tt.limit).SetMultiThread(multiThread)
+				// The limit is one of the call, so the second call has to do what the first did.
+				for call := 1; call <= 2; call++ {
+					site.fetched()
+					// A limit that is reached does not fail the call.
+					requireParse(t, s, url, nil)
+
+					// The first request is the one for the document of the call.
+					fetched := site.fetched()[1:]
+					if multiThread {
+						// Which sitemaps are fetched depends on timing, how many does not.
+						mustEqual(t, "sitemaps fetched", len(fetched), len(tt.fetched))
+					} else {
+						assertStringSlice(t, "sitemaps fetched", fetched, tt.fetched)
+						var sitemaps []string
+						for _, path := range tt.fetched {
+							if _, lists := site.lists[path]; !lists && !strings.HasPrefix(path, "/missing") {
+								sitemaps = append(sitemaps, path)
+							}
+						}
+						if len(tt.fetched) == 0 {
+							sitemaps = []string{tt.path}
+						}
+						assertStringSlice(t, "URLs", locsOf(s), append([]string{}, site.pagesOfAll(sitemaps...)...))
+					}
+					for i, path := range fetched {
+						for _, other := range fetched[:i] {
+							if path == other {
+								t.Errorf("%s was fetched more than once: %v", path, fetched)
+							}
+						}
+					}
+
+					limits, others := limitErrors(t, s, url)
+					wantLimits := []string{}
+					if tt.leftOut {
+						wantLimits = append(wantLimits, fmt.Sprintf("limit of %d sitemaps reached", tt.limit))
+					}
+					assertStringSlice(t, "limit errors", limits, wantLimits)
+					assertStringSlice(t, "other errors", sortedCopy(others), sortedCopy(tt.others))
+				}
+			})
+		}
+	}
+}
+
+// TestS_Parse_MaxSitemaps_PassedContent verifies that the limit applies to a
+// document that is passed in like to one that is fetched.
+func TestS_Parse_MaxSitemaps_PassedContent(t *testing.T) {
+	site := newSiteServer(t, limitTestLists, nil)
+
+	documents := map[string]string{
+		"/robots.txt": fmt.Sprintf("Sitemap: %[1]s/a1.xml\nSitemap: %[1]s/a2.xml\nSitemap: %[1]s/a3.xml\n", site.URL),
+		"/index.xml":  fmt.Sprintf(`<sitemapindex><sitemap><loc>%[1]s/a1.xml</loc></sitemap><sitemap><loc>%[1]s/a2.xml</loc></sitemap><sitemap><loc>%[1]s/a3.xml</loc></sitemap></sitemapindex>`, site.URL),
+	}
+	for path, content := range documents {
+		for _, multiThread := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, multiThread=%v", path, multiThread), func(t *testing.T) {
+				url := site.URL + path
+				s := New().SetMaxSitemaps(2).SetMultiThread(multiThread)
+				site.fetched()
+				requireParse(t, s, url, &content)
+
+				mustEqual(t, "sitemaps fetched", len(site.fetched()), 2)
+				mustEqual(t, "GetURLCount", s.GetURLCount(), 4)
+				limits, others := limitErrors(t, s, url)
+				assertStringSlice(t, "limit errors", limits, []string{"limit of 2 sitemaps reached"})
+				assertStringSlice(t, "other errors", others, []string{})
+			})
+		}
+	}
+}
+
+// documentsListing returns documents that list locs, one in each of the
+// formats that list pages, by the path they are located at.
+func documentsListing(locs []string) map[string]string {
+	var urlset, text, rss, atom strings.Builder
+	for _, loc := range locs {
+		_, _ = fmt.Fprintf(&urlset, "<url><loc>%s</loc></url>", loc)
+		_, _ = fmt.Fprintf(&text, "%s\n", loc)
+		_, _ = fmt.Fprintf(&rss, "<item><link>%s</link></item>", loc)
+		_, _ = fmt.Fprintf(&atom, `<entry><link href="%s"/></entry>`, loc)
+	}
+
+	return map[string]string{
+		"/sitemap.xml": "<urlset>" + urlset.String() + "</urlset>",
+		"/sitemap.txt": text.String(),
+		"/rss.xml":     "<rss><channel>" + rss.String() + "</channel></rss>",
+		"/atom.xml":    "<feed>" + atom.String() + "</feed>",
+	}
+}
+
+// TestS_Parse_MaxURLs_Document verifies that a call collects no more URLs
+// than the limit set with SetMaxURLs allows, whatever the format of the
+// document, that the ones it collects are the first ones the document lists,
+// and that it reports the limit once if a URL had to be left out for it.
+func TestS_Parse_MaxURLs_Document(t *testing.T) {
+	var pages []string
+	for i := 1; i <= 5; i++ {
+		pages = append(pages, fmt.Sprintf("https://example.com/page-%d", i))
+	}
+
+	for path, content := range documentsListing(pages) {
+		for _, limit := range []int{0, 1, 2, 4, 5, 6, 100} {
+			for _, strict := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s, limit=%d, strict=%v", path, limit, strict), func(t *testing.T) {
+					url := "https://example.com" + path
+					s := New().SetMaxURLs(limit).SetStrict(strict)
+					requireParse(t, s, url, &content)
+
+					want, wantLimits := pages, []string{}
+					if limit > 0 && limit < len(pages) {
+						want = pages[:limit]
+						wantLimits = append(wantLimits, fmt.Sprintf("limit of %d URLs reached", limit))
+					}
+					assertStringSlice(t, "URLs", locsOf(s), want)
+					mustEqual(t, "GetURLCount", s.GetURLCount(), int64(len(want)))
+					limits, others := limitErrors(t, s, url)
+					assertStringSlice(t, "limit errors", limits, wantLimits)
+					assertStringSlice(t, "other errors", others, []string{})
+				})
+			}
+		}
+	}
+}
+
+// TestS_Parse_MaxURLs_Entries verifies what counts towards the limit set with
+// SetMaxURLs, and what becomes of the entries a document lists once the limit
+// is reached.
+func TestS_Parse_MaxURLs_Entries(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	invalid := func(loc string) string {
+		return fmt.Sprintf("validate %q: unsupported scheme \"ftp\"", loc)
+	}
+
+	// Only three of the entries yield a URL: one is not valid, and one is left out by
+	// the pattern set with SetRules.
+	mixed := `<urlset>` +
+		`<url><loc>https://example.com/kept-1</loc></url>` +
+		`<url><loc>ftp://example.com/kept-invalid</loc></url>` +
+		`<url><loc>https://example.com/other</loc></url>` +
+		`<url><loc>https://example.com/kept-2</loc></url>` +
+		`<url><loc>https://example.com/kept-3</loc></url>` +
+		`</urlset>`
+	// The document ends before its root element does.
+	truncated := `<urlset>` +
+		`<url><loc>https://example.com/kept-1</loc></url>` +
+		`<url><loc>https://example.com/kept-2</loc></url>` +
+		`<url><loc>https://example.com/kept-3</loc></url>`
+
+	tests := []struct {
+		name       string
+		content    string
+		limit      int
+		wantURLs   []string
+		wantLimits []string
+		wantOthers []string
+		// wantErr is the error the call returns, if it returns one.
+		wantErr string
+	}{
+		{
+			name: "entries that yield no URL do not count", content: mixed, limit: 3,
+			wantURLs:   []string{"https://example.com/kept-1", "https://example.com/kept-2", "https://example.com/kept-3"},
+			wantLimits: []string{},
+			wantOthers: []string{invalid("ftp://example.com/kept-invalid")},
+		},
+		{
+			name: "entries that yield no URL do not count, limit reached", content: mixed, limit: 2,
+			wantURLs:   []string{"https://example.com/kept-1", "https://example.com/kept-2"},
+			wantLimits: []string{"limit of 2 URLs reached"},
+			wantOthers: []string{invalid("ftp://example.com/kept-invalid")},
+		},
+		{
+			// The document yields nothing, so nothing of it was left out for the limit.
+			name: "document that cannot be parsed", content: truncated, limit: 2,
+			wantURLs:   []string{},
+			wantLimits: []string{},
+			wantOthers: []string{fmt.Sprintf("parse %q: XML syntax error on line 1: unexpected EOF", url)},
+			wantErr:    fmt.Sprintf("parse %q: XML syntax error on line 1: unexpected EOF", url),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New().SetMaxURLs(tt.limit).SetRules([]string{`/kept-`})
+			_, err := s.Parse(url, &tt.content)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected parse error: %v", err)
+				}
+			} else if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("expected parse error %q, got %v", tt.wantErr, err)
+			}
+
+			assertStringSlice(t, "URLs", locsOf(s), tt.wantURLs)
+			limits, others := limitErrors(t, s, url)
+			assertStringSlice(t, "limit errors", limits, tt.wantLimits)
+			assertStringSlice(t, "other errors", others, tt.wantOthers)
+		})
+	}
+}
+
+// TestS_Parse_MaxURLs_EntriesNotRead verifies that, whatever the format of the
+// document, the entries that come once the limit set with SetMaxURLs is
+// reached are left out unread: they yield no errors either. The limit is
+// reported then, as nothing tells that the URLs collected are all there are.
+func TestS_Parse_MaxURLs_EntriesNotRead(t *testing.T) {
+	// The entries that are not valid come last. They are not valid in any of the formats,
+	// nor in either mode: their URLs are too long.
+	valid := []string{"https://example.com/page-1", "https://example.com/page-2"}
+	invalid := []string{
+		"https://example.com/page-3/" + strings.Repeat("a", maxLocLength),
+		"https://example.com/page-4/" + strings.Repeat("a", maxLocLength),
+	}
+	var invalidErrs []string
+	for _, loc := range invalid {
+		invalidErrs = append(invalidErrs, fmt.Sprintf("validate %q: URL exceeds maximum length of %d characters (%d)", loc, maxLocLength, len(loc)))
+	}
+
+	for path, content := range documentsListing(append(append([]string{}, valid...), invalid...)) {
+		for _, strict := range []bool{false, true} {
+			url := "https://example.com" + path
+
+			t.Run(fmt.Sprintf("%s, strict=%v, room left", path, strict), func(t *testing.T) {
+				s := New().SetMaxURLs(3).SetStrict(strict)
+				requireParse(t, s, url, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), valid)
+				limits, others := limitErrors(t, s, url)
+				assertStringSlice(t, "limit errors", limits, []string{})
+				assertStringSlice(t, "other errors", others, invalidErrs)
+			})
+
+			t.Run(fmt.Sprintf("%s, strict=%v, no room left", path, strict), func(t *testing.T) {
+				s := New().SetMaxURLs(2).SetStrict(strict)
+				requireParse(t, s, url, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), valid)
+				limits, others := limitErrors(t, s, url)
+				assertStringSlice(t, "limit errors", limits, []string{"limit of 2 URLs reached"})
+				assertStringSlice(t, "other errors", others, []string{})
+			})
+		}
+	}
+}
+
+// TestS_Parse_MaxURLs_SitemapNotParsed verifies that a sitemap that cannot be
+// parsed, and so yields nothing but its error, is not taken for one the limit
+// set with SetMaxURLs left something out of.
+func TestS_Parse_MaxURLs_SitemapNotParsed(t *testing.T) {
+	// The sitemap lists more pages than the limit allows, and ends before its root
+	// element does.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `<urlset>`+
+			`<url><loc>https://example.com/page-1</loc></url>`+
+			`<url><loc>https://example.com/page-2</loc></url>`+
+			`<url><loc>https://example.com/page-3</loc></url>`)
+	}))
+	defer server.Close()
+
+	url := server.URL + "/index.xml"
+	index := fmt.Sprintf(`<sitemapindex><sitemap><loc>%s/sitemap.xml</loc></sitemap></sitemapindex>`, server.URL)
+
+	for _, multiThread := range []bool{false, true} {
+		t.Run(fmt.Sprintf("multiThread=%v", multiThread), func(t *testing.T) {
+			s := New().SetMaxURLs(2).SetMultiThread(multiThread)
+			requireParse(t, s, url, &index)
+
+			assertStringSlice(t, "URLs", locsOf(s), []string{})
+			limits, others := limitErrors(t, s, url)
+			assertStringSlice(t, "limit errors", limits, []string{})
+			assertStringSlice(t, "other errors", others, []string{
+				fmt.Sprintf("parse %q: XML syntax error on line 1: unexpected EOF", server.URL+"/sitemap.xml"),
+			})
+		})
+	}
+}
+
+// TestS_Parse_MaxURLs_Sitemaps verifies that the limit set with SetMaxURLs is
+// one of the call: of all the sitemaps together, the sitemaps that are left
+// when it is reached not being fetched any more.
+func TestS_Parse_MaxURLs_Sitemaps(t *testing.T) {
+	site := newSiteServer(t, map[string][]string{
+		"/robots.txt": {"/index.xml"},
+		"/index.xml":  {"/s1.xml", "/s2.xml", "/s3.xml"},
+	}, map[string]int{"/s1.xml": 4, "/s2.xml": 4, "/s3.xml": 4})
+	all := site.pagesOfAll("/s1.xml", "/s2.xml", "/s3.xml")
+
+	tests := []struct {
+		name  string
+		path  string
+		limit int
+		// fetched are the sitemaps that are fetched when they are fetched one at a time.
+		fetched  []string
+		wantURLs []string
+		leftOut  bool
+	}{
+		{name: "no limit", path: "/index.xml", limit: 0, fetched: []string{"/s1.xml", "/s2.xml", "/s3.xml"}, wantURLs: all},
+		{name: "more than there are", path: "/index.xml", limit: 13, fetched: []string{"/s1.xml", "/s2.xml", "/s3.xml"}, wantURLs: all},
+		{name: "as many as there are", path: "/index.xml", limit: 12, fetched: []string{"/s1.xml", "/s2.xml", "/s3.xml"}, wantURLs: all},
+		{name: "one less than there are", path: "/index.xml", limit: 11, fetched: []string{"/s1.xml", "/s2.xml", "/s3.xml"}, wantURLs: all[:11], leftOut: true},
+		{name: "reached within a sitemap", path: "/index.xml", limit: 6, fetched: []string{"/s1.xml", "/s2.xml"}, wantURLs: all[:6], leftOut: true},
+		// Nothing of the second sitemap is left out, but the third one is not fetched.
+		{name: "reached at the end of a sitemap", path: "/index.xml", limit: 8, fetched: []string{"/s1.xml", "/s2.xml"}, wantURLs: all[:8], leftOut: true},
+		{name: "one", path: "/index.xml", limit: 1, fetched: []string{"/s1.xml"}, wantURLs: all[:1], leftOut: true},
+		{name: "robots.txt", path: "/robots.txt", limit: 6, fetched: []string{"/index.xml", "/s1.xml", "/s2.xml"}, wantURLs: all[:6], leftOut: true},
+		{name: "sitemap, all of it", path: "/s1.xml", limit: 4, fetched: []string{}, wantURLs: all[:4]},
+		{name: "sitemap, part of it", path: "/s1.xml", limit: 3, fetched: []string{}, wantURLs: all[:3], leftOut: true},
+	}
+
+	for _, tt := range tests {
+		for _, multiThread := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, multiThread=%v", tt.name, multiThread), func(t *testing.T) {
+				url := site.URL + tt.path
+				s := New().SetMaxURLs(tt.limit).SetMultiThread(multiThread)
+				for call := 1; call <= 2; call++ {
+					site.fetched()
+					requireParse(t, s, url, nil)
+
+					fetched := site.fetched()[1:]
+					if multiThread {
+						// Which URLs are collected depends on timing, how many does not. The
+						// sitemaps may all have been requested before the limit was reached.
+						mustEqual(t, "GetURLCount", s.GetURLCount(), int64(len(tt.wantURLs)))
+						if len(fetched) < len(tt.fetched) {
+							t.Errorf("expected %d sitemaps at least to be fetched, got %v", len(tt.fetched), fetched)
+						}
+					} else {
+						assertStringSlice(t, "sitemaps fetched", fetched, tt.fetched)
+						assertStringSlice(t, "URLs", locsOf(s), tt.wantURLs)
+					}
+
+					limits, others := limitErrors(t, s, url)
+					wantLimits := []string{}
+					if tt.leftOut {
+						wantLimits = append(wantLimits, fmt.Sprintf("limit of %d URLs reached", tt.limit))
+					}
+					assertStringSlice(t, "limit errors", limits, wantLimits)
+					assertStringSlice(t, "other errors", others, []string{})
+				}
+			})
+		}
+	}
+}
+
+// TestS_Parse_MaxSitemaps_MaxURLs verifies that the two limits of a call are
+// reported side by side when a sitemap had to be left out for the one and a
+// URL for the other.
+func TestS_Parse_MaxSitemaps_MaxURLs(t *testing.T) {
+	site := newSiteServer(t, map[string][]string{"/index.xml": {"/s1.xml", "/s2.xml"}}, map[string]int{"/s1.xml": 4})
+
+	for _, multiThread := range []bool{false, true} {
+		t.Run(fmt.Sprintf("multiThread=%v", multiThread), func(t *testing.T) {
+			url := site.URL + "/index.xml"
+			s := New().SetMaxSitemaps(1).SetMaxURLs(3).SetMultiThread(multiThread)
+			site.fetched()
+			requireParse(t, s, url, nil)
+
+			assertStringSlice(t, "sitemaps fetched", site.fetched()[1:], []string{"/s1.xml"})
+			assertStringSlice(t, "URLs", locsOf(s), site.pagesOf("/s1.xml")[:3])
+			// Nothing else is recorded, and the two errors are the last ones.
+			var errs []string
+			for _, err := range s.GetErrors() {
+				errs = append(errs, err.Error())
+			}
+			assertStringSlice(t, "errors", errs, []string{
+				fmt.Sprintf("parse %q: limit of 1 sitemaps reached", url),
+				fmt.Sprintf("parse %q: limit of 3 URLs reached", url),
+			})
+		})
+	}
+}
+
+// TestS_Parse_Limits_SetWhileParsing verifies that the limits of a call are
+// the ones set when the call starts: a limit set while the call runs applies
+// to the next call.
+func TestS_Parse_Limits_SetWhileParsing(t *testing.T) {
+	site := newSiteServer(t, map[string][]string{"/index.xml": {"/s1.xml", "/s2.xml", "/s3.xml"}}, nil)
+	url := site.URL + "/index.xml"
+
+	s := New().SetMultiThread(false)
+	site.onRequest = func(path string) {
+		if path == "/s1.xml" {
+			s.SetMaxSitemaps(2).SetMaxURLs(3)
+		}
+	}
+
+	requireParse(t, s, url, nil)
+	assertCounts(t, s, 6, 0)
+
+	requireParse(t, s, url, nil)
+	assertStringSlice(t, "URLs", locsOf(s), site.pagesOfAll("/s1.xml", "/s2.xml")[:3])
+	limits, others := limitErrors(t, s, url)
+	assertStringSlice(t, "limit errors", limits, []string{"limit of 2 sitemaps reached", "limit of 3 URLs reached"})
+	assertStringSlice(t, "other errors", others, []string{})
+
+	// What a call left out is no concern of the next one.
+	site.onRequest = nil
+	requireParse(t, s.SetMaxSitemaps(0).SetMaxURLs(0), url, nil)
+	assertCounts(t, s, 6, 0)
+}
+
+// cancelOnClose is a response body that cancels a context when it is closed:
+// when the response has been read.
+type cancelOnClose struct {
+	io.Reader
+	cancel context.CancelFunc
+}
+
+func (body cancelOnClose) Close() error {
+	body.cancel()
+	return nil
+}
+
+// TestS_ParseContext_Limit_CutShort verifies that a call that is cut short
+// reports the limit it reached until then as well, and that the error it
+// returns, the one that tells it was cut short, remains the last one.
+func TestS_ParseContext_Limit_CutShort(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	const content = `<urlset><url><loc>https://example.com/page-1</loc></url><url><loc>https://example.com/page-2</loc></url></urlset>`
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The context is cancelled when the document has been read, so the call is cut short
+	// with the document at hand.
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       cancelOnClose{Reader: strings.NewReader(content), cancel: cancel},
+			Request:    req,
+		}, nil
+	})}
+
+	s := New().SetHTTPClient(client).SetMaxURLs(1)
+	_, err := s.ParseContext(ctx, url, nil)
+
+	assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page-1"})
+	errs := s.GetErrors()
+	var texts []string
+	for _, recorded := range errs {
+		texts = append(texts, recorded.Error())
+	}
+	assertStringSlice(t, "errors", texts, []string{
+		fmt.Sprintf("parse %q: limit of 1 URLs reached", url),
+		fmt.Sprintf("parse %q: context canceled", url),
+	})
+	if len(errs) == 2 && err != errs[1] {
+		t.Errorf("expected the error that tells the call was cut short to be returned, got %v", err)
+	}
+}
+
+// endlessSiteServer starts a server for a site whose sitemaps never end: every
+// sitemap index lists a sitemap of the given number of pages, and three sitemap
+// indexes that were not listed before. It returns the server and the counter
+// of the requests it has answered.
+func endlessSiteServer(t *testing.T, pages int) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+
+	var requests, listed atomic.Int64
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if strings.HasPrefix(r.URL.Path, "/pages-") {
+			_, _ = fmt.Fprint(w, `<urlset>`)
+			for i := 0; i < pages; i++ {
+				_, _ = fmt.Fprintf(w, `<url><loc>%s%s/%d</loc></url>`, server.URL, r.URL.Path, i)
+			}
+			_, _ = fmt.Fprint(w, `</urlset>`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `<sitemapindex>`)
+		_, _ = fmt.Fprintf(w, `<sitemap><loc>%s/pages-%d.xml</loc></sitemap>`, server.URL, listed.Add(1))
+		for i := 0; i < 3; i++ {
+			_, _ = fmt.Fprintf(w, `<sitemap><loc>%s/index-%d.xml</loc></sitemap>`, server.URL, listed.Add(1))
+		}
+		_, _ = fmt.Fprint(w, `</sitemapindex>`)
+	}))
+	t.Cleanup(server.Close)
+
+	return server, &requests
+}
+
+// TestS_Parse_Limits_EndlessSite verifies that each of the two limits ends a
+// call for a site that lists sitemaps without end, a call without a context
+// that would end it otherwise.
+func TestS_Parse_Limits_EndlessSite(t *testing.T) {
+	for _, multiThread := range []bool{false, true} {
+		t.Run(fmt.Sprintf("SetMaxSitemaps, multiThread=%v", multiThread), func(t *testing.T) {
+			server, requests := endlessSiteServer(t, 10)
+			url := server.URL + "/index-0.xml"
+
+			s := New().SetMaxSitemaps(200).SetMaxDepth(1000).SetMultiThread(multiThread)
+			requireParse(t, s, url, nil)
+
+			// The document of the call, and the sitemaps the limit allows.
+			mustEqual(t, "requests", requests.Load(), 201)
+			limits, others := limitErrors(t, s, url)
+			assertStringSlice(t, "limit errors", limits, []string{"limit of 200 sitemaps reached"})
+			assertStringSlice(t, "other errors", others, []string{})
+		})
+
+		t.Run(fmt.Sprintf("SetMaxURLs, multiThread=%v", multiThread), func(t *testing.T) {
+			server, requests := endlessSiteServer(t, 10)
+			url := server.URL + "/index-0.xml"
+
+			s := New().SetMaxSitemaps(0).SetMaxURLs(500).SetMaxDepth(1000).SetMultiThread(multiThread)
+			requireParse(t, s, url, nil)
+
+			mustEqual(t, "GetURLCount", s.GetURLCount(), 500)
+			// 50 sitemaps hold that many pages. The sitemap indexes that list them, and
+			// the sitemaps that were under way when the limit was reached, come on top.
+			if got := requests.Load(); got > 2000 {
+				t.Errorf("expected the call to end soon after the limit is reached, it sent %d requests", got)
+			}
+			limits, others := limitErrors(t, s, url)
+			assertStringSlice(t, "limit errors", limits, []string{"limit of 500 URLs reached"})
+			assertStringSlice(t, "other errors", others, []string{})
+		})
+	}
+}
+
+// TestS_newDocument_addDocument verifies how the room a call has for URLs is
+// shared between documents that are processed at the same time: each may
+// collect as many URLs as there is room for when it is begun, and what there is
+// no room for any more when it is added is given up.
+func TestS_newDocument_addDocument(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	content := `<urlset>` +
+		`<url><loc>https://example.com/page-1</loc></url>` +
+		`<url><loc>https://example.com/page-2</loc></url>` +
+		`<url><loc>https://example.com/page-3</loc></url>` +
+		`<url><loc>https://example.com/page-4</loc></url>` +
+		`</urlset>`
+	pages := []string{"https://example.com/page-1", "https://example.com/page-2", "https://example.com/page-3", "https://example.com/page-4"}
+
+	t.Run("documents begun before either is added", func(t *testing.T) {
+		s := New()
+		s.limits.maxURLs = 5
+
+		first, second := s.newDocument(), s.newDocument()
+		mustEqual(t, "room of the first document", first.limits.maxURLs, 5)
+		mustEqual(t, "room of the second document", second.limits.maxURLs, 5)
+		first.parse(url, content)
+		second.parse(url, content)
+		tail := second.urls[1:]
+
+		s.addDocument(first)
+		assertStringSlice(t, "URLs", locsOf(s), pages)
+		mustEqual(t, "URLs left out", s.limits.urlsLeftOut, false)
+
+		s.addDocument(second)
+		assertStringSlice(t, "URLs", locsOf(s), append(append([]string{}, pages...), pages[0]))
+		mustEqual(t, "URLs left out", s.limits.urlsLeftOut, true)
+		// What was left out is not held on to by the URLs that were kept.
+		for i, u := range tail {
+			if u.Loc != "" {
+				t.Errorf("expected the URL left out at %d to be given up, got %q", i, u.Loc)
+			}
+		}
+	})
+
+	t.Run("document begun after the other is added", func(t *testing.T) {
+		s := New()
+		s.limits.maxURLs = 5
+
+		first := s.newDocument()
+		first.parse(url, content)
+		s.addDocument(first)
+
+		second := s.newDocument()
+		mustEqual(t, "room of the second document", second.limits.maxURLs, 1)
+		second.parse(url, content)
+		mustEqual(t, "URLs of the second document", len(second.urls), 1)
+		s.addDocument(second)
+		assertStringSlice(t, "URLs", locsOf(s), append(append([]string{}, pages...), pages[0]))
+		mustEqual(t, "URLs left out", s.limits.urlsLeftOut, true)
+	})
+
+	t.Run("no room left", func(t *testing.T) {
+		s := New()
+		s.limits.maxURLs = 4
+
+		first := s.newDocument()
+		first.parse(url, content)
+		s.addDocument(first)
+		mustEqual(t, "URLs left out", s.limits.urlsLeftOut, false)
+
+		// The call has no use for a document it cannot collect a URL of.
+		if document := s.newDocument(); document != nil {
+			t.Fatal("expected no document to be begun")
+		}
+		mustEqual(t, "URLs left out", s.limits.urlsLeftOut, true)
+
+		s.limits.urlsLeftOut = false
+		locations, err := s.parseDocument(url, `<sitemapindex><sitemap><loc>https://example.com/sitemap-2.xml</loc></sitemap></sitemapindex>`)
+		if locations != nil || err != nil {
+			t.Errorf("expected the document not to be parsed, got %v, %v", locations, err)
+		}
+		mustEqual(t, "URLs left out", s.limits.urlsLeftOut, true)
+		assertCounts(t, s, 4, 0)
+	})
+
+	t.Run("no limit", func(t *testing.T) {
+		s := New()
+
+		first, second := s.newDocument(), s.newDocument()
+		mustEqual(t, "room of a document", first.limits.maxURLs, 0)
+		first.parse(url, content)
+		second.parse(url, content)
+		s.addDocument(first)
+		s.addDocument(second)
+		assertStringSlice(t, "URLs", locsOf(s), append(append([]string{}, pages...), pages...))
+		mustEqual(t, "URLs left out", s.limits.urlsLeftOut, false)
+	})
+}
+
 func configsEqual(c1, c2 config) bool {
 	return c1.fetchTimeout == c2.fetchTimeout &&
 		c1.userAgent == c2.userAgent &&
 		c1.maxResponseSize == c2.maxResponseSize &&
 		c1.maxDepth == c2.maxDepth &&
 		c1.maxConcurrency == c2.maxConcurrency &&
+		c1.maxSitemaps == c2.maxSitemaps &&
+		c1.maxURLs == c2.maxURLs &&
 		c1.multiThread == c2.multiThread &&
 		c1.httpClient == c2.httpClient &&
 		reflect.DeepEqual(c1.follow, c2.follow) &&
