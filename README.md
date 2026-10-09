@@ -18,6 +18,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Configurable HTTP response size limit
 - Tolerant mode (default): resolves relative URLs in `<loc>` elements; rejects URLs exceeding 2,048 characters after resolution
 - Strict mode: validates URLs per the sitemaps.org specification
+- A value that cannot be parsed (e.g. a malformed `<lastmod>`) costs only itself, never the whole sitemap
 - Google Image Sitemap extension (`<image:image>`)
 - Google News Sitemap extension (`<news:news>`)
 - Google Video Sitemap extension (`<video:video>`)
@@ -242,13 +243,25 @@ To enable **strict mode**, use the `SetStrict()` function. In strict mode, all U
 - `<loc>` must use the same host and protocol as the sitemap file
 - `<loc>` must not exceed 2,048 characters
 - `<priority>` must be between `0.0` and `1.0` inclusive (if present)
+- `<lastmod>` and `<priority>` must hold a value that can be parsed (if present)
+- The document must be well-formed XML, otherwise it is rejected as a whole
 
 In **tolerant mode** (the default):
 - Relative `<loc>` URLs are resolved against the parent sitemap URL
 - `<loc>` URLs exceeding 2,048 characters after resolution are rejected
 - `<priority>` values outside `[0.0, 1.0]` are accepted as-is
+- A `<lastmod>` or `<priority>` that cannot be parsed is left unset (`nil`) and reported, the entry itself is kept
+- XML mistakes that can be read past are accepted: an unescaped `&`, an unknown entity such as `&nbsp;`, a missing end tag
 
 Entries that fail validation are skipped and reported via `GetErrors()`.
+
+A value that cannot be parsed never costs more than its own entry. The numbers and dates of the extensions (`<video:duration>`, `<video:rating>`, `<video:view_count>`, `<video:expiration_date>`, `<video:publication_date>`, `<news:publication_date>`) are treated the same way in both modes: the field is left unset (`nil`) and the entry is kept. Every such value is reported via `GetErrors()` as a `*ValidationError` for the page it belongs to:
+
+```
+validate "https://example.com/page": invalid <lastmod> value "2024-01-15 10:30:00"
+```
+
+See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it.
 
 ```go
 s := sitemap.New()
@@ -411,9 +424,9 @@ urls := s.GetURLs()
 
 Each `URL` struct contains the following fields:
 - `Loc` (`string`) — the URL location
-- `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`
+- `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`; also `nil` when the value cannot be parsed, see [Strict mode](#strict-mode)
 - `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`
-- `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`
+- `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`; also `nil` when the value cannot be parsed
 - `Images` (`[]Image`) — images associated with this URL via the Google Image Sitemap extension, may be `nil`
 - `News` (`*News`) — news metadata associated with this URL via the Google News Sitemap extension, may be `nil`
 - `Videos` (`[]Video`) — videos associated with this URL via the Google Video Sitemap extension, may be `nil`
@@ -435,7 +448,7 @@ Each `News` struct contains:
 - `PublicationDate` (`*LastModTime`) — article publication date; embeds `time.Time`, may be `nil` if absent (required in strict mode)
 - `Title` (`string`) — article title (required in strict mode)
 
-In strict mode, all four required fields (`Title`, `Publication.Name`, `Publication.Language`, `PublicationDate`) must be present; missing fields are each reported via `GetErrors()` and the `News` entry is still included with whatever data was parsed. In tolerant mode no validation is performed.
+In strict mode, all four required fields (`Title`, `Publication.Name`, `Publication.Language`, `PublicationDate`) must be present; missing fields are each reported via `GetErrors()` and the `News` entry is still included with whatever data was parsed. In tolerant mode no validation is performed. A `PublicationDate` that cannot be parsed is left `nil` and reported in both modes.
 
 See [`examples/news`](examples/news/main.go) for a runnable example.
 
@@ -464,6 +477,8 @@ Each `Video` struct contains:
 - `Uploader` (`*VideoUploader`) — uploader name (`Value`) and optional profile URL (`Info`)
 - `Live` (`string`) — `"yes"` or `"no"`
 - `Tags` (`[]string`) — content tags; maximum 32 validated in strict mode
+
+A `Duration`, `Rating`, `ViewCount`, `ExpirationDate` or `PublicationDate` that cannot be parsed is left `nil` and reported via `GetErrors()` in both modes; the video itself is kept.
 
 See [`examples/video`](examples/video/main.go) for a runnable example.
 

@@ -90,6 +90,9 @@ func FuzzParse(f *testing.F) {
 		"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><urlset><url><loc>https://example.com/caf\xe9</loc></url></urlset>",
 		"<?xml version=\"1.0\" encoding=\"windows-1250\"?><rss><channel><item><link>https://example.com/t\xfbr\xf5</link></item></channel></rss>",
 		`<?xml version="1.0" encoding="IBM437"?><sitemapindex><sitemap><loc>https://example.com/sitemap-1.xml</loc></sitemap></sitemapindex>`,
+		`<urlset><url><loc>https://example.com/a</loc><lastmod>2024-01-15 10:30:00</lastmod><priority>0,5</priority></url></urlset>`,
+		`<urlset xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"><url><loc>https://example.com/v</loc><video:video><video:thumbnail_loc>https://example.com/t.jpg</video:thumbnail_loc><video:duration>1:30</video:duration></video:video></url></urlset>`,
+		`<urlset><url><loc>https://example.com/a?b=1&c=2</loc><lastmod>2024-01-15</url></urlset>`,
 		`<urlset><url><loc>https://example.com/img</loc><image:image xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"><image:loc>https://example.com/i.jpg</image:loc></image:image></url></urlset>`,
 		`<sitemapindex><sitemap><loc>`,
 		"",
@@ -130,6 +133,7 @@ func FuzzDetectRootElement(f *testing.F) {
 		"<a:b xmlns:a='urn:x'/>",
 		"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><!-- caf\xe9 --><urlset/>",
 		`<?xml version="1.0" encoding="IBM437"?><feed/>`,
+		`<urlset version=1 a&b>`,
 		"",
 		"plain text",
 	}

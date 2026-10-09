@@ -13,6 +13,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,8 +86,49 @@ type (
 
 	// urlSet is a structure of <urlset>
 	urlSet struct {
-		XMLName xml.Name `xml:"urlset"`
-		URL     []URL    `xml:"url"`
+		XMLName xml.Name   `xml:"urlset"`
+		URL     []urlEntry `xml:"url"`
+	}
+
+	// urlEntry is the form in which a <url> element is decoded: a URL whose elements holding a
+	// number or a date are read as text first. Decoded straight into its type, the first such
+	// value that cannot be parsed would fail the whole document; read as text, it costs only
+	// itself. The fields below take these elements over from the fields of the embedded
+	// structure that name the same element, and convert fills those in from the text.
+	urlEntry struct {
+		URL
+		LastModText  *string      `xml:"lastmod"`
+		PriorityText *string      `xml:"priority"`
+		NewsEntry    *newsEntry   `xml:"http://www.google.com/schemas/sitemap-news/0.9 news"`
+		VideoEntries []videoEntry `xml:"http://www.google.com/schemas/sitemap-video/1.1 video"`
+		// invalid lists the elements of the entry whose content could not be parsed.
+		invalid []invalidValue
+		// invalidOwn reports whether an element of the <url> itself, rather than of one of its
+		// extensions, is among them.
+		invalidOwn bool
+	}
+
+	// newsEntry is the form in which a <news:news> element is decoded, see urlEntry.
+	newsEntry struct {
+		News
+		PublicationDateText *string `xml:"http://www.google.com/schemas/sitemap-news/0.9 publication_date"`
+	}
+
+	// videoEntry is the form in which a <video:video> element is decoded, see urlEntry.
+	videoEntry struct {
+		Video
+		DurationText        *string `xml:"http://www.google.com/schemas/sitemap-video/1.1 duration"`
+		ExpirationDateText  *string `xml:"http://www.google.com/schemas/sitemap-video/1.1 expiration_date"`
+		RatingText          *string `xml:"http://www.google.com/schemas/sitemap-video/1.1 rating"`
+		ViewCountText       *string `xml:"http://www.google.com/schemas/sitemap-video/1.1 view_count"`
+		PublicationDateText *string `xml:"http://www.google.com/schemas/sitemap-video/1.1 publication_date"`
+	}
+
+	// invalidValue is an element whose content could not be parsed.
+	invalidValue struct {
+		// element names the element the way error messages do, e.g. "<lastmod>".
+		element string
+		text    string
 	}
 
 	// rss is a structure of <rss> for RSS 2.0 feeds.
@@ -1089,6 +1131,16 @@ func newXMLDecoder(content string) *xml.Decoder {
 	return decoder
 }
 
+// newDecoder returns the decoder the parsers read content with. Strict mode requires
+// well-formed XML. Tolerant mode puts up with the mistakes encoding/xml can read past: an
+// unescaped "&" or an unknown entity such as "&nbsp;" is taken literally, and a missing end
+// tag is made up for.
+func (s *S) newDecoder(content string) *xml.Decoder {
+	decoder := newXMLDecoder(content)
+	decoder.Strict = s.cfg.strict
+	return decoder
+}
+
 // detectionCharsetReader is the CharsetReader of root element detection. It transcodes like
 // the one newXMLDecoder installs, but reads the bytes as they are when the declared encoding
 // is not supported. An encoding that cannot be transcoded must not hide the document type:
@@ -1107,6 +1159,9 @@ func detectionCharsetReader(label string, input io.Reader) (io.Reader, error) {
 func detectRootElement(content string) string {
 	decoder := newXMLDecoder(content)
 	decoder.CharsetReader = detectionCharsetReader
+	// Detection is as lenient as the most lenient parser, for the same reason: what is wrong
+	// with a document is for the parser of its type to report.
+	decoder.Strict = false
 	for {
 		token, err := decoder.Token()
 		if err != nil {
@@ -1173,7 +1228,8 @@ func (s *S) parseURLSetContent(url, content string) {
 		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
 		return
 	}
-	for _, u := range us.URL {
+	for _, entry := range us.URL {
+		u := entry.URL
 		u.Loc = strings.TrimSpace(u.Loc)
 		resolvedLoc, err := s.resolveAndValidateLoc(u.Loc, url)
 		if err != nil {
@@ -1181,6 +1237,15 @@ func (s *S) parseURLSetContent(url, content string) {
 			continue
 		}
 		u.Loc = resolvedLoc
+		// A value that cannot be parsed is left out and reported. Strict mode also skips the
+		// entry when the value is one of its own, as it does for a priority out of range; a
+		// value of an extension costs the entry nothing more in either mode.
+		for _, invalid := range entry.invalid {
+			s.errs = append(s.errs, &ValidationError{URL: u.Loc, Err: invalid.err()})
+		}
+		if s.cfg.strict && entry.invalidOwn {
+			continue
+		}
 		if err := s.validatePriority(u.Loc, u.Priority); err != nil {
 			s.errs = append(s.errs, err)
 			continue
@@ -1188,7 +1253,7 @@ func (s *S) parseURLSetContent(url, content string) {
 		validImages, imageErrs := s.validateAndFilterImages(u.Images)
 		u.Images = validImages
 		s.errs = append(s.errs, imageErrs...)
-		validNews, newsErrs := s.validateNews(u.Loc, u.News)
+		validNews, newsErrs := s.validateNews(u.Loc, u.News, entry.newsDateInvalid())
 		u.News = validNews
 		s.errs = append(s.errs, newsErrs...)
 		validVideos, videoErrs := s.validateAndFilterVideos(u.Videos)
@@ -1309,7 +1374,7 @@ func (s *S) parseSitemapIndex(data string) (sitemapIndex, error) {
 		return smIndex, fmt.Errorf("sitemapindex is empty")
 	}
 
-	err := newXMLDecoder(data).Decode(&smIndex)
+	err := s.newDecoder(data).Decode(&smIndex)
 	return smIndex, err
 
 }
@@ -1325,8 +1390,84 @@ func (s *S) parseURLSet(data string) (urlSet, error) {
 		return us, fmt.Errorf("sitemap is empty")
 	}
 
-	err := newXMLDecoder(data).Decode(&us)
-	return us, err
+	if err := s.newDecoder(data).Decode(&us); err != nil {
+		return us, err
+	}
+	for i := range us.URL {
+		us.URL[i].convert()
+	}
+	return us, nil
+}
+
+// convert parses the elements that were read as text into the typed fields of the embedded
+// URL. An element whose content is invalid leaves its field unset and is added to e.invalid.
+func (e *urlEntry) convert() {
+	e.LastMod = parseElement(&e.invalid, "<lastmod>", e.LastModText, parseLastModTime)
+	e.Priority = parseElement(&e.invalid, "<priority>", e.PriorityText, parseFloat32)
+	e.invalidOwn = len(e.invalid) > 0
+
+	if e.NewsEntry != nil {
+		news := e.NewsEntry.News
+		news.PublicationDate = parseElement(&e.invalid, "news <publication_date>", e.NewsEntry.PublicationDateText, parseLastModTime)
+		e.News = &news
+	}
+
+	for _, entry := range e.VideoEntries {
+		video := entry.Video
+		video.Duration = parseElement(&e.invalid, "video <duration>", entry.DurationText, parseInt)
+		video.ExpirationDate = parseElement(&e.invalid, "video <expiration_date>", entry.ExpirationDateText, parseLastModTime)
+		video.Rating = parseElement(&e.invalid, "video <rating>", entry.RatingText, parseFloat32)
+		video.ViewCount = parseElement(&e.invalid, "video <view_count>", entry.ViewCountText, parseInt)
+		video.PublicationDate = parseElement(&e.invalid, "video <publication_date>", entry.PublicationDateText, parseLastModTime)
+		e.Videos = append(e.Videos, video)
+	}
+}
+
+// newsDateInvalid reports whether the entry has a news publication date that could not be
+// parsed.
+func (e *urlEntry) newsDateInvalid() bool {
+	return e.NewsEntry != nil && e.NewsEntry.PublicationDateText != nil && e.News.PublicationDate == nil
+}
+
+// parseElement parses the text of an optional element. It returns nil for an element that is
+// absent, which is what a nil text stands for, and for one whose content parse rejects. The
+// latter is also added to invalid under the given name.
+func parseElement[T any](invalid *[]invalidValue, element string, text *string, parse func(string) (T, error)) *T {
+	if text == nil {
+		return nil
+	}
+	value, err := parse(*text)
+	if err != nil {
+		*invalid = append(*invalid, invalidValue{element: element, text: *text})
+		return nil
+	}
+	return &value
+}
+
+// parseFloat32 parses the content of an element holding a decimal number. As when encoding/xml
+// decodes into a numeric field, surrounding whitespace is ignored and an empty element reads
+// as zero.
+func parseFloat32(text string) (float32, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseFloat(text, 32)
+	return float32(value), err
+}
+
+// parseInt parses the content of an element holding an integer, by the rules of parseFloat32.
+func parseInt(text string) (int, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0, nil
+	}
+	return strconv.Atoi(text)
+}
+
+// err returns the error that reports v.
+func (v invalidValue) err() error {
+	return fmt.Errorf("invalid %s value %q", v.element, strings.TrimSpace(v.text))
 }
 
 // parseRSS parses the RSS 2.0 data and returns an rss object and an error.
@@ -1336,7 +1477,7 @@ func (s *S) parseRSS(data string) (rss, error) {
 		return feed, fmt.Errorf("rss is empty")
 	}
 
-	err := newXMLDecoder(data).Decode(&feed)
+	err := s.newDecoder(data).Decode(&feed)
 	return feed, err
 }
 
@@ -1347,7 +1488,7 @@ func (s *S) parseAtom(data string) (atom, error) {
 		return feed, fmt.Errorf("atom is empty")
 	}
 
-	err := newXMLDecoder(data).Decode(&feed)
+	err := s.newDecoder(data).Decode(&feed)
 	return feed, err
 }
 
@@ -1444,7 +1585,9 @@ func (s *S) validateAndFilterImages(images []Image) ([]Image, []error) {
 // is kept so that callers still have access to any data that was successfully parsed.
 // A nil input is a no-op and returns nil, nil.
 // loc is the parent page URL used as context in the returned *ValidationError values.
-func (s *S) validateNews(loc string, news *News) (*News, []error) {
+// dateInvalid tells that the entry does have a publication date, which could not be parsed.
+// That has been reported already, so the date is not reported as missing on top of it.
+func (s *S) validateNews(loc string, news *News, dateInvalid bool) (*News, []error) {
 	if news == nil {
 		return nil, nil
 	}
@@ -1461,7 +1604,7 @@ func (s *S) validateNews(loc string, news *News) (*News, []error) {
 	if news.Publication.Language == "" {
 		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication><language> is empty")})
 	}
-	if news.PublicationDate == nil {
+	if news.PublicationDate == nil && !dateInvalid {
 		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication_date> is missing")})
 	}
 	return news, errs
@@ -1688,6 +1831,22 @@ func unzip(content []byte, maxSize int64) ([]byte, error) {
 	return uncompressed, nil
 }
 
+// lastModFormats are the date and time layouts accepted in <lastmod> and in the date elements
+// of the extensions.
+var lastModFormats = []string{
+	"2006",
+	"2006-01",
+	"2006-01-02",
+	"2006-01-02T15:04-07:00",
+	"2006-01-02T15:04Z",
+	"2006-01-02T15:04:05-07:00",
+	"2006-01-02T15:04:05Z",
+	"2006-01-02T15:04:05.999999999-07:00",
+	"2006-01-02T15:04:05.999999999Z",
+	time.RFC3339,
+	time.RFC3339Nano,
+}
+
 func (l *LastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var v string
 	err := d.DecodeElement(&v, &start)
@@ -1695,36 +1854,35 @@ func (l *LastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error
 		return err
 	}
 
-	formats := []string{
-		"2006",
-		"2006-01",
-		"2006-01-02",
-		"2006-01-02T15:04-07:00",
-		"2006-01-02T15:04Z",
-		"2006-01-02T15:04:05-07:00",
-		"2006-01-02T15:04:05Z",
-		"2006-01-02T15:04:05.999999999-07:00",
-		"2006-01-02T15:04:05.999999999Z",
-		time.RFC3339,
-		time.RFC3339Nano,
-	}
-
-	v = strings.TrimSpace(v)
-
 	// An empty <lastmod> element (or one containing only whitespace) is common
 	// in real-world sitemaps. Treat it as "not set" rather than an error: leave
 	// the zero value in place and let the caller decide how to interpret it.
-	if v == "" {
+	if strings.TrimSpace(v) == "" {
 		return nil
 	}
 
-	for _, format := range formats {
-		parsedTime, parseErr := time.Parse(format, v)
-		if parseErr == nil {
-			*l = LastModTime{parsedTime}
-			return nil
+	parsed, err := parseLastModTime(v)
+	if err != nil {
+		return err
+	}
+	*l = parsed
+	return nil
+}
+
+// parseLastModTime parses a date or a date and time in one of lastModFormats, ignoring
+// surrounding whitespace. Empty text yields the zero value, as an empty element does when
+// decoded by UnmarshalXML.
+func parseLastModTime(text string) (LastModTime, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return LastModTime{}, nil
+	}
+
+	for _, format := range lastModFormats {
+		if parsedTime, err := time.Parse(format, text); err == nil {
+			return LastModTime{parsedTime}, nil
 		}
 	}
 
-	return fmt.Errorf("unsupported lastmod format: %q", v)
+	return LastModTime{}, fmt.Errorf("unsupported lastmod format: %q", text)
 }

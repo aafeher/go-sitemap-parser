@@ -841,7 +841,7 @@ func TestNews_validateNews(t *testing.T) {
 
 	t.Run("nil input returns nil", func(t *testing.T) {
 		s := New()
-		got, errs := s.validateNews("", nil)
+		got, errs := s.validateNews("", nil, false)
 		if got != nil || len(errs) != 0 {
 			t.Errorf("expected nil, nil for nil input")
 		}
@@ -854,7 +854,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "Article",
 		}
-		got, errs := s.validateNews("https://example.com/page", n)
+		got, errs := s.validateNews("https://example.com/page", n, false)
 		if got != n {
 			t.Error("expected same news pointer")
 		}
@@ -866,7 +866,7 @@ func TestNews_validateNews(t *testing.T) {
 	t.Run("tolerant: missing fields produce no errors", func(t *testing.T) {
 		s := New()
 		n := &News{}
-		got, errs := s.validateNews("https://example.com/page", n)
+		got, errs := s.validateNews("https://example.com/page", n, false)
 		if got != n {
 			t.Error("expected same news pointer")
 		}
@@ -882,7 +882,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03T10:00:00Z"),
 			Title:           "Article Title",
 		}
-		got, errs := s.validateNews("https://example.com/page", n)
+		got, errs := s.validateNews("https://example.com/page", n, false)
 		if got != n {
 			t.Error("expected same news pointer")
 		}
@@ -898,7 +898,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "",
 		}
-		_, errs := s.validateNews("https://example.com/page", n)
+		_, errs := s.validateNews("https://example.com/page", n, false)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for empty title, got %d", len(errs))
 		}
@@ -911,7 +911,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "Article",
 		}
-		_, errs := s.validateNews("https://example.com/page", n)
+		_, errs := s.validateNews("https://example.com/page", n, false)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for empty publication name, got %d", len(errs))
 		}
@@ -924,7 +924,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "Article",
 		}
-		_, errs := s.validateNews("https://example.com/page", n)
+		_, errs := s.validateNews("https://example.com/page", n, false)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for empty publication language, got %d", len(errs))
 		}
@@ -937,7 +937,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: nil,
 			Title:           "Article",
 		}
-		_, errs := s.validateNews("https://example.com/page", n)
+		_, errs := s.validateNews("https://example.com/page", n, false)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for nil publication_date, got %d", len(errs))
 		}
@@ -946,7 +946,7 @@ func TestNews_validateNews(t *testing.T) {
 	t.Run("strict: all required fields missing produces four errors", func(t *testing.T) {
 		s := New().SetStrict(true)
 		n := &News{}
-		got, errs := s.validateNews("https://example.com/page", n)
+		got, errs := s.validateNews("https://example.com/page", n, false)
 		if got != n {
 			t.Error("expected news entry to be kept despite errors")
 		}
@@ -1055,6 +1055,28 @@ func TestNews_parseURLSet_WithNews(t *testing.T) {
 		}
 		if urlSet.URL[1].News != nil {
 			t.Error("expected nil News on second URL")
+		}
+	})
+}
+
+func TestNews_validateNews_InvalidDate(t *testing.T) {
+	n := &News{
+		Title:       "Title",
+		Publication: NewsPublication{Name: "Name", Language: "en"},
+	}
+
+	t.Run("strict mode does not report an invalid date as missing", func(t *testing.T) {
+		got, errs := New().SetStrict(true).validateNews("https://example.com/page", n, true)
+		if got != n {
+			t.Error("expected the news entry to be kept")
+		}
+		mustEqual(t, "errors", len(errs), 0)
+	})
+
+	t.Run("strict mode reports an absent date as missing", func(t *testing.T) {
+		_, errs := New().SetStrict(true).validateNews("https://example.com/page", n, false)
+		if len(errs) != 1 || !strings.Contains(errs[0].Error(), "news <publication_date> is missing") {
+			t.Errorf("expected the date to be reported as missing, got %v", errs)
 		}
 	})
 }
@@ -3910,6 +3932,7 @@ func TestDetectRootElement(t *testing.T) {
 		{"ISO-8859-1 declared", "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><!-- caf\xe9 --><urlset/>", "urlset"},
 		{"windows-1252 declared", "<?xml version=\"1.0\" encoding=\"windows-1252\"?><rss title=\"\x80\"/>", "rss"},
 		{"US-ASCII declared", `<?xml version="1.0" encoding="US-ASCII"?><feed/>`, "feed"},
+		{"unquoted attribute value", `<urlset version=1></urlset>`, "urlset"},
 		{"unsupported encoding declared", `<?xml version="1.0" encoding="IBM437"?><urlset/>`, "urlset"},
 		{"plain text", "https://example.com/page", ""},
 		{"malformed XML", "<<<<<<", ""},
@@ -4037,6 +4060,433 @@ func TestS_Parse_DeclaredEncoding(t *testing.T) {
 				t.Fatalf("expected 1 image, got %d", len(u.Images))
 			}
 			mustEqual(t, "image title", u.Images[0].Title, title)
+		})
+	}
+}
+
+// TestS_Parse_InvalidValues verifies that an element whose content cannot be
+// parsed costs only itself: the rest of its entry and the rest of the document
+// are kept. Strict mode skips the entry when the element is one of the <url>
+// itself, and keeps it when the element belongs to an extension.
+func TestS_Parse_InvalidValues(t *testing.T) {
+	const (
+		sitemapURL = "https://example.com/sitemap.xml"
+		secondURL  = "https://example.com/second"
+	)
+
+	// document returns a urlset of three entries, the second of which holds
+	// the given elements next to a valid <changefreq>.
+	document := func(elements string) string {
+		return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
+  <url><loc>https://example.com/first</loc><lastmod>2024-01-15</lastmod></url>
+  <url><loc>` + secondURL + `</loc><changefreq>daily</changefreq>` + elements + `</url>
+  <url><loc>https://example.com/third</loc><priority>0.8</priority></url>
+</urlset>`
+	}
+	// video and news return an extension entry that satisfies strict mode,
+	// apart from the given element.
+	video := func(element string) string {
+		return `<video:video>
+  <video:thumbnail_loc>https://example.com/thumb.jpg</video:thumbnail_loc>
+  <video:title>Video title</video:title>
+  <video:description>Video description</video:description>
+  <video:content_loc>https://example.com/video.mp4</video:content_loc>` + element + `</video:video>`
+	}
+	news := func(element string) string {
+		return `<news:news>
+  <news:publication><news:name>Example News</news:name><news:language>en</news:language></news:publication>
+  <news:title>News title</news:title>` + element + `</news:news>`
+	}
+	videoOf := func(t *testing.T, u URL) Video {
+		t.Helper()
+		if len(u.Videos) != 1 {
+			t.Fatalf("expected 1 video, got %d", len(u.Videos))
+		}
+		mustEqual(t, "video title", u.Videos[0].Title, "Video title")
+		return u.Videos[0]
+	}
+
+	tests := []struct {
+		name     string
+		elements string
+		// message is the text of the error the invalid value is reported with.
+		message string
+		// own tells that the element belongs to the <url> itself.
+		own bool
+		// unset reports whether the field of the invalid element is left unset.
+		unset func(t *testing.T, u URL) bool
+	}{
+		{
+			name:     "lastmod without time zone",
+			elements: `<lastmod>2024-01-15T10:30:00</lastmod>`,
+			message:  `invalid <lastmod> value "2024-01-15T10:30:00"`,
+			own:      true,
+			unset:    func(_ *testing.T, u URL) bool { return u.LastMod == nil },
+		},
+		{
+			name:     "lastmod with zone offset without colon",
+			elements: `<lastmod>2024-01-15T10:30:00+0100</lastmod>`,
+			message:  `invalid <lastmod> value "2024-01-15T10:30:00+0100"`,
+			own:      true,
+			unset:    func(_ *testing.T, u URL) bool { return u.LastMod == nil },
+		},
+		{
+			name:     "lastmod with space separator",
+			elements: `<lastmod> 2024-01-15 10:30:00 </lastmod>`,
+			message:  `invalid <lastmod> value "2024-01-15 10:30:00"`,
+			own:      true,
+			unset:    func(_ *testing.T, u URL) bool { return u.LastMod == nil },
+		},
+		{
+			name:     "priority with decimal comma",
+			elements: `<priority>0,5</priority>`,
+			message:  `invalid <priority> value "0,5"`,
+			own:      true,
+			unset:    func(_ *testing.T, u URL) bool { return u.Priority == nil },
+		},
+		{
+			name:     "video duration",
+			elements: video(`<video:duration>1:30</video:duration>`),
+			message:  `invalid video <duration> value "1:30"`,
+			unset:    func(t *testing.T, u URL) bool { return videoOf(t, u).Duration == nil },
+		},
+		{
+			name:     "video rating",
+			elements: video(`<video:rating>five</video:rating>`),
+			message:  `invalid video <rating> value "five"`,
+			unset:    func(t *testing.T, u URL) bool { return videoOf(t, u).Rating == nil },
+		},
+		{
+			name:     "video view count",
+			elements: video(`<video:view_count>1,234</video:view_count>`),
+			message:  `invalid video <view_count> value "1,234"`,
+			unset:    func(t *testing.T, u URL) bool { return videoOf(t, u).ViewCount == nil },
+		},
+		{
+			name:     "video expiration date",
+			elements: video(`<video:expiration_date>next year</video:expiration_date>`),
+			message:  `invalid video <expiration_date> value "next year"`,
+			unset:    func(t *testing.T, u URL) bool { return videoOf(t, u).ExpirationDate == nil },
+		},
+		{
+			name:     "video publication date",
+			elements: video(`<video:publication_date>15/01/2024</video:publication_date>`),
+			message:  `invalid video <publication_date> value "15/01/2024"`,
+			unset:    func(t *testing.T, u URL) bool { return videoOf(t, u).PublicationDate == nil },
+		},
+		{
+			name:     "news publication date",
+			elements: news(`<news:publication_date>yesterday</news:publication_date>`),
+			message:  `invalid news <publication_date> value "yesterday"`,
+			unset: func(t *testing.T, u URL) bool {
+				t.Helper()
+				if u.News == nil {
+					t.Fatal("expected News to be non-nil")
+				}
+				mustEqual(t, "news title", u.News.Title, "News title")
+				return u.News.PublicationDate == nil
+			},
+		},
+	}
+
+	for _, test := range tests {
+		for _, strict := range []bool{false, true} {
+			mode := "tolerant"
+			if strict {
+				mode = "strict"
+			}
+			t.Run(test.name+" "+mode, func(t *testing.T) {
+				content := document(test.elements)
+				s := New().SetStrict(strict)
+				requireParse(t, s, sitemapURL, &content)
+
+				skipped := strict && test.own
+				wantURLs := int64(3)
+				if skipped {
+					wantURLs = 2
+				}
+				assertCounts(t, s, wantURLs, 1)
+
+				var valErr *ValidationError
+				if !errors.As(s.GetErrors()[0], &valErr) {
+					t.Fatalf("expected *ValidationError, got %T: %v", s.GetErrors()[0], s.GetErrors()[0])
+				}
+				mustEqual(t, "error URL", valErr.URL, secondURL)
+				mustEqual(t, "error message", valErr.Err.Error(), test.message)
+
+				urls := s.GetURLs()
+				mustEqual(t, "first location", urls[0].Loc, "https://example.com/first")
+				if urls[0].LastMod == nil {
+					t.Error("first entry lost its <lastmod>")
+				}
+				last := urls[len(urls)-1]
+				mustEqual(t, "last location", last.Loc, "https://example.com/third")
+				assertPtrFloat32(t, "last priority", last.Priority, 0.8)
+
+				if skipped {
+					return
+				}
+				second := urls[1]
+				mustEqual(t, "second location", second.Loc, secondURL)
+				if second.ChangeFreq == nil || *second.ChangeFreq != ChangeFreqDaily {
+					t.Errorf("second entry lost its <changefreq>: %v", second.ChangeFreq)
+				}
+				if !test.unset(t, second) {
+					t.Error("field of the invalid element is set")
+				}
+			})
+		}
+	}
+
+	t.Run("every invalid value of an entry is reported", func(t *testing.T) {
+		content := document(`<lastmod>never</lastmod><priority>high</priority>` + video(`<video:duration>long</video:duration>`))
+		want := []string{
+			`validate "` + secondURL + `": invalid <lastmod> value "never"`,
+			`validate "` + secondURL + `": invalid <priority> value "high"`,
+			`validate "` + secondURL + `": invalid video <duration> value "long"`,
+		}
+
+		for _, strict := range []bool{false, true} {
+			s := New().SetStrict(strict)
+			requireParse(t, s, sitemapURL, &content)
+
+			wantURLs := int64(3)
+			if strict {
+				wantURLs = 2
+			}
+			assertCounts(t, s, wantURLs, int64(len(want)))
+			for i, err := range s.GetErrors() {
+				mustEqual(t, fmt.Sprintf("strict=%v error %d", strict, i), err.Error(), want[i])
+			}
+		}
+	})
+
+	t.Run("values of an entry skipped for its location are not reported", func(t *testing.T) {
+		content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>ftp://example.com/page</loc><lastmod>never</lastmod></url>
+</urlset>`
+		s := New()
+		requireParse(t, s, sitemapURL, &content)
+		assertCounts(t, s, 0, 1)
+		if !strings.Contains(s.GetErrors()[0].Error(), "unsupported scheme") {
+			t.Errorf("unexpected error: %v", s.GetErrors()[0])
+		}
+	})
+
+	t.Run("empty elements read as before", func(t *testing.T) {
+		content := document(`<lastmod> </lastmod><priority> </priority>` +
+			video(`<video:duration></video:duration><video:rating/><video:view_count> </video:view_count>`))
+
+		s := New()
+		requireParse(t, s, sitemapURL, &content)
+		assertCounts(t, s, 3, 0)
+
+		second := s.GetURLs()[1]
+		if second.LastMod == nil || !second.LastMod.IsZero() {
+			t.Errorf("lastmod: got %v, want the zero time", second.LastMod)
+		}
+		assertPtrFloat32(t, "priority", second.Priority, 0)
+		v := videoOf(t, second)
+		assertPtrInt(t, "duration", v.Duration, 0)
+		assertPtrFloat32(t, "rating", v.Rating, 0)
+		assertPtrInt(t, "view count", v.ViewCount, 0)
+	})
+}
+
+// TestS_parse_MalformedXML verifies how the two modes treat XML that is not
+// well-formed: tolerant mode reads past the mistakes encoding/xml can recover
+// from, strict mode rejects the document.
+func TestS_parse_MalformedXML(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+
+	type document struct {
+		name    string
+		content string
+		// locations are the locations tolerant mode reads from the document.
+		locations []string
+	}
+	var documents []document
+	for format, content := range encodedDocuments("UTF-8", "page?a=1&b=2") {
+		documents = append(documents, document{format + " unescaped ampersand", content, []string{"https://example.com/page?a=1&b=2"}})
+	}
+	for format, content := range encodedDocuments("UTF-8", "page?q=a&nbsp;b") {
+		documents = append(documents, document{format + " unknown entity", content, []string{"https://example.com/page?q=a&nbsp;b"}})
+	}
+	documents = append(documents,
+		document{
+			name:      "missing end tag",
+			content:   `<urlset><url><loc>https://example.com/a</loc><lastmod>2024-01-15</url><url><loc>https://example.com/b</loc></url></urlset>`,
+			locations: []string{"https://example.com/a", "https://example.com/b"},
+		},
+		document{
+			name:      "unquoted attribute value",
+			content:   `<urlset version=1><url><loc>https://example.com/a</loc></url></urlset>`,
+			locations: []string{"https://example.com/a"},
+		},
+	)
+
+	for _, doc := range documents {
+		t.Run(doc.name+" tolerant", func(t *testing.T) {
+			s := New()
+			locations := parsedLocations(s, doc.content)
+
+			if len(s.errs) != 0 {
+				t.Fatalf("unexpected errors: %v", s.errs)
+			}
+			assertStringSlice(t, "locations", locations, doc.locations)
+		})
+
+		t.Run(doc.name+" strict", func(t *testing.T) {
+			s := New().SetStrict(true)
+			locations := parsedLocations(s, doc.content)
+
+			if len(locations) != 0 {
+				t.Errorf("expected no locations, got %q", locations)
+			}
+			if len(s.errs) != 1 {
+				t.Fatalf("expected 1 error, got %d: %v", len(s.errs), s.errs)
+			}
+			var parseErr *ParseError
+			if !errors.As(s.errs[0], &parseErr) {
+				t.Fatalf("expected *ParseError, got %T: %v", s.errs[0], s.errs[0])
+			}
+			mustEqual(t, "error URL", parseErr.URL, url)
+			if !strings.Contains(parseErr.Error(), "XML syntax error") {
+				t.Errorf("error does not report the XML syntax error: %v", parseErr)
+			}
+		})
+	}
+
+	t.Run("truncated document is rejected in both modes", func(t *testing.T) {
+		content := `<urlset><url><loc>https://example.com/a</loc></url><url><loc>https://example.com/b`
+
+		for _, strict := range []bool{false, true} {
+			s := New().SetStrict(strict)
+			locations := parsedLocations(s, content)
+
+			if len(locations) != 0 {
+				t.Errorf("strict=%v: expected no locations, got %q", strict, locations)
+			}
+			if len(s.errs) != 1 || !strings.Contains(s.errs[0].Error(), "unexpected EOF") {
+				t.Errorf("strict=%v: expected an unexpected EOF error, got %v", strict, s.errs)
+			}
+		}
+	})
+}
+
+func TestParseElement(t *testing.T) {
+	t.Run("absent element", func(t *testing.T) {
+		var invalid []invalidValue
+		if got := parseElement(&invalid, "<priority>", nil, parseFloat32); got != nil {
+			t.Errorf("got %v, want nil", *got)
+		}
+		mustEqual(t, "invalid values", len(invalid), 0)
+	})
+
+	t.Run("valid content", func(t *testing.T) {
+		var invalid []invalidValue
+		assertPtrFloat32(t, "value", parseElement(&invalid, "<priority>", pointerOfString(" 0.5 "), parseFloat32), 0.5)
+		mustEqual(t, "invalid values", len(invalid), 0)
+	})
+
+	t.Run("invalid content", func(t *testing.T) {
+		var invalid []invalidValue
+		if got := parseElement(&invalid, "<priority>", pointerOfString(" 0,5 "), parseFloat32); got != nil {
+			t.Errorf("got %v, want nil", *got)
+		}
+		if len(invalid) != 1 {
+			t.Fatalf("expected 1 invalid value, got %d", len(invalid))
+		}
+		mustEqual(t, "error", invalid[0].err().Error(), `invalid <priority> value "0,5"`)
+	})
+}
+
+func TestParseFloat32(t *testing.T) {
+	tests := []struct {
+		text    string
+		want    float32
+		wantErr bool
+	}{
+		{"0.5", 0.5, false},
+		{" 1.0\n", 1, false},
+		{"-2", -2, false},
+		{"", 0, false},
+		{" \t\n", 0, false},
+		{"0,5", 0, true},
+		{"high", 0, true},
+		{"1e40", 0, true},
+	}
+
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("%q", test.text), func(t *testing.T) {
+			got, err := parseFloat32(test.text)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, test.wantErr)
+			}
+			if err == nil {
+				mustEqual(t, "value", got, test.want)
+			}
+		})
+	}
+}
+
+func TestParseInt(t *testing.T) {
+	tests := []struct {
+		text    string
+		want    int
+		wantErr bool
+	}{
+		{"600", 600, false},
+		{" 42\n", 42, false},
+		{"+7", 7, false},
+		{"-3", -3, false},
+		{"", 0, false},
+		{" \t\n", 0, false},
+		{"1:30", 0, true},
+		{"1,234", 0, true},
+		{"12.5", 0, true},
+		{"99999999999999999999", 0, true},
+	}
+
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("%q", test.text), func(t *testing.T) {
+			got, err := parseInt(test.text)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, test.wantErr)
+			}
+			if err == nil {
+				mustEqual(t, "value", got, test.want)
+			}
+		})
+	}
+}
+
+func TestParseLastModTime(t *testing.T) {
+	tests := []struct {
+		text    string
+		want    time.Time
+		wantErr bool
+	}{
+		{"2024-01-15", time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC), false},
+		{" 2024-01-15T10:30:00Z\n", time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC), false},
+		{"", time.Time{}, false},
+		{" \t\n", time.Time{}, false},
+		{"2024-01-15T10:30:00", time.Time{}, true},
+		{"yesterday", time.Time{}, true},
+	}
+
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("%q", test.text), func(t *testing.T) {
+			got, err := parseLastModTime(test.text)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, test.wantErr)
+			}
+			if !got.Equal(test.want) {
+				t.Errorf("got %v, want %v", got.Time, test.want)
+			}
 		})
 	}
 }
