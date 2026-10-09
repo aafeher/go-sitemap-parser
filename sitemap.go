@@ -46,7 +46,8 @@ type (
 		urls        []URL
 		errs        []error
 		// sem is a per-Parse-call semaphore that bounds the number of
-		// concurrently running fetch goroutines when cfg.maxConcurrency > 0.
+		// sitemaps being fetched or parsed at the same time when
+		// cfg.maxConcurrency > 0.
 		// It is created at the start of ParseContext and is nil when
 		// concurrency is unlimited.
 		sem chan struct{}
@@ -335,7 +336,7 @@ func (s *S) SetFetchTimeout(fetchTimeout uint16) *S {
 }
 
 // SetMultiThread sets the multi-threading for the Sitemap Parser.
-// The multi-threading flag determines whether the parser should fetch URLs concurrently using goroutines.
+// The multi-threading flag determines whether the parser should fetch and parse the sitemaps concurrently using goroutines.
 // When it is off, the sitemaps are fetched one at a time and in the order they are listed, those
 // a robots.txt names as well as those of a sitemap index, and SetMaxConcurrency has no effect.
 // The function returns a pointer to the S structure to allow method chaining.
@@ -388,11 +389,13 @@ func (s *S) SetMaxDepth(maxDepth int) *S {
 	return s
 }
 
-// SetMaxConcurrency sets the maximum number of concurrent fetch goroutines used
-// when multi-threaded parsing is enabled. The default is 16. A value of 0 means
-// unlimited concurrency. A positive value caps the number of in-flight HTTP fetches
-// across the recursive sitemap-index traversal, which is recommended for very large
-// sitemap indexes to avoid goroutine and connection blow-up.
+// SetMaxConcurrency sets the maximum number of sitemaps that are worked on at the
+// same time when multi-threaded parsing is enabled. The default is 16. A value of 0 means
+// unlimited concurrency. A positive value caps the number of sitemaps that are being
+// fetched or parsed at any one time across the recursive sitemap-index traversal:
+// a sitemap counts from the moment its request is sent until its content is parsed.
+// That bounds the connections in use and the documents held in memory, which is
+// recommended for very large sitemap indexes to avoid goroutine and connection blow-up.
 // Negative values are rejected and a *ConfigError is recorded; a later call with a valid
 // value clears it.
 // The function returns a pointer to the S structure to allow method chaining.
@@ -558,7 +561,7 @@ func (s *S) GetMaxDepth() int {
 	return s.cfg.maxDepth
 }
 
-// GetMaxConcurrency returns the maximum number of concurrent fetch goroutines.
+// GetMaxConcurrency returns the maximum number of sitemaps fetched or parsed at the same time.
 // A value of 0 means unlimited concurrency.
 func (s *S) GetMaxConcurrency() int {
 	s.mu.Lock()
@@ -725,11 +728,8 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 		// so that every setting governing the fetches applies to them as well.
 		parseAndFetchUrls(ctx, locations, robotsTXTDepth)
 	} else {
-		s.mu.Lock()
-		mainURLContent := s.checkAndUnzipContent(servedFrom, []byte(s.mainURLContent))
-		s.mainURLContent = string(mainURLContent)
-		locations := s.parse(servedFrom, s.mainURLContent)
-		s.mu.Unlock()
+		var locations []string
+		s.mainURLContent, locations = s.parseDocument(servedFrom, []byte(s.mainURLContent))
 
 		parseAndFetchUrls(ctx, locations, 0)
 	}
@@ -1065,10 +1065,12 @@ func (s *S) withinMaxDepth(depth int) bool {
 
 // parseAndFetchUrlsMultiThread concurrently parses and fetches the URLs specified in the "locations" parameter.
 // It uses a sync.WaitGroup to wait for all fetch operations to complete.
-// For each location, it starts a goroutine that fetches the content using the fetch method of the S structure.
+// For each location, it starts a goroutine that fetches and parses the document with fetchAndParse.
+// A goroutine holds a concurrency slot while it does so, which makes the limit set with
+// SetMaxConcurrency the number of documents that are being fetched or parsed at any time. It gives
+// the slot back before it follows the sitemaps the document lists: the goroutines started for
+// those need slots themselves, and would wait for this one forever if it kept its slot.
 // If there is an error during the fetch operation, the error is appended to the "errs" field of the S structure.
-// The fetched content is then checked and uncompressed using the checkAndUnzipContent method of the S structure.
-// Finally, the uncompressed content is passed to the parse method of the S structure.
 // This method does not return any value.
 func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string, depth int) {
 	if !s.withinMaxDepth(depth) {
@@ -1098,7 +1100,7 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 				s.mu.Unlock()
 				return
 			}
-			content, servedFrom, err := s.fetch(ctx, loc)
+			parsedLocations, err := s.fetchAndParse(ctx, loc)
 			s.releaseSlot()
 			if err != nil {
 				s.mu.Lock()
@@ -1106,10 +1108,6 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 				s.mu.Unlock()
 				return
 			}
-			s.mu.Lock()
-			content = s.checkAndUnzipContent(servedFrom, content)
-			parsedLocations := s.parse(servedFrom, string(content))
-			s.mu.Unlock()
 			if len(parsedLocations) > 0 {
 				s.parseAndFetchUrlsMultiThread(ctx, parsedLocations, depth+1)
 			}
@@ -1119,10 +1117,8 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 }
 
 // parseAndFetchUrlsSequential sequentially parses and fetches the URLs specified in the "locations" parameter.
-// For each location, it fetches the content using the fetch method of the S structure.
+// For each location, it fetches and parses the document with fetchAndParse.
 // If there is an error during the fetch operation, the error is appended to the "errs" field of the S structure.
-// The fetched content is then checked and uncompressed using the checkAndUnzipContent method of the S structure.
-// Finally, the uncompressed content is passed to the parse method of the S structure.
 // This method does not return any value.
 func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string, depth int) {
 	if !s.withinMaxDepth(depth) {
@@ -1138,21 +1134,58 @@ func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string,
 			continue
 		}
 		s.mu.Unlock()
-		content, servedFrom, err := s.fetch(ctx, location)
+		parsedLocations, err := s.fetchAndParse(ctx, location)
 		if err != nil {
 			s.mu.Lock()
 			s.errs = append(s.errs, err)
 			s.mu.Unlock()
 			continue
 		}
-		s.mu.Lock()
-		content = s.checkAndUnzipContent(servedFrom, content)
-		parsedLocations := s.parse(servedFrom, string(content))
-		s.mu.Unlock()
 		if len(parsedLocations) > 0 {
 			s.parseAndFetchUrlsSequential(ctx, parsedLocations, depth+1)
 		}
 	}
+}
+
+// fetchAndParse fetches the sitemap at url and parses it.
+// It returns the sitemaps the document lists, or the error of the fetch.
+func (s *S) fetchAndParse(ctx context.Context, url string) ([]string, error) {
+	content, servedFrom, err := s.fetch(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	_, locations := s.parseDocument(servedFrom, content)
+
+	return locations, nil
+}
+
+// parseDocument unzips the content served from url if it is gzip content, and parses it.
+// It returns the content as it was parsed and the sitemaps the document lists.
+//
+// The work is done without holding s.mu. Unzipping and decoding a large document takes long, and
+// with the lock held for it the documents would be processed one at a time however many were
+// fetched concurrently, while every getter waited for the one being processed. The document is
+// therefore processed by an instance of its own, which no other goroutine has access to. That
+// instance has the settings of s as they stand when the work begins, so they are the same for
+// the whole document. What it collects is added to s with the lock held and in one step, which
+// keeps the URLs of a document together and in the order the document lists them.
+//
+// Must be called without s.mu held.
+func (s *S) parseDocument(url string, content []byte) (string, []string) {
+	s.mu.Lock()
+	document := &S{cfg: s.cfg}
+	s.mu.Unlock()
+
+	parsedContent := string(document.checkAndUnzipContent(url, content))
+	locations := document.parse(url, parsedContent)
+
+	s.mu.Lock()
+	s.sitemapLocations = append(s.sitemapLocations, document.sitemapLocations...)
+	s.urls = append(s.urls, document.urls...)
+	s.errs = append(s.errs, document.errs...)
+	s.mu.Unlock()
+
+	return parsedContent, locations
 }
 
 // newXMLDecoder returns a decoder for content that honours the encoding named in its XML
@@ -1554,7 +1587,8 @@ const maxRegexPatternLength = 1000
 // specification.
 const defaultMaxResponseSize = 50 * 1024 * 1024
 
-// defaultMaxConcurrency is the default maximum number of concurrent HTTP fetches per Parse call.
+// defaultMaxConcurrency is the default maximum number of sitemaps that are fetched or parsed at
+// the same time in a Parse call.
 // Limiting concurrency by default prevents unbounded goroutine and connection growth when parsing
 // large sitemap indexes. Pass 0 to SetMaxConcurrency to restore unlimited concurrency.
 const defaultMaxConcurrency = 16

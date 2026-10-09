@@ -131,11 +131,13 @@ See [`examples/maxdepth`](examples/maxdepth/main.go) for a runnable example.
 
 #### Max concurrency
 
-When multi-threaded parsing is enabled, the parser spawns one goroutine per sitemap location and per `robots.txt` sitemap directive. For very large sitemap indexes this can lead to a large number of concurrent goroutines and HTTP connections. To bound the maximum number of in-flight fetches across the whole `Parse()` / `ParseContext()` call, use the `SetMaxConcurrency()` function.
+When multi-threaded parsing is enabled, the parser spawns one goroutine per sitemap location and per `robots.txt` sitemap directive. For very large sitemap indexes this can lead to a large number of concurrent goroutines and HTTP connections. To bound the number of sitemaps that are worked on at the same time across the whole `Parse()` / `ParseContext()` call, use the `SetMaxConcurrency()` function.
 
 The value is an `int`:
 - `0`: unlimited concurrency.
-- a positive value: at most that many concurrent fetches will run at any time. The default is `16`.
+- a positive value: at most that many sitemaps are being fetched or parsed at any time. The default is `16`.
+
+A sitemap counts from the moment its request is sent until its content is parsed, so the limit bounds the connections that are open, the CPU cores that are busy and the documents that are held in memory at once. Parsing a sitemap takes several times the memory of the document itself; a lower limit trades speed for a smaller footprint.
 
 Negative values are rejected and an error is recorded in `GetErrors()`.
 
@@ -155,7 +157,9 @@ Cancelling the supplied `context.Context` while goroutines are queued for a slot
 By default, the package uses multi-threading to fetch and parse sitemaps concurrently.
 To set the multi-thread flag on/off, use the `SetMultiThread()` function.
 
-With multi-threading off, the sitemaps are fetched one at a time and in the order they are listed, so no more than one request is in flight at any time. This goes for the sitemaps a `robots.txt` names as well as for those of a sitemap index. `SetMaxConcurrency()` has no effect in this case.
+With multi-threading on, each sitemap is fetched, unzipped and decoded by a goroutine of its own, so the sitemaps of an index are parsed on as many CPU cores as `SetMaxConcurrency()` allows. The URLs of a sitemap stay together in `GetURLs()`, in the order the sitemap lists them; which sitemap comes first depends on which one is finished first.
+
+With multi-threading off, the sitemaps are fetched and parsed one at a time and in the order they are listed, so no more than one request is in flight at any time. This goes for the sitemaps a `robots.txt` names as well as for those of a sitemap index. `SetMaxConcurrency()` has no effect in this case.
 
 ```go
 s := sitemap.New()
@@ -312,7 +316,7 @@ Each configuration setting can be read back via a corresponding `Get*` method. A
 | `GetMultiThread()` | `bool` | Whether multi-threaded fetching is enabled |
 | `GetMaxResponseSize()` | `int64` | Maximum HTTP response size in bytes |
 | `GetMaxDepth()` | `int` | Maximum sitemap index recursion depth |
-| `GetMaxConcurrency()` | `int` | Maximum concurrent fetches (`0` = unlimited) |
+| `GetMaxConcurrency()` | `int` | Maximum number of sitemaps fetched or parsed at the same time (`0` = unlimited) |
 | `GetFollow()` | `[]string` | Copy of the follow regex pattern list |
 | `GetRules()` | `[]string` | Copy of the URL filter regex pattern list |
 | `GetHTTPClient()` | `*http.Client` | Custom HTTP client, or `nil` if using the default |
@@ -330,12 +334,14 @@ fmt.Println(s.GetStrict())         // true
 
 All public methods on `*S` are safe to call from multiple goroutines. Internal state (configuration, collected URLs, errors) is protected by a mutex.
 
+The mutex is not held while a sitemap is fetched, unzipped or decoded, only while what the sitemap yielded is added to the results. The getters can therefore be called while `Parse()` is running without waiting for it: `GetURLs()`, `GetURLCount()` and `GetErrors()` return what has been collected so far. The URLs of a sitemap appear all at once, when that sitemap has been parsed.
+
 However, two important constraints apply:
 
 - **Concurrent `Parse()` / `ParseContext()` calls on the same instance are serialised.** A second call blocks until the first completes. If you need to parse multiple sitemaps concurrently, create a separate `*S` instance per goroutine with `New()`.
 - **Configure before parsing.** Calling a `Set*` method while `Parse()` is running on the same instance is safe (the write is mutex-protected), but the outcome is non-deterministic — the new value may or may not be picked up mid-parse. Set all options before calling `Parse()`.
 
-**Deadlock note:** when `SetMaxConcurrency` is used together with a `robots.txt` entry that lists multiple sitemaps, the semaphore slot is released immediately after each HTTP fetch and before the recursive parse step. This prevents goroutines from holding a slot while waiting for a child fetch slot, which would otherwise deadlock.
+**Deadlock note:** a goroutine gives its `SetMaxConcurrency` slot back as soon as its sitemap is fetched and parsed, before the sitemaps that one lists are followed. This prevents goroutines from holding a slot while waiting for the goroutines of the child sitemaps to get one, which would otherwise deadlock when a `robots.txt` or a sitemap index leads to further sitemap indexes.
 
 ### Parse
 

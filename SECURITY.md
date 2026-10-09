@@ -46,7 +46,7 @@ A sitemap document can reference tens of thousands of child sitemaps or URLs. Wi
 
 - `SetMaxResponseSize()` caps the response body size per fetch and the decompressed size of gzip content (default: 50 MB, matching the sitemaps.org protocol limit).
 - `SetMaxDepth()` limits sitemap index recursion depth (default: 10).
-- `SetMaxConcurrency()` bounds concurrent HTTP fetches (default: 16).
+- `SetMaxConcurrency()` bounds the number of sitemaps that are fetched and parsed at the same time (default: 16), and with it the number of documents held in memory at once. `0` lifts the bound.
 - Pass a `context.Context` with a deadline via `ParseContext()` to enforce a wall-clock time limit.
 
 ### XML security

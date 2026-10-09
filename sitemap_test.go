@@ -6332,6 +6332,167 @@ func TestS_Parse_RobotsTXT_Follow(t *testing.T) {
 	}
 }
 
+// sitemapIndexServer starts a server whose /index.xml lists the given number of
+// sitemaps, /sitemap-0.xml and so on, each of which lists the given number of
+// pages: /sitemap-0/0 and so on. onSitemap, unless it is nil, is called for
+// every sitemap requested before the request is answered.
+func sitemapIndexServer(tb testing.TB, sitemaps, pages int, onSitemap func()) *httptest.Server {
+	tb.Helper()
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b strings.Builder
+		if r.URL.Path == "/index.xml" {
+			b.WriteString(`<sitemapindex>`)
+			for i := 0; i < sitemaps; i++ {
+				_, _ = fmt.Fprintf(&b, `<sitemap><loc>%s/sitemap-%d.xml</loc></sitemap>`, server.URL, i)
+			}
+			b.WriteString(`</sitemapindex>`)
+		} else {
+			if onSitemap != nil {
+				onSitemap()
+			}
+			b.WriteString(`<urlset>`)
+			for i := 0; i < pages; i++ {
+				_, _ = fmt.Fprintf(&b, `<url><loc>%s%s/%d</loc></url>`, server.URL, strings.TrimSuffix(r.URL.Path, ".xml"), i)
+			}
+			b.WriteString(`</urlset>`)
+		}
+		_, _ = w.Write([]byte(b.String()))
+	}))
+	tb.Cleanup(server.Close)
+
+	return server
+}
+
+// heldShare runs fn, and keeps trying the lock of s until fn returns. It
+// returns the share of the attempts that found the lock taken.
+func heldShare(s *S, fn func()) float64 {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+
+	var attempts, held float64
+	for {
+		attempts++
+		if s.mu.TryLock() {
+			s.mu.Unlock()
+		} else {
+			held++
+		}
+		select {
+		case <-done:
+			return held / attempts
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+// TestS_Parse_LockFreeWhileParsing verifies that the lock guarding the results
+// is not held while a document is decoded. Decoding is what a Parse call
+// spends its time on: with the lock held for it the getters would wait for as
+// long as a document takes, and the sitemaps fetched concurrently would still
+// be decoded one after the other.
+func TestS_Parse_LockFreeWhileParsing(t *testing.T) {
+	// Enough pages for decoding them to take up nearly all of the call.
+	const pages = 3000
+
+	server := sitemapIndexServer(t, 1, pages, nil)
+
+	var document strings.Builder
+	document.WriteString(`<urlset>`)
+	for i := 0; i < pages; i++ {
+		_, _ = fmt.Fprintf(&document, `<url><loc>https://example.com/%d</loc></url>`, i)
+	}
+	document.WriteString(`</urlset>`)
+
+	tests := []struct {
+		name        string
+		url         string
+		content     *string
+		multiThread bool
+	}{
+		{"document passed to Parse", "https://example.com/sitemap.xml", pointerOfString(document.String()), true},
+		{"sitemap of an index, sequential", server.URL + "/index.xml", nil, false},
+		{"sitemap of an index, multi-thread", server.URL + "/index.xml", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New().SetMultiThread(tt.multiThread)
+
+			var err error
+			share := heldShare(s, func() {
+				_, err = s.Parse(tt.url, tt.content)
+			})
+
+			if err != nil {
+				t.Fatalf("unexpected parse error: %v", err)
+			}
+			assertCounts(t, s, pages, 0)
+			// The lock is taken for a moment only, to add to the results what a document
+			// yielded. Held for the decoding, it is found taken nearly every time.
+			if share > 0.5 {
+				t.Errorf("the lock was held %.0f%% of the time a document was parsed", share*100)
+			}
+		})
+	}
+}
+
+// TestS_Parse_MaxConcurrency_CoversParsing verifies that a sitemap takes up
+// one of the slots set with SetMaxConcurrency until it is parsed, not only
+// while it is fetched: with a single slot, a sitemap is requested only when
+// everything the sitemaps requested before it list has been collected.
+func TestS_Parse_MaxConcurrency_CoversParsing(t *testing.T) {
+	const sitemaps, pages = 6, 500
+
+	s := New().SetMaxConcurrency(1)
+
+	var mu sync.Mutex
+	var collected []int64
+	server := sitemapIndexServer(t, sitemaps, pages, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		collected = append(collected, s.GetURLCount())
+	})
+
+	requireParse(t, s, server.URL+"/index.xml", nil)
+
+	assertCounts(t, s, sitemaps*pages, 0)
+	mustEqual(t, "sitemaps requested", len(collected), sitemaps)
+	for i, got := range collected {
+		mustEqual(t, fmt.Sprintf("URLs collected when sitemap request %d arrived", i+1), got, int64(i*pages))
+	}
+}
+
+// TestS_Parse_MultiThread_DocumentsStayTogether verifies that the URLs of a
+// sitemap are added to the results together and in the order the sitemap lists
+// them, however the sitemaps parsed concurrently finish.
+func TestS_Parse_MultiThread_DocumentsStayTogether(t *testing.T) {
+	const sitemaps, pages = 8, 250
+
+	server := sitemapIndexServer(t, sitemaps, pages, nil)
+
+	s := New().SetMaxConcurrency(0)
+	requireParse(t, s, server.URL+"/index.xml", nil)
+
+	assertCounts(t, s, sitemaps*pages, 0)
+	urls := s.GetURLs()
+	seen := make(map[string]struct{})
+	for block := 0; block < sitemaps; block++ {
+		// The first URL of a block tells which sitemap the block has to be of.
+		sitemapURL := strings.TrimSuffix(urls[block*pages].Loc, "/0")
+		seen[sitemapURL] = struct{}{}
+		for i := 0; i < pages; i++ {
+			mustEqual(t, fmt.Sprintf("URL %d of block %d", i, block), urls[block*pages+i].Loc, fmt.Sprintf("%s/%d", sitemapURL, i))
+		}
+	}
+	mustEqual(t, "sitemaps the blocks are of", len(seen), sitemaps)
+}
+
 func configsEqual(c1, c2 config) bool {
 	return c1.fetchTimeout == c2.fetchTimeout &&
 		c1.userAgent == c2.userAgent &&
