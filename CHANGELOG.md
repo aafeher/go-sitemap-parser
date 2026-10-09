@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `examples/follow`: runnable example of restricting the sitemaps that are fetched with `SetFollow()`, those a `robots.txt` names and those of a sitemap index
 - `examples/redirect`: runnable example of parsing a sitemap that is reached through a redirect, in tolerant and in strict mode. `README.md` gained a matching `Redirects` section
 - `examples/multithread`: runnable example of fetching the sitemaps of a `robots.txt` with multi-threading on and off. `README.md` describes what `SetMultiThread(false)` guarantees and links the example
 - `examples/reuse`: runnable example of reusing one instance for several `Parse()` calls and of correcting an invalid setting. `README.md` gained a matching `Reusing an instance` section
@@ -15,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/encoding`: runnable example of parsing a sitemap that is not UTF-8 encoded. `README.md` gained a matching `Character encoding` section, which also lists the limitations (UTF-16 / UTF-32 and the HTTP `Content-Type` charset are not supported)
 
 ### Changed
+- **`SetFollow()` filters the sitemaps a `robots.txt` names as well**, see `Security` below. Patterns written with only the entries of a sitemap index in mind have to match the sitemaps and sitemap indexes named in the `robots.txt` too, otherwise those are no longer fetched
+- The value of a `Sitemap:` line of a `robots.txt` is validated before it is fetched, the way the `<loc>` of a sitemap index entry is. A value that is not an HTTP or HTTPS URL is reported as a `*ValidationError` (`validate "ftp://example.com/sitemap.xml": unsupported scheme "ftp"`) without a request being attempted; it used to be reported as the `*NetworkError` of the failed request. A URL of more than 2,048 characters is rejected as well, it used to be fetched
+- In tolerant mode a relative `Sitemap:` value in a `robots.txt` (`Sitemap: /sitemap.xml`) is resolved against the URL of the `robots.txt` and fetched. It used to fail with `unsupported protocol scheme ""`. Strict mode rejects it as not being absolute. A sitemap on another host than the `robots.txt` is accepted in both modes, as before
 - In strict mode the URLs of a redirected sitemap are compared with the URL the sitemap was served from. URLs on the host and protocol the sitemap was requested at are therefore rejected when the redirect led to another host or protocol; they used to be the only ones accepted
 - Errors about a sitemap that was reached through a redirect name the URL the sitemap was served from instead of the URL that was requested. This concerns `*ParseError` and the `*ValidationError` for an entry without a location. A failed fetch is still reported as a `*NetworkError` naming the requested URL
 - When the context is already cancelled by the time the sitemaps of a `robots.txt` are to be fetched, none of them is attempted and nothing is recorded for them, as has been the case for the sitemaps of a sitemap index. `ParseContext()` still returns the context error. `GetErrors()` used to hold one `context canceled` error for every sitemap the `robots.txt` lists
@@ -40,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configuration errors can be corrected. A `*ConfigError` recorded by `SetFetchTimeout()`, `SetMaxResponseSize()`, `SetMaxDepth()`, `SetMaxConcurrency()`, `SetFollow()` or `SetRules()` used to stay in the error list for the lifetime of the instance, so a single invalid call made the instance permanently unusable even after the value was corrected. Each call to one of these setters now replaces the errors recorded by its previous call: a valid value clears them, and repeating an invalid value no longer accumulates duplicates
 
 ### Security
+- The patterns set with `SetFollow()` apply to the sitemaps a `robots.txt` names. They used to be applied to the entries of a sitemap index only, so every `Sitemap:` line of a `robots.txt` was requested whatever the patterns, although `SECURITY.md` recommends `SetFollow()` for restricting the requests the parser can be made to send (SSRF). `SECURITY.md` now also says what the patterns do not cover: the URL passed to `Parse()` and redirect targets
 - Gzip decompression is now capped at the `SetMaxResponseSize()` limit (default: 50 MB). Previously only the compressed HTTP response body was limited, so a small `.gz` response could expand without bound in memory (decompression bomb), contrary to what `SECURITY.md` stated. Decompression now stops as soon as the output exceeds the limit, and the content is rejected with a `*ParseError` (`decompressed size exceeds limit of N bytes`). The cap also applies to gzip content passed in through the `urlContent` argument of `Parse()` / `ParseContext()`
 
 ## [1.1.0] - 2026-09-21

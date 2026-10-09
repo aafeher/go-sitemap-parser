@@ -32,9 +32,13 @@ If a fix is warranted, a patched release will be published and you will be credi
 `Parse()` and `ParseContext()` issue HTTP requests to URLs found in the parsed document (sitemap indexes, `robots.txt` `Sitemap:` directives). In environments where the parser runs with access to internal networks, a malicious sitemap could direct it to probe internal endpoints (**SSRF**). Mitigations:
 
 - Supply a custom `*http.Client` via `SetHTTPClient()` with a transport that restricts reachable hosts or uses an egress proxy.
-- Use `SetFollow()` to restrict which sitemap URLs are followed.
+- Use `SetFollow()` to restrict which sitemap URLs are followed. The patterns apply to every sitemap URL found in a document: the entries of a sitemap index and the `Sitemap:` lines of a `robots.txt`. Versions up to and including v1.1.0 did not apply them to the `Sitemap:` lines of a `robots.txt`.
+  - Anchor the patterns. A pattern matches anywhere in the URL, so `example\.com` also matches `https://example.com.evil.test/sitemap.xml`; `^https://example\.com/` does not.
+  - The patterns are not applied to the URL passed to `Parse()`, and not to the URL a request is redirected to. Restrict redirects with the `CheckRedirect` of a custom `*http.Client`.
 - Use `SetMaxDepth()` to limit recursion depth (default: 10).
 - Use `SetMaxConcurrency()` to limit the number of concurrent outbound connections (default: 16).
+
+A URL found in a document is requested only if it is an `http` or `https` URL of at most 2,048 characters.
 
 ### Resource exhaustion
 

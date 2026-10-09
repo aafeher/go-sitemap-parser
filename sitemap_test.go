@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -5934,6 +5935,12 @@ func TestS_Parse_Redirect(t *testing.T) {
 				_, _ = fmt.Fprint(w, `<urlset><url><lastmod>2024-01-15</lastmod></url></urlset>`)
 			case "/corrupt.xml.gz":
 				_, _ = w.Write([]byte("\x1f\x8b\x08 not gzip"))
+			case "/old/robots.txt":
+				http.Redirect(w, r, "/new/robots.txt", http.StatusFound)
+			case "/new/robots.txt":
+				_, _ = fmt.Fprint(w, "Sitemap: sitemap.xml\n")
+			case "/new/sitemap.xml":
+				_, _ = fmt.Fprint(w, `<urlset><url><loc>page-4</loc></url></urlset>`)
 			default:
 				http.NotFound(w, r)
 			}
@@ -5975,6 +5982,11 @@ func TestS_Parse_Redirect(t *testing.T) {
 			name:     "redirected robots.txt",
 			url:      movedURL + "/robots.txt",
 			wantURLs: []string{targetURL + "/page-1", movedURL + "/page-2", targetURL + "/page-3"},
+		},
+		{
+			name:     "relative sitemap of a redirected robots.txt",
+			url:      targetURL + "/old/robots.txt",
+			wantURLs: []string{targetURL + "/new/page-4"},
 		},
 		{
 			name:     "strict mode, redirected sitemap",
@@ -6030,6 +6042,292 @@ func TestS_Parse_Redirect(t *testing.T) {
 				assertStringSlice(t, "URLs", sortedCopy(gotURLs), sortedCopy(tt.wantURLs))
 				assertStringSlice(t, "errors", sortedCopy(gotErrs), sortedCopy(tt.wantErrs))
 			})
+		}
+	}
+}
+
+// TestS_robotsTXTSitemapLocations verifies which of the sitemaps a robots.txt
+// names are fetched. What a Sitemap line holds is resolved, validated and
+// matched against the follow patterns like the <loc> of a sitemap index entry,
+// except that a robots.txt may name a sitemap of another host in strict mode
+// as well.
+func TestS_robotsTXTSitemapLocations(t *testing.T) {
+	const robotsTXTURL = "https://example.com/robots.txt"
+	tooLong := "https://example.com/" + strings.Repeat("a", maxLocLength)
+	tooLongErr := fmt.Sprintf(`validate %q: URL exceeds maximum length of %d characters (%d)`, tooLong, maxLocLength, len(tooLong))
+
+	tests := []struct {
+		name   string
+		strict bool
+		follow []string
+		// sitemaps holds the values of the Sitemap lines of the robots.txt.
+		sitemaps []string
+		want     []string
+		wantErrs []string
+	}{
+		{
+			name: "no Sitemap line",
+		},
+		{
+			name:     "absolute URLs",
+			sitemaps: []string{"https://example.com/sitemap.xml", "https://example.com/news.xml.gz"},
+			want:     []string{"https://example.com/sitemap.xml", "https://example.com/news.xml.gz"},
+		},
+		{
+			name:     "absolute URLs, strict mode",
+			strict:   true,
+			sitemaps: []string{"https://example.com/sitemap.xml", "https://example.com/news.xml.gz"},
+			want:     []string{"https://example.com/sitemap.xml", "https://example.com/news.xml.gz"},
+		},
+		{
+			name:     "sitemaps of another host and protocol",
+			sitemaps: []string{"https://cdn.example.net/sitemap.xml", "http://example.com/sitemap.xml"},
+			want:     []string{"https://cdn.example.net/sitemap.xml", "http://example.com/sitemap.xml"},
+		},
+		{
+			name:     "sitemaps of another host and protocol, strict mode",
+			strict:   true,
+			sitemaps: []string{"https://cdn.example.net/sitemap.xml", "http://example.com/sitemap.xml"},
+			want:     []string{"https://cdn.example.net/sitemap.xml", "http://example.com/sitemap.xml"},
+		},
+		{
+			name:     "relative URLs are resolved",
+			sitemaps: []string{"/sitemap.xml", "maps/news.xml", "//cdn.example.net/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml", "https://example.com/maps/news.xml", "https://cdn.example.net/sitemap.xml"},
+		},
+		{
+			name:     "relative URLs are rejected in strict mode",
+			strict:   true,
+			sitemaps: []string{"/sitemap.xml", "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml"},
+			wantErrs: []string{`validate "/sitemap.xml": strict mode: unsupported scheme ""`},
+		},
+		{
+			name:     "URLs that are not HTTP(S)",
+			sitemaps: []string{"ftp://example.com/sitemap.xml", "file:///etc/passwd", "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml"},
+			wantErrs: []string{
+				`validate "ftp://example.com/sitemap.xml": unsupported scheme "ftp"`,
+				`validate "file:///etc/passwd": unsupported scheme "file"`,
+			},
+		},
+		{
+			name:     "URLs that are not HTTP(S), strict mode",
+			strict:   true,
+			sitemaps: []string{"ftp://example.com/sitemap.xml", "file:///etc/passwd", "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml"},
+			wantErrs: []string{
+				`validate "ftp://example.com/sitemap.xml": strict mode: unsupported scheme "ftp"`,
+				`validate "file:///etc/passwd": strict mode: unsupported scheme "file"`,
+			},
+		},
+		{
+			name:     "URL without a host, strict mode",
+			strict:   true,
+			sitemaps: []string{"https:///sitemap.xml"},
+			wantErrs: []string{`validate "https:///sitemap.xml": strict mode: missing host`},
+		},
+		{
+			name:     "URL that is too long",
+			sitemaps: []string{tooLong, "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml"},
+			wantErrs: []string{tooLongErr},
+		},
+		{
+			name:     "URL that is too long, strict mode",
+			strict:   true,
+			sitemaps: []string{tooLong, "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml"},
+			wantErrs: []string{tooLongErr},
+		},
+		{
+			name:     "URL that cannot be parsed",
+			sitemaps: []string{"https://example.com/%zz.xml", "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml"},
+			wantErrs: []string{`validate "https://example.com/%zz.xml": parse "https://example.com/%zz.xml": invalid URL escape "%zz"`},
+		},
+		{
+			name:   "follow patterns",
+			follow: []string{`/sitemap-products`, `\.gz$`},
+			sitemaps: []string{
+				"https://example.com/sitemap-products.xml",
+				"https://example.com/sitemap-blog.xml",
+				"https://example.com/archive.xml.gz",
+				"https://internal.example/admin.xml",
+			},
+			want: []string{"https://example.com/sitemap-products.xml", "https://example.com/archive.xml.gz"},
+		},
+		{
+			name:     "follow patterns, strict mode",
+			strict:   true,
+			follow:   []string{`^https://example\.com/`},
+			sitemaps: []string{"https://example.com/sitemap.xml", "https://internal.example/admin.xml"},
+			want:     []string{"https://example.com/sitemap.xml"},
+		},
+		{
+			name:     "follow patterns are matched against the resolved URL",
+			follow:   []string{`^https://example\.com/maps/`},
+			sitemaps: []string{"/maps/news.xml", "/other/news.xml"},
+			want:     []string{"https://example.com/maps/news.xml"},
+		},
+		{
+			name:     "a value that is rejected is reported whatever the follow patterns",
+			follow:   []string{`\.xml$`},
+			sitemaps: []string{"ftp://example.com/sitemap.xml"},
+			wantErrs: []string{`validate "ftp://example.com/sitemap.xml": unsupported scheme "ftp"`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var robotsTXT strings.Builder
+			for _, sitemap := range tt.sitemaps {
+				_, _ = fmt.Fprintf(&robotsTXT, "Sitemap: %s\n", sitemap)
+			}
+
+			s := New().SetStrict(tt.strict).SetFollow(tt.follow)
+			s.parseRobotsTXT(robotsTXT.String())
+			got := s.robotsTXTSitemapLocations(robotsTXTURL)
+
+			var gotErrs []string
+			for _, err := range s.GetErrors() {
+				gotErrs = append(gotErrs, err.Error())
+			}
+			assertStringSlice(t, "locations", got, tt.want)
+			assertStringSlice(t, "errors", gotErrs, tt.wantErrs)
+		})
+	}
+}
+
+// TestS_Parse_RobotsTXT_Follow verifies that the sitemaps a robots.txt names
+// pass the checks the sitemaps of a sitemap index pass before a request is
+// made for them: a Sitemap line that does not hold a URL to fetch is reported
+// and not requested, and neither is a sitemap requested that the follow
+// patterns leave out.
+func TestS_Parse_RobotsTXT_Follow(t *testing.T) {
+	var mu sync.Mutex
+	var requested []string
+	record := func(r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		requested = append(requested, "http://"+r.Host+r.URL.Path)
+	}
+
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		_, _ = fmt.Fprintf(w, `<urlset><url><loc>http://%s/secret</loc></url></urlset>`, r.Host)
+	}))
+	defer internal.Close()
+
+	robotsTXT := func(host string) string {
+		return fmt.Sprintf("Sitemap: http://%[1]s/sitemap-products.xml\n"+
+			"Sitemap: http://%[1]s/sitemap-blog.xml\n"+
+			"Sitemap: /sitemap-relative.xml\n"+
+			"Sitemap: %[2]s/admin/sitemap.xml\n"+
+			"Sitemap: ftp://%[1]s/sitemap.xml\n", host, internal.URL)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/robots.txt" {
+			_, _ = fmt.Fprint(w, robotsTXT(r.Host))
+			return
+		}
+		record(r)
+		_, _ = fmt.Fprintf(w, `<urlset><url><loc>http://%s%s/page</loc></url></urlset>`, r.Host, r.URL.Path)
+	}))
+	defer server.Close()
+	host := strings.TrimPrefix(server.URL, "http://")
+
+	products, blog, relative := server.URL+"/sitemap-products.xml", server.URL+"/sitemap-blog.xml", server.URL+"/sitemap-relative.xml"
+	admin := internal.URL + "/admin/sitemap.xml"
+	notHTTP := fmt.Sprintf(`validate "ftp://%s/sitemap.xml": unsupported scheme "ftp"`, host)
+	notHTTPStrict := fmt.Sprintf(`validate "ftp://%s/sitemap.xml": strict mode: unsupported scheme "ftp"`, host)
+	notAbsolute := `validate "/sitemap-relative.xml": strict mode: unsupported scheme ""`
+
+	tests := []struct {
+		name   string
+		strict bool
+		follow []string
+		// wantRequested holds the sitemaps requested, wantURLs the pages found in them.
+		wantRequested []string
+		wantURLs      []string
+		wantErrs      []string
+	}{
+		{
+			name:          "no follow patterns",
+			wantRequested: []string{products, blog, relative, admin},
+			wantURLs:      []string{products + "/page", blog + "/page", relative + "/page", internal.URL + "/secret"},
+			wantErrs:      []string{notHTTP},
+		},
+		{
+			name:          "no follow patterns, strict mode",
+			strict:        true,
+			wantRequested: []string{products, blog, admin},
+			wantURLs:      []string{products + "/page", blog + "/page", internal.URL + "/secret"},
+			wantErrs:      []string{notAbsolute, notHTTPStrict},
+		},
+		{
+			name:          "sitemaps of one host only",
+			follow:        []string{"^" + regexp.QuoteMeta(server.URL) + "/"},
+			wantRequested: []string{products, blog, relative},
+			wantURLs:      []string{products + "/page", blog + "/page", relative + "/page"},
+			wantErrs:      []string{notHTTP},
+		},
+		{
+			name:          "one sitemap only",
+			follow:        []string{`/sitemap-products\.xml$`},
+			wantRequested: []string{products},
+			wantURLs:      []string{products + "/page"},
+			wantErrs:      []string{notHTTP},
+		},
+		{
+			name:          "one sitemap only, strict mode",
+			strict:        true,
+			follow:        []string{`/sitemap-products\.xml$`},
+			wantRequested: []string{products},
+			wantURLs:      []string{products + "/page"},
+			wantErrs:      []string{notAbsolute, notHTTPStrict},
+		},
+		{
+			name:     "no sitemap matches",
+			follow:   []string{`/sitemap-none\.xml$`},
+			wantErrs: []string{notHTTP},
+		},
+	}
+
+	for _, tt := range tests {
+		for _, multiThread := range []bool{false, true} {
+			for _, passContent := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s, multiThread=%v, passContent=%v", tt.name, multiThread, passContent), func(t *testing.T) {
+					mu.Lock()
+					requested = nil
+					mu.Unlock()
+
+					var content *string
+					if passContent {
+						content = pointerOfString(robotsTXT(host))
+					}
+					s := New().SetStrict(tt.strict).SetFollow(tt.follow).SetMultiThread(multiThread)
+					requireParse(t, s, server.URL+"/robots.txt", content)
+
+					var gotURLs, gotErrs []string
+					for _, u := range s.GetURLs() {
+						gotURLs = append(gotURLs, u.Loc)
+					}
+					for _, err := range s.GetErrors() {
+						gotErrs = append(gotErrs, err.Error())
+						var validationErr *ValidationError
+						if !errors.As(err, &validationErr) {
+							t.Errorf("error %q: got %T, want *ValidationError", err, err)
+						}
+					}
+					mu.Lock()
+					gotRequested := sortedCopy(requested)
+					mu.Unlock()
+					assertStringSlice(t, "sitemaps requested", gotRequested, sortedCopy(tt.wantRequested))
+					assertStringSlice(t, "URLs", sortedCopy(gotURLs), sortedCopy(tt.wantURLs))
+					assertStringSlice(t, "errors", sortedCopy(gotErrs), sortedCopy(tt.wantErrs))
+				})
+			}
 		}
 	}
 }

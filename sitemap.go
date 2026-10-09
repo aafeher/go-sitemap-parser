@@ -410,6 +410,8 @@ func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
 }
 
 // SetFollow sets the follow patterns using the provided list of regex strings and compiles them into regex objects.
+// When patterns are set, only the sitemaps whose URL matches one of them are fetched, whether a
+// sitemap index lists them or a robots.txt names them. The URL passed to Parse is always fetched.
 // Patterns longer than maxRegexPatternLength characters are rejected with a *ConfigError.
 // Any errors encountered during compilation are recorded as *ConfigError values.
 // Each call replaces both the patterns and the errors recorded by the previous call.
@@ -714,11 +716,14 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	}
 
 	if strings.HasSuffix(s.mainURL, "/robots.txt") {
+		s.mu.Lock()
 		s.parseRobotsTXT(s.mainURLContent)
+		locations := s.robotsTXTSitemapLocations(servedFrom)
+		s.mu.Unlock()
 
 		// The sitemaps a robots.txt lists are fetched the way those of a sitemap index are,
 		// so that every setting governing the fetches applies to them as well.
-		parseAndFetchUrls(ctx, s.robotsTxtSitemapURLs, robotsTXTDepth)
+		parseAndFetchUrls(ctx, locations, robotsTXTDepth)
 	} else {
 		s.mu.Lock()
 		mainURLContent := s.checkAndUnzipContent(servedFrom, []byte(s.mainURLContent))
@@ -834,7 +839,8 @@ func (s *S) setContent(ctx context.Context, urlContent *string) (string, string,
 // (case-insensitive). UTF-8 BOM at the beginning of the file is stripped, lines
 // starting with "#" are treated as comments and skipped, and any inline comment
 // (text following an unescaped "#") is removed before extracting the URL.
-// If a valid URL is found, it is appended to the robotsTxtSitemapURLs slice.
+// A value that is not empty is appended to the robotsTxtSitemapURLs slice as it stands in the
+// file; whether it is a URL to fetch is decided by robotsTXTSitemapLocations.
 // The method does not return any values, but it updates the robotsTxtSitemapURLs field of the S struct.
 func (s *S) parseRobotsTXT(robotsTXTContent string) {
 	// Strip UTF-8 BOM if present at the very beginning of the file.
@@ -861,6 +867,31 @@ func (s *S) parseRobotsTXT(robotsTXTContent string) {
 			s.robotsTxtSitemapURLs = append(s.robotsTxtSitemapURLs, url)
 		}
 	}
+}
+
+// robotsTXTSitemapLocations returns the sitemaps to fetch of the ones a robots.txt names.
+// What its Sitemap lines hold comes from the document just like the <loc> of a sitemap index
+// entry does, and is treated the same way before anything is fetched: it is resolved and
+// validated, a value that is rejected is skipped and reported, and a URL that matches none of
+// the patterns set with SetFollow is skipped.
+// url is the URL the robots.txt was served from.
+// Must be called with s.mu held.
+func (s *S) robotsTXTSitemapLocations(url string) []string {
+	var locations []string
+	for _, sitemapURL := range s.robotsTxtSitemapURLs {
+		// A robots.txt may name a sitemap of any host: that is how the protocol has the
+		// owner of a host approve of a sitemap kept elsewhere.
+		location, err := s.resolveAndValidate(sitemapURL, url, false)
+		if err != nil {
+			s.errs = append(s.errs, err)
+			continue
+		}
+		if !s.matchesFollowFilter(location) {
+			continue
+		}
+		locations = append(locations, location)
+	}
+	return locations
 }
 
 // acquireSlot blocks until a concurrency slot is available, or returns the
@@ -1764,6 +1795,14 @@ func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, 
 // the request for it began at.
 // Returns the resolved URL string and an error if validation fails.
 func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
+	return s.resolveAndValidate(loc, baseURL, true)
+}
+
+// resolveAndValidate resolves and validates a URL found in the document served from baseURL.
+// It does what resolveAndValidateLoc is documented to do. sameHost tells whether the URL has to
+// be on the host and protocol of baseURL in strict mode: the URLs listed in a sitemap have to,
+// the sitemaps named in a robots.txt do not.
+func (s *S) resolveAndValidate(loc string, baseURL string, sameHost bool) (string, error) {
 	if loc == "" {
 		return loc, &ValidationError{URL: baseURL, Err: errors.New("<loc> of an entry is empty or missing")}
 	}
@@ -1785,10 +1824,10 @@ func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
 		if parsed.Host == "" {
 			return loc, &ValidationError{URL: loc, Err: errors.New("strict mode: missing host")}
 		}
-		if parsed.Scheme != base.Scheme {
+		if sameHost && parsed.Scheme != base.Scheme {
 			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: scheme %q does not match sitemap scheme %q", parsed.Scheme, base.Scheme)}
 		}
-		if parsed.Host != base.Host {
+		if sameHost && parsed.Host != base.Host {
 			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: host %q does not match sitemap host %q", parsed.Host, base.Host)}
 		}
 		if len(loc) > maxLocLength {

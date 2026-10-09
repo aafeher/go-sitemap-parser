@@ -171,9 +171,11 @@ See [`examples/multithread`](examples/multithread/main.go) for a runnable exampl
 #### Follow rules
 
 To set the follow rules, use the `SetFollow()` function. It should be specified a `[]string` value.
-It is a list of regular expressions. When parsing a sitemap index, only sitemaps with a `loc` that matches one of these expressions will be followed and parsed.
-If no follow rules are provided, all sitemaps in the index are followed.
+It is a list of regular expressions. Only the sitemaps whose URL matches one of these expressions are fetched and parsed, whether a sitemap index lists them or a `robots.txt` names them. A sitemap index that is not followed takes the sitemaps it lists with it. The URL passed to `Parse()` is always fetched.
+If no follow rules are provided, all sitemaps are followed.
 Patterns longer than 1,000 characters are rejected and reported via `GetErrors()`.
+
+The expressions are matched against the absolute URL of a sitemap, a relative one being resolved first. They match anywhere in the URL unless they are anchored: `example\.com` also matches `https://example.com.evil.test/sitemap.xml`, `^https://example\.com/` does not.
 
 ```go
 s := sitemap.New()
@@ -189,6 +191,8 @@ s := sitemap.New().SetFollow([]string{
 	`\.xml\.gz$`,
 })
 ```
+
+See [`examples/follow`](examples/follow/main.go) for a runnable example.
 
 #### URL rules
 
@@ -266,6 +270,12 @@ validate "https://example.com/sitemap.xml": <loc> of an entry is empty or missin
 ```
 
 An RSS `<item>` without a `<link>` and an Atom `<entry>` without a link are skipped without an error, since a feed item is not required to have one.
+
+The sitemaps a `robots.txt` names are checked before they are fetched as well. The value of a `Sitemap:` line has to be an HTTP or HTTPS URL of at most 2,048 characters. Tolerant mode resolves a relative one against the URL of the `robots.txt`, strict mode requires an absolute one. The sitemap may be on another host than the `robots.txt` in both modes, which the protocol allows. A value that is rejected is skipped and reported as a `*ValidationError`:
+
+```
+validate "ftp://example.com/sitemap.xml": unsupported scheme "ftp"
+```
 
 A value that cannot be parsed never costs more than its own entry. The numbers and dates of the extensions (`<video:duration>`, `<video:rating>`, `<video:view_count>`, `<video:expiration_date>`, `<video:publication_date>`, `<news:publication_date>`) are treated the same way in both modes: the field is left unset (`nil`) and the entry is kept. Every such value is reported via `GetErrors()` as a `*ValidationError` for the page it belongs to:
 

@@ -16,6 +16,10 @@ import (
 // than from the base URL.
 const fuzzBaseURL = "https://example.com/sitemap.xml"
 
+// fuzzRobotsTXTURL is the URL that fuzzed robots.txt content is treated as
+// having been fetched from.
+const fuzzRobotsTXTURL = "https://example.com/robots.txt"
+
 // addFileSeeds adds every file in test/ matching pattern to the fuzz corpus.
 // Seeding from the real fixtures gives the fuzzer valid structures to mutate,
 // which reaches the deeper parser branches far sooner than random input would.
@@ -229,6 +233,10 @@ func FuzzParseRobotsTXT(f *testing.F) {
 		"# Sitemap: https://example.com/commented-out.xml\n",
 		"Sitemap:\n",
 		"Sitemap: #only-a-comment\n",
+		"Sitemap: /relative.xml\nSitemap: maps/relative.xml\nSitemap: //cdn.example.net/sitemap.xml\n",
+		"Sitemap: ftp://example.com/sitemap.xml\nSitemap: file:///etc/passwd\nSitemap: javascript:alert(1)\n",
+		"Sitemap: https://example.com/" + strings.Repeat("a", maxLocLength+100) + "\n",
+		"Sitemap: https://example.com/%zz.xml\n",
 		"",
 	}
 	for _, seed := range seeds {
@@ -250,7 +258,33 @@ func FuzzParseRobotsTXT(f *testing.F) {
 				t.Fatalf("parseRobotsTXT left an inline comment in %q", url)
 			}
 		}
+
+		// Whatever the Sitemap lines hold, the sitemaps that end up being
+		// fetched satisfy the URL invariants in both modes, and deciding on
+		// them is deterministic.
+		for _, strict := range []bool{false, true} {
+			mode := "tolerant"
+			if strict {
+				mode = "strict"
+			}
+
+			locs := robotsTXTLocs(strict, content)
+			assertLocInvariants(t, mode, locs)
+
+			if again := robotsTXTLocs(strict, content); !slicesEqual(locs, again) {
+				t.Fatalf("%s mode: result is not deterministic: %q vs %q", mode, locs, again)
+			}
+		}
 	})
+}
+
+// robotsTXTLocs returns the sitemaps that are fetched of the ones the given
+// robots.txt content names.
+func robotsTXTLocs(strict bool, content string) []string {
+	s := New().SetStrict(strict)
+	s.parseRobotsTXT(content)
+
+	return s.robotsTXTSitemapLocations(fuzzRobotsTXTURL)
 }
 
 // slicesEqual reports whether two string slices hold the same values in the
