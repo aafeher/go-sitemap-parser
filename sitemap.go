@@ -336,6 +336,8 @@ func (s *S) SetFetchTimeout(fetchTimeout uint16) *S {
 
 // SetMultiThread sets the multi-threading for the Sitemap Parser.
 // The multi-threading flag determines whether the parser should fetch URLs concurrently using goroutines.
+// When it is off, the sitemaps are fetched one at a time and in the order they are listed, those
+// a robots.txt names as well as those of a sitemap index, and SetMaxConcurrency has no effect.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMultiThread(multiThread bool) *S {
 	s.mu.Lock()
@@ -654,7 +656,6 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	}
 
 	var err error
-	var wg sync.WaitGroup
 
 	s.mu.Lock()
 	// Every call starts from a clean state, so nothing collected by a previous call carries
@@ -708,43 +709,9 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	if strings.HasSuffix(s.mainURL, "/robots.txt") {
 		s.parseRobotsTXT(s.mainURLContent)
 
-		s.mu.Lock()
-		for _, robotsTXTSitemapURL := range s.robotsTxtSitemapURLs {
-			if !s.markFetched(robotsTXTSitemapURL) {
-				continue
-			}
-			wg.Add(1)
-			rTXTsmURL := robotsTXTSitemapURL
-			go func() {
-				defer wg.Done()
-
-				// acquireSlot also honours ctx cancellation, so a single check
-				// here covers both the unlimited-concurrency and bounded paths.
-				if err := s.acquireSlot(ctx); err != nil {
-					s.mu.Lock()
-					s.errs = append(s.errs, err)
-					s.mu.Unlock()
-					return
-				}
-
-				robotsTXTSitemapContent, err := s.fetch(ctx, rTXTsmURL)
-				s.releaseSlot()
-				if err != nil {
-					s.mu.Lock()
-					s.errs = append(s.errs, err)
-					s.mu.Unlock()
-					return
-				}
-
-				s.mu.Lock()
-				robotsTXTSitemapContent = s.checkAndUnzipContent(rTXTsmURL, robotsTXTSitemapContent)
-				locations := s.parse(rTXTsmURL, string(robotsTXTSitemapContent))
-				s.mu.Unlock()
-
-				parseAndFetchUrls(ctx, locations, 0)
-			}()
-		}
-		s.mu.Unlock()
+		// The sitemaps a robots.txt lists are fetched the way those of a sitemap index are,
+		// so that every setting governing the fetches applies to them as well.
+		parseAndFetchUrls(ctx, s.robotsTxtSitemapURLs, robotsTXTDepth)
 	} else {
 		s.mu.Lock()
 		mainURLContent := s.checkAndUnzipContent(s.mainURL, []byte(s.mainURLContent))
@@ -754,8 +721,6 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 
 		parseAndFetchUrls(ctx, locations, 0)
 	}
-
-	wg.Wait()
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return s, ctxErr
@@ -1529,6 +1494,12 @@ const defaultMaxResponseSize = 50 * 1024 * 1024
 // Limiting concurrency by default prevents unbounded goroutine and connection growth when parsing
 // large sitemap indexes. Pass 0 to SetMaxConcurrency to restore unlimited concurrency.
 const defaultMaxConcurrency = 16
+
+// robotsTXTDepth is the depth at which the sitemaps listed in a robots.txt are fetched: one
+// level above 0, the depth of the sitemaps a sitemap index names. A sitemap listed in a
+// robots.txt stands where the main URL of a call does when that is a sitemap itself, and
+// fetching the main URL does not count towards the limit set with SetMaxDepth either.
+const robotsTXTDepth = -1
 
 // validatePriority validates the <priority> value of a URL entry.
 // In strict mode, the value must be between 0.0 and 1.0 inclusive per the sitemaps.org specification.

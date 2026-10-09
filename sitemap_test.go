@@ -5447,11 +5447,11 @@ func TestS_ParseContext_NilContext(t *testing.T) {
 }
 
 func TestS_ParseContext_PreCancelled_RobotsTXT(t *testing.T) {
-	// Covers:
-	//   - the early `ctx.Err()` check inside the robots.txt goroutine
-	//   - the final `if ctxErr := ctx.Err(); ctxErr != nil { return s, ctxErr }`
+	// Covers the final `if ctxErr := ctx.Err(); ctxErr != nil { return s, ctxErr }`
+	// on the robots.txt path: with the context already cancelled, none of the
+	// sitemaps the robots.txt lists is fetched.
 	// We pre-supply the robots.txt body via urlContent so setContent does not
-	// perform an HTTP fetch (which would fail before reaching the goroutine).
+	// perform an HTTP fetch (which would fail before the sitemaps are reached).
 	robots := "Sitemap: http://127.0.0.1:1/sitemap.xml\n"
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -5633,8 +5633,8 @@ func TestS_ParseContext_MaxConcurrency_Bounded(t *testing.T) {
 }
 
 func TestS_ParseContext_MaxConcurrency_RobotsTXT_CtxCancel(t *testing.T) {
-	// Pre-cancelled ctx + maxConcurrency=1 + a saturated semaphore forces
-	// the robots.txt goroutine onto the acquireSlot ctx-cancel branch.
+	// Pre-cancelled ctx + maxConcurrency=1: the context error is returned
+	// with a bounded number of fetch slots as well.
 	robots := "Sitemap: http://127.0.0.1:1/sitemap.xml\n"
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -5648,8 +5648,8 @@ func TestS_ParseContext_MaxConcurrency_RobotsTXT_CtxCancel(t *testing.T) {
 
 func TestS_ParseContext_RobotsTXT_Deadlock(t *testing.T) {
 	// This test reproduces the deadlock scenario where a robots.txt sitemap
-	// points to a sitemap index, and maxConcurrency is 1. The initial fetch
-	// in the robots.txt goroutine must release its semaphore slot before
+	// points to a sitemap index, and maxConcurrency is 1. The goroutine that
+	// fetches the sitemap index must release its semaphore slot before
 	// recursively calling parseAndFetchUrlsMultiThread, otherwise the nested
 	// goroutines will block forever waiting for the single slot.
 	server := testServer()
@@ -5672,6 +5672,148 @@ func TestS_ParseContext_RobotsTXT_Deadlock(t *testing.T) {
 
 	if s.GetURLCount() == 0 {
 		t.Error("expected URLs to be parsed, but got 0")
+	}
+}
+
+// TestS_Parse_RobotsTXT_MultiThread verifies that the sitemaps a robots.txt
+// lists are fetched the way SetMultiThread asks for: one at a time and in the
+// order they are listed when it is off, concurrently when it is on.
+func TestS_Parse_RobotsTXT_MultiThread(t *testing.T) {
+	const sitemaps = 4
+
+	tests := []struct {
+		name           string
+		multiThread    bool
+		maxConcurrency int
+		// passContent tells whether the robots.txt is handed to Parse or fetched by it.
+		passContent bool
+		// wantInFlight is the highest number of sitemap requests in flight at once.
+		wantInFlight int
+	}{
+		{"sequential, fetched robots.txt", false, defaultMaxConcurrency, false, 1},
+		{"sequential, robots.txt passed as content", false, defaultMaxConcurrency, true, 1},
+		{"multi-thread, fetched robots.txt", true, 0, false, sitemaps},
+		{"multi-thread, robots.txt passed as content", true, 0, true, sitemaps},
+		{"multi-thread, two fetches at most", true, 2, false, 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// A request for a sitemap is held until as many requests have been
+			// in flight at once as the test expects at most, two at least, or
+			// until hold has passed. Fetched one at a time, no second request
+			// ever joins the first, so hold is short; fetched concurrently, the
+			// requests let each other go at once and hold is only a safety net.
+			hold := 10 * time.Millisecond
+			if tt.multiThread {
+				hold = 5 * time.Second
+			}
+			var mu sync.Mutex
+			inFlight, maxInFlight := 0, 0
+			overlapped := make(chan struct{})
+			var overlappedOnce sync.Once
+
+			var srv *httptest.Server
+			robots := func() string {
+				var b strings.Builder
+				for i := range sitemaps {
+					_, _ = fmt.Fprintf(&b, "Sitemap: %s/sitemap-%d.xml\n", srv.URL, i)
+				}
+				return b.String()
+			}
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/robots.txt" {
+					_, _ = fmt.Fprint(w, robots())
+					return
+				}
+
+				mu.Lock()
+				inFlight++
+				maxInFlight = max(maxInFlight, inFlight)
+				if inFlight >= max(tt.wantInFlight, 2) {
+					overlappedOnce.Do(func() { close(overlapped) })
+				}
+				mu.Unlock()
+
+				select {
+				case <-overlapped:
+				case <-time.After(hold):
+				}
+
+				mu.Lock()
+				inFlight--
+				mu.Unlock()
+				_, _ = fmt.Fprintf(w, `<urlset><url><loc>%s%s/page</loc></url></urlset>`, srv.URL, r.URL.Path)
+			}))
+			defer srv.Close()
+
+			var content *string
+			if tt.passContent {
+				content = pointerOfString(robots())
+			}
+			s := New().SetMultiThread(tt.multiThread).SetMaxConcurrency(tt.maxConcurrency)
+			requireParse(t, s, srv.URL+"/robots.txt", content)
+
+			assertCounts(t, s, sitemaps, 0)
+			mu.Lock()
+			got := maxInFlight
+			mu.Unlock()
+			mustEqual(t, "requests in flight at once", got, tt.wantInFlight)
+
+			if !tt.multiThread {
+				for i, u := range s.GetURLs() {
+					mustEqual(t, fmt.Sprintf("URL %d", i), u.Loc, fmt.Sprintf("%s/sitemap-%d.xml/page", srv.URL, i))
+				}
+			}
+		})
+	}
+}
+
+// TestS_Parse_RobotsTXT_MaxDepth verifies that a robots.txt does not count
+// towards the depth limit: the sitemaps it lists are followed as deep as the
+// main URL of a call is when that is a sitemap index itself.
+func TestS_Parse_RobotsTXT_MaxDepth(t *testing.T) {
+	// robots.txt -> index.xml -> pages.xml (one URL)
+	//                         -> nested.xml -> deep.xml (one URL)
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/robots.txt":
+			_, _ = fmt.Fprintf(w, "Sitemap: %s/index.xml\n", srv.URL)
+		case "/index.xml":
+			_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%[1]s/pages.xml</loc></sitemap><sitemap><loc>%[1]s/nested.xml</loc></sitemap></sitemapindex>`, srv.URL)
+		case "/nested.xml":
+			_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%s/deep.xml</loc></sitemap></sitemapindex>`, srv.URL)
+		default:
+			_, _ = fmt.Fprintf(w, `<urlset><url><loc>%s%s/page</loc></url></urlset>`, srv.URL, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name     string
+		maxDepth int
+		wantURLs int64
+		wantErrs int64
+	}{
+		{"nested index is not followed", 1, 1, 1},
+		{"nested index is followed", 2, 2, 0},
+	}
+
+	for _, tt := range tests {
+		for _, path := range []string{"/robots.txt", "/index.xml"} {
+			for _, multiThread := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s, %s, multiThread=%v", tt.name, path, multiThread), func(t *testing.T) {
+					s := New().SetMaxDepth(tt.maxDepth).SetMultiThread(multiThread)
+					requireParse(t, s, srv.URL+path, nil)
+
+					assertCounts(t, s, tt.wantURLs, tt.wantErrs)
+					for _, err := range s.GetErrors() {
+						mustEqual(t, "error", err.Error(), fmt.Sprintf(`parse "": max recursion depth of %d reached`, tt.maxDepth))
+					}
+				})
+			}
+		}
 	}
 }
 

@@ -155,6 +155,8 @@ Cancelling the supplied `context.Context` while goroutines are queued for a slot
 By default, the package uses multi-threading to fetch and parse sitemaps concurrently.
 To set the multi-thread flag on/off, use the `SetMultiThread()` function.
 
+With multi-threading off, the sitemaps are fetched one at a time and in the order they are listed, so no more than one request is in flight at any time. This goes for the sitemaps a `robots.txt` names as well as for those of a sitemap index. `SetMaxConcurrency()` has no effect in this case.
+
 ```go
 s := sitemap.New()
 s = s.SetMultiThread(false)
@@ -163,6 +165,8 @@ s = s.SetMultiThread(false)
 ```go
 s := sitemap.New().SetMultiThread(false)
 ```
+
+See [`examples/multithread`](examples/multithread/main.go) for a runnable example.
 
 #### Follow rules
 
