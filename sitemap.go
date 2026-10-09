@@ -249,6 +249,12 @@ type (
 		Hreflangs  []AlternateLink `xml:"http://www.w3.org/1999/xhtml link"`
 	}
 
+	// LastModTime is the date, or the date and time, that a <lastmod> element or a date
+	// element of an extension holds. It embeds time.Time.
+	//
+	// In the URLs that Parse and ParseContext collect, a field of this type is nil when the
+	// element is absent, when it is empty, and when what it holds cannot be parsed. A field
+	// that is set therefore holds the date the document gives.
 	LastModTime struct {
 		time.Time
 	}
@@ -1619,7 +1625,7 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 	validImages, imageErrs := s.validateAndFilterImages(u.Images)
 	u.Images = validImages
 	s.errs = append(s.errs, imageErrs...)
-	validNews, newsErrs := s.validateNews(u.Loc, u.News, entry.newsDateInvalid())
+	validNews, newsErrs := s.validateNews(u.Loc, u.News, entry.newsDateText())
 	u.News = validNews
 	s.errs = append(s.errs, newsErrs...)
 	validVideos, videoErrs := s.validateAndFilterVideos(u.Videos)
@@ -1802,31 +1808,34 @@ func (s *S) parseURLSet(data string, handle func(entry *urlEntry)) error {
 // convert parses the elements that were read as text into the typed fields of the embedded
 // URL. An element whose content is invalid leaves its field unset and is added to e.invalid.
 func (e *urlEntry) convert() {
-	e.LastMod = parseElement(&e.invalid, "<lastmod>", e.LastModText, parseLastModTime)
+	e.LastMod = parseDate(&e.invalid, "<lastmod>", e.LastModText)
 	e.Priority = parseElement(&e.invalid, "<priority>", e.PriorityText, parseFloat32)
 	e.invalidOwn = len(e.invalid) > 0
 
 	if e.NewsEntry != nil {
 		news := e.NewsEntry.News
-		news.PublicationDate = parseElement(&e.invalid, "news <publication_date>", e.NewsEntry.PublicationDateText, parseLastModTime)
+		news.PublicationDate = parseDate(&e.invalid, "news <publication_date>", e.NewsEntry.PublicationDateText)
 		e.News = &news
 	}
 
 	for _, entry := range e.VideoEntries {
 		video := entry.Video
 		video.Duration = parseElement(&e.invalid, "video <duration>", entry.DurationText, parseInt)
-		video.ExpirationDate = parseElement(&e.invalid, "video <expiration_date>", entry.ExpirationDateText, parseLastModTime)
+		video.ExpirationDate = parseDate(&e.invalid, "video <expiration_date>", entry.ExpirationDateText)
 		video.Rating = parseElement(&e.invalid, "video <rating>", entry.RatingText, parseFloat32)
 		video.ViewCount = parseElement(&e.invalid, "video <view_count>", entry.ViewCountText, parseInt)
-		video.PublicationDate = parseElement(&e.invalid, "video <publication_date>", entry.PublicationDateText, parseLastModTime)
+		video.PublicationDate = parseDate(&e.invalid, "video <publication_date>", entry.PublicationDateText)
 		e.Videos = append(e.Videos, video)
 	}
 }
 
-// newsDateInvalid reports whether the entry has a news publication date that could not be
-// parsed.
-func (e *urlEntry) newsDateInvalid() bool {
-	return e.NewsEntry != nil && e.NewsEntry.PublicationDateText != nil && e.News.PublicationDate == nil
+// newsDateText returns the content of the publication date element of the news of the entry
+// as it was read. It is nil if the entry has no news, or its news no publication date.
+func (e *urlEntry) newsDateText() *string {
+	if e.NewsEntry == nil {
+		return nil
+	}
+	return e.NewsEntry.PublicationDateText
 }
 
 // parseElement parses the text of an optional element. It returns nil for an element that is
@@ -1842,6 +1851,23 @@ func parseElement[T any](invalid *[]invalidValue, element string, text *string, 
 		return nil
 	}
 	return &value
+}
+
+// parseDate parses the text of an optional element that holds a date, by the rules of
+// parseElement. In addition it returns nil for an element that is empty: such an element
+// names no date, so it is read as an absent one rather than as the zero time, and it is not
+// invalid either.
+func parseDate(invalid *[]invalidValue, element string, text *string) *LastModTime {
+	if emptyElement(text) {
+		return nil
+	}
+	return parseElement(invalid, element, text, parseLastModTime)
+}
+
+// emptyElement reports whether text is the content of an element that is there, but holds
+// nothing, or nothing but whitespace. A nil text stands for an element that is absent.
+func emptyElement(text *string) bool {
+	return text != nil && strings.TrimSpace(*text) == ""
 }
 
 // parseFloat32 parses the content of an element holding a decimal number. As when encoding/xml
@@ -2002,9 +2028,11 @@ func (s *S) validateAndFilterImages(images []Image) ([]Image, []error) {
 // is kept so that callers still have access to any data that was successfully parsed.
 // A nil input is a no-op and returns nil, nil.
 // loc is the parent page URL used as context in the returned *ValidationError values.
-// dateInvalid tells that the entry does have a publication date, which could not be parsed.
-// That has been reported already, so the date is not reported as missing on top of it.
-func (s *S) validateNews(loc string, news *News, dateInvalid bool) (*News, []error) {
+// dateText is the content of the publication date element as it was read, nil if there is
+// no such element. It tells why PublicationDate is nil when it is: the element is absent, it
+// is empty, or what it holds could not be parsed. The last has been reported already, so the
+// date is not reported as missing on top of it.
+func (s *S) validateNews(loc string, news *News, dateText *string) (*News, []error) {
 	if news == nil {
 		return nil, nil
 	}
@@ -2021,8 +2049,13 @@ func (s *S) validateNews(loc string, news *News, dateInvalid bool) (*News, []err
 	if news.Publication.Language == "" {
 		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication><language> is empty")})
 	}
-	if news.PublicationDate == nil && !dateInvalid {
-		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication_date> is missing")})
+	if news.PublicationDate == nil {
+		switch {
+		case dateText == nil:
+			errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication_date> is missing")})
+		case emptyElement(dateText):
+			errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication_date> is empty")})
+		}
 	}
 	return news, errs
 }
@@ -2281,6 +2314,15 @@ var lastModFormats = []string{
 	time.RFC3339Nano,
 }
 
+// UnmarshalXML implements xml.Unmarshaler, for code that decodes sitemap XML with encoding/xml
+// itself. It accepts a date or a date and time in one of the W3C formats the sitemaps.org
+// protocol allows, and fails for anything else.
+//
+// An element that is empty, or holds only whitespace, is not an error and leaves l as it is.
+// Note that encoding/xml allocates a pointer field for every element it meets, so a
+// *LastModTime field decoded this way is not nil for an empty element: it holds the zero
+// time, which IsZero tells. Parse and ParseContext do not read dates this way; in the URLs
+// they collect, the field of an empty element is nil.
 func (l *LastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var v string
 	err := d.DecodeElement(&v, &start)
@@ -2289,8 +2331,7 @@ func (l *LastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error
 	}
 
 	// An empty <lastmod> element (or one containing only whitespace) is common
-	// in real-world sitemaps. Treat it as "not set" rather than an error: leave
-	// the zero value in place and let the caller decide how to interpret it.
+	// in real-world sitemaps. It is "not set" rather than an error.
 	if strings.TrimSpace(v) == "" {
 		return nil
 	}
@@ -2304,14 +2345,10 @@ func (l *LastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error
 }
 
 // parseLastModTime parses a date or a date and time in one of lastModFormats, ignoring
-// surrounding whitespace. Empty text yields the zero value, as an empty element does when
-// decoded by UnmarshalXML.
+// surrounding whitespace. Empty text is no date and fails like any other text that is none:
+// what an empty element stands for is up to the caller.
 func parseLastModTime(text string) (LastModTime, error) {
 	text = strings.TrimSpace(text)
-	if text == "" {
-		return LastModTime{}, nil
-	}
-
 	for _, format := range lastModFormats {
 		if parsedTime, err := time.Parse(format, text); err == nil {
 			return LastModTime{parsedTime}, nil

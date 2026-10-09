@@ -374,6 +374,8 @@ A value that cannot be parsed never costs more than its own entry. The numbers a
 validate "https://example.com/page": invalid <lastmod> value "2024-01-15 10:30:00"
 ```
 
+An empty date is no such value. A `<lastmod>`, `<news:publication_date>`, `<video:expiration_date>` or `<video:publication_date>` that is empty or holds only whitespace is read as if the element were not there: the field is `nil`, not the zero time, and nothing is reported in either mode. The exception is the publication date of a news entry, which strict mode requires, see [GetURLs](#geturls). An empty number (`<priority>`, `<video:duration>`, `<video:rating>`, `<video:view_count>`) reads as `0`.
+
 See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location among them.
 
 ```go
@@ -608,7 +610,7 @@ urls := s.GetURLs()
 
 Each `URL` struct contains the following fields:
 - `Loc` (`string`) — the URL location; never empty, an entry without a `<loc>` is skipped
-- `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`; also `nil` when the value cannot be parsed, see [Strict mode](#strict-mode)
+- `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`; also `nil` when the element is empty or the value cannot be parsed, see [Strict mode](#strict-mode)
 - `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`
 - `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`; also `nil` when the value cannot be parsed
 - `Images` (`[]Image`) — images associated with this URL via the Google Image Sitemap extension, may be `nil`
@@ -629,10 +631,10 @@ Each `News` struct contains:
 - `Publication` (`NewsPublication`) — publication metadata:
   - `Name` (`string`) — publication name (required in strict mode)
   - `Language` (`string`) — BCP 47 language code, e.g. `"en"` (required in strict mode)
-- `PublicationDate` (`*LastModTime`) — article publication date; embeds `time.Time`, may be `nil` if absent (required in strict mode)
+- `PublicationDate` (`*LastModTime`) — article publication date; embeds `time.Time`, `nil` if absent or empty (required in strict mode)
 - `Title` (`string`) — article title (required in strict mode)
 
-In strict mode, all four required fields (`Title`, `Publication.Name`, `Publication.Language`, `PublicationDate`) must be present; missing fields are each reported via `GetErrors()` and the `News` entry is still included with whatever data was parsed. In tolerant mode no validation is performed. A `PublicationDate` that cannot be parsed is left `nil` and reported in both modes.
+In strict mode, all four required fields (`Title`, `Publication.Name`, `Publication.Language`, `PublicationDate`) must be present; missing fields are each reported via `GetErrors()` and the `News` entry is still included with whatever data was parsed. A `<news:publication_date>` that is there but empty is reported like a missing one (`strict mode: news <publication_date> is empty`). In tolerant mode no validation is performed. A `PublicationDate` that cannot be parsed is left `nil` and reported in both modes.
 
 See [`examples/news`](examples/news/main.go) for a runnable example.
 
@@ -650,10 +652,10 @@ Each `Video` struct contains:
 - `ContentLoc` (`string`) — direct URL to the video file (at least one of `ContentLoc` or `PlayerLoc` required in strict mode)
 - `PlayerLoc` (`string`) — URL of an embedded video player
 - `Duration` (`*int`) — duration in seconds (1–28800); validated in strict mode if present
-- `ExpirationDate` (`*LastModTime`) — date after which the video should not be shown; embeds `time.Time`, may be `nil`
+- `ExpirationDate` (`*LastModTime`) — date after which the video should not be shown; embeds `time.Time`, `nil` if absent or empty
 - `Rating` (`*float32`) — rating between 0.0 and 5.0; validated in strict mode if present
 - `ViewCount` (`*int`) — number of views
-- `PublicationDate` (`*LastModTime`) — publication date; embeds `time.Time`, may be `nil`
+- `PublicationDate` (`*LastModTime`) — publication date; embeds `time.Time`, `nil` if absent or empty
 - `FamilyFriendly` (`string`) — `"yes"` or `"no"`
 - `Restriction` (`*VideoRestriction`) — country restriction with `Relationship` (`"allow"`/`"deny"`) and `Value` (space-separated country codes)
 - `Platform` (`*VideoPlatform`) — platform restriction with `Relationship` and `Value` (e.g. `"web mobile tv"`)

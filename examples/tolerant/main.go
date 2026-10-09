@@ -15,6 +15,9 @@ import (
 // keeps the entry; strict mode skips the entry. Either way the value is
 // reported via GetErrors() as a *ValidationError for the page it belongs to.
 //
+// An empty <lastmod> is no such value: it is read as if the element were not
+// there, so LastMod is nil and nothing is reported, in both modes.
+//
 // An entry without a location names no page. It is skipped and reported in
 // both modes; the error names the sitemap, the entry having no URL of its own.
 //
@@ -27,9 +30,9 @@ import (
 // The sitemap content is passed in directly, so the example runs without
 // network access.
 func main() {
-	// Two of the four entries hold a value that cannot be parsed: a <lastmod>
+	// Two of the five entries hold a value that cannot be parsed: a <lastmod>
 	// without the "T" separator and a time zone, and a <priority> written with
-	// a decimal comma.
+	// a decimal comma. The <lastmod> of the last entry is empty.
 	invalidValues := `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
@@ -49,6 +52,10 @@ func main() {
     <loc>https://example.com/blog</loc>
     <lastmod>2024-01-15</lastmod>
     <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://example.com/shop</loc>
+    <lastmod></lastmod>
   </url>
 </urlset>`
 
@@ -101,7 +108,8 @@ func parse(s *sitemap.S, content string) {
 	for _, u := range sm.GetURLs() {
 		fmt.Printf("  %s\n", u.Loc)
 		// LastMod and Priority are nil when the element is absent, and also
-		// when its value could not be parsed.
+		// when its value could not be parsed. LastMod is nil when the element
+		// is empty as well.
 		if u.LastMod != nil {
 			fmt.Printf("    LastMod: %s\n", u.LastMod.Format("2006-01-02T15:04:05Z07:00"))
 		}

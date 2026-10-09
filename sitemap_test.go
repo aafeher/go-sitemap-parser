@@ -856,7 +856,7 @@ func TestNews_validateNews(t *testing.T) {
 
 	t.Run("nil input returns nil", func(t *testing.T) {
 		s := New()
-		got, errs := s.validateNews("", nil, false)
+		got, errs := s.validateNews("", nil, nil)
 		if got != nil || len(errs) != 0 {
 			t.Errorf("expected nil, nil for nil input")
 		}
@@ -869,7 +869,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "Article",
 		}
-		got, errs := s.validateNews("https://example.com/page", n, false)
+		got, errs := s.validateNews("https://example.com/page", n, nil)
 		if got != n {
 			t.Error("expected same news pointer")
 		}
@@ -881,7 +881,7 @@ func TestNews_validateNews(t *testing.T) {
 	t.Run("tolerant: missing fields produce no errors", func(t *testing.T) {
 		s := New()
 		n := &News{}
-		got, errs := s.validateNews("https://example.com/page", n, false)
+		got, errs := s.validateNews("https://example.com/page", n, nil)
 		if got != n {
 			t.Error("expected same news pointer")
 		}
@@ -897,7 +897,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03T10:00:00Z"),
 			Title:           "Article Title",
 		}
-		got, errs := s.validateNews("https://example.com/page", n, false)
+		got, errs := s.validateNews("https://example.com/page", n, nil)
 		if got != n {
 			t.Error("expected same news pointer")
 		}
@@ -913,7 +913,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "",
 		}
-		_, errs := s.validateNews("https://example.com/page", n, false)
+		_, errs := s.validateNews("https://example.com/page", n, nil)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for empty title, got %d", len(errs))
 		}
@@ -926,7 +926,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "Article",
 		}
-		_, errs := s.validateNews("https://example.com/page", n, false)
+		_, errs := s.validateNews("https://example.com/page", n, nil)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for empty publication name, got %d", len(errs))
 		}
@@ -939,7 +939,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: makeDate("2026-05-03"),
 			Title:           "Article",
 		}
-		_, errs := s.validateNews("https://example.com/page", n, false)
+		_, errs := s.validateNews("https://example.com/page", n, nil)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for empty publication language, got %d", len(errs))
 		}
@@ -952,7 +952,7 @@ func TestNews_validateNews(t *testing.T) {
 			PublicationDate: nil,
 			Title:           "Article",
 		}
-		_, errs := s.validateNews("https://example.com/page", n, false)
+		_, errs := s.validateNews("https://example.com/page", n, nil)
 		if len(errs) != 1 {
 			t.Errorf("expected 1 error for nil publication_date, got %d", len(errs))
 		}
@@ -961,7 +961,7 @@ func TestNews_validateNews(t *testing.T) {
 	t.Run("strict: all required fields missing produces four errors", func(t *testing.T) {
 		s := New().SetStrict(true)
 		n := &News{}
-		got, errs := s.validateNews("https://example.com/page", n, false)
+		got, errs := s.validateNews("https://example.com/page", n, nil)
 		if got != n {
 			t.Error("expected news entry to be kept despite errors")
 		}
@@ -1081,7 +1081,7 @@ func TestNews_validateNews_InvalidDate(t *testing.T) {
 	}
 
 	t.Run("strict mode does not report an invalid date as missing", func(t *testing.T) {
-		got, errs := New().SetStrict(true).validateNews("https://example.com/page", n, true)
+		got, errs := New().SetStrict(true).validateNews("https://example.com/page", n, pointerOfString("yesterday"))
 		if got != n {
 			t.Error("expected the news entry to be kept")
 		}
@@ -1089,9 +1089,47 @@ func TestNews_validateNews_InvalidDate(t *testing.T) {
 	})
 
 	t.Run("strict mode reports an absent date as missing", func(t *testing.T) {
-		_, errs := New().SetStrict(true).validateNews("https://example.com/page", n, false)
-		if len(errs) != 1 || !strings.Contains(errs[0].Error(), "news <publication_date> is missing") {
-			t.Errorf("expected the date to be reported as missing, got %v", errs)
+		_, errs := New().SetStrict(true).validateNews("https://example.com/page", n, nil)
+		if len(errs) != 1 {
+			t.Fatalf("expected the date to be reported as missing, got %v", errs)
+		}
+		mustEqual(t, "error", errs[0].Error(), `validate "https://example.com/page": strict mode: news <publication_date> is missing`)
+	})
+
+	for _, text := range []string{"", " ", "\n\t "} {
+		t.Run(fmt.Sprintf("strict mode reports an empty date as empty, %q", text), func(t *testing.T) {
+			got, errs := New().SetStrict(true).validateNews("https://example.com/page", n, &text)
+			if got != n {
+				t.Error("expected the news entry to be kept")
+			}
+			if len(errs) != 1 {
+				t.Fatalf("expected the date to be reported as empty, got %v", errs)
+			}
+			mustEqual(t, "error", errs[0].Error(), `validate "https://example.com/page": strict mode: news <publication_date> is empty`)
+			var validationErr *ValidationError
+			if !errors.As(errs[0], &validationErr) {
+				t.Errorf("expected a *ValidationError, got %T", errs[0])
+			}
+		})
+	}
+
+	t.Run("strict mode reports nothing about a date that is there", func(t *testing.T) {
+		dated := *n
+		dated.PublicationDate = &LastModTime{time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)}
+		// What the element held does not matter once it yielded a date.
+		for _, text := range []*string{nil, pointerOfString(""), pointerOfString("2024-01-15")} {
+			_, errs := New().SetStrict(true).validateNews("https://example.com/page", &dated, text)
+			mustEqual(t, "errors", len(errs), 0)
+		}
+	})
+
+	t.Run("tolerant mode does not require the date", func(t *testing.T) {
+		for _, text := range []*string{nil, pointerOfString(""), pointerOfString(" "), pointerOfString("yesterday")} {
+			got, errs := New().validateNews("https://example.com/page", n, text)
+			if got != n {
+				t.Error("expected the news entry to be kept")
+			}
+			mustEqual(t, "errors", len(errs), 0)
 		}
 	})
 }
@@ -4555,7 +4593,7 @@ func TestS_Parse_InvalidValues(t *testing.T) {
 		}
 	})
 
-	t.Run("empty elements read as before", func(t *testing.T) {
+	t.Run("empty elements are not invalid", func(t *testing.T) {
 		content := document(`<lastmod> </lastmod><priority> </priority>` +
 			video(`<video:duration></video:duration><video:rating/><video:view_count> </video:view_count>`))
 
@@ -4564,14 +4602,203 @@ func TestS_Parse_InvalidValues(t *testing.T) {
 		assertCounts(t, s, 3, 0)
 
 		second := s.GetURLs()[1]
-		if second.LastMod == nil || !second.LastMod.IsZero() {
-			t.Errorf("lastmod: got %v, want the zero time", second.LastMod)
+		// An empty date is no date, see TestS_Parse_EmptyDates. An empty number reads as
+		// zero, as it does when encoding/xml decodes it.
+		if second.LastMod != nil {
+			t.Errorf("lastmod: got %v, want nil", second.LastMod)
 		}
 		assertPtrFloat32(t, "priority", second.Priority, 0)
 		v := videoOf(t, second)
 		assertPtrInt(t, "duration", v.Duration, 0)
 		assertPtrFloat32(t, "rating", v.Rating, 0)
 		assertPtrInt(t, "view count", v.ViewCount, 0)
+	})
+}
+
+// TestS_Parse_EmptyDates verifies that a date element that is there but holds
+// nothing is read as an absent one: its field is nil, not the zero time. It is
+// not reported either, except where strict mode requires the date.
+func TestS_Parse_EmptyDates(t *testing.T) {
+	const (
+		sitemapURL = "https://example.com/sitemap.xml"
+		pageURL    = "https://example.com/page"
+	)
+
+	// document returns a urlset of one entry that has news and a video, both of which
+	// satisfy strict mode apart from their dates. The four date elements of the entry
+	// are what element returns for their names.
+	document := func(element func(name string) string) string {
+		return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
+  <url>
+    <loc>` + pageURL + `</loc>` + element("lastmod") + `
+    <news:news>
+      <news:publication><news:name>Example News</news:name><news:language>en</news:language></news:publication>` + element("news:publication_date") + `
+      <news:title>News title</news:title>
+    </news:news>
+    <video:video>
+      <video:thumbnail_loc>https://example.com/thumb.jpg</video:thumbnail_loc>
+      <video:title>Video title</video:title>
+      <video:description>Video description</video:description>
+      <video:content_loc>https://example.com/video.mp4</video:content_loc>` + element("video:expiration_date") + element("video:publication_date") + `
+    </video:video>
+  </url>
+</urlset>`
+	}
+	// as returns the element function that writes every date element in the given
+	// format, which takes the name of the element.
+	as := func(format string) func(string) string {
+		return func(name string) string {
+			return fmt.Sprintf(format, name)
+		}
+	}
+	// parse parses the document with a new instance and returns the four dates of its
+	// entry, by the name of their fields, and the errors recorded.
+	parse := func(t *testing.T, strict bool, content string) (map[string]*LastModTime, []string) {
+		t.Helper()
+
+		s := New().SetStrict(strict)
+		requireParse(t, s, sitemapURL, &content)
+		urls := s.GetURLs()
+		if len(urls) != 1 || urls[0].News == nil || len(urls[0].Videos) != 1 {
+			t.Fatalf("expected one URL with news and a video, got %+v, errors: %v", urls, s.GetErrors())
+		}
+		mustEqual(t, "news title", urls[0].News.Title, "News title")
+		mustEqual(t, "video title", urls[0].Videos[0].Title, "Video title")
+
+		errs := []string{}
+		for _, err := range s.GetErrors() {
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) {
+				t.Errorf("expected a *ValidationError, got %T: %v", err, err)
+				continue
+			}
+			mustEqual(t, "URL of the error", validationErr.URL, pageURL)
+			errs = append(errs, validationErr.Err.Error())
+		}
+		return map[string]*LastModTime{
+			"LastMod":               urls[0].LastMod,
+			"News.PublicationDate":  urls[0].News.PublicationDate,
+			"Video.ExpirationDate":  urls[0].Videos[0].ExpirationDate,
+			"Video.PublicationDate": urls[0].Videos[0].PublicationDate,
+		}, errs
+	}
+
+	emptyElements := []struct {
+		name   string
+		format string
+	}{
+		{"start and end tag", "<%[1]s></%[1]s>"},
+		{"empty-element tag", "<%[1]s/>"},
+		{"space", "<%[1]s> </%[1]s>"},
+		{"line break and indentation", "<%[1]s>\r\n\t  </%[1]s>"},
+		{"empty CDATA section", "<%[1]s><![CDATA[]]></%[1]s>"},
+		{"CDATA section of whitespace", "<%[1]s><![CDATA[ \n]]></%[1]s>"},
+		{"comment", "<%[1]s><!-- not known --></%[1]s>"},
+		{"character reference of a space", "<%[1]s>&#32;</%[1]s>"},
+		{"character reference of a no-break space", "<%[1]s>&#160;</%[1]s>"},
+	}
+	for _, empty := range emptyElements {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", empty.name, strict), func(t *testing.T) {
+				dates, errs := parse(t, strict, document(as(empty.format)))
+
+				for field, date := range dates {
+					if date != nil {
+						t.Errorf("%s: expected nil, got %v", field, date.Time)
+					}
+				}
+				// The dates are optional but for the one of the news, which strict mode
+				// requires.
+				want := []string{}
+				if strict {
+					want = append(want, "strict mode: news <publication_date> is empty")
+				}
+				assertStringSlice(t, "errors", errs, want)
+			})
+		}
+	}
+
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("absent, strict=%v", strict), func(t *testing.T) {
+			dates, errs := parse(t, strict, document(func(string) string { return "" }))
+
+			for field, date := range dates {
+				if date != nil {
+					t.Errorf("%s: expected nil, got %v", field, date.Time)
+				}
+			}
+			want := []string{}
+			if strict {
+				want = append(want, "strict mode: news <publication_date> is missing")
+			}
+			assertStringSlice(t, "errors", errs, want)
+		})
+
+		t.Run(fmt.Sprintf("date, strict=%v", strict), func(t *testing.T) {
+			dates, errs := parse(t, strict, document(as("<%[1]s>\n  2024-01-15\n</%[1]s>")))
+
+			for field, date := range dates {
+				if date == nil || !date.Equal(time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)) {
+					t.Errorf("%s: expected 2024-01-15, got %v", field, date)
+				}
+			}
+			assertStringSlice(t, "errors", errs, []string{})
+		})
+
+		// A field that is set holds what the document gives, be that the zero time: an
+		// empty element is told from it by the field being nil.
+		t.Run(fmt.Sprintf("first day of the year 1, strict=%v", strict), func(t *testing.T) {
+			dates, errs := parse(t, strict, document(as("<%[1]s>0001-01-01</%[1]s>")))
+
+			for field, date := range dates {
+				if date == nil || !date.IsZero() {
+					t.Errorf("%s: expected the zero time, got %v", field, date)
+				}
+			}
+			assertStringSlice(t, "errors", errs, []string{})
+		})
+
+		// Only the extensions hold a date that is no date here: strict mode skips an
+		// entry whose own <lastmod> is none.
+		t.Run(fmt.Sprintf("no date, strict=%v", strict), func(t *testing.T) {
+			dates, errs := parse(t, strict, document(func(name string) string {
+				if name == "lastmod" {
+					return ""
+				}
+				return fmt.Sprintf("<%[1]s>yesterday</%[1]s>", name)
+			}))
+
+			for field, date := range dates {
+				if date != nil {
+					t.Errorf("%s: expected nil, got %v", field, date.Time)
+				}
+			}
+			// The date of the news is reported as what it is, and as nothing else.
+			assertStringSlice(t, "errors", errs, []string{
+				`invalid news <publication_date> value "yesterday"`,
+				`invalid video <expiration_date> value "yesterday"`,
+				`invalid video <publication_date> value "yesterday"`,
+			})
+		})
+	}
+
+	t.Run("empty date among dates", func(t *testing.T) {
+		dates, errs := parse(t, true, document(func(name string) string {
+			if name == "video:expiration_date" {
+				return "<video:expiration_date/>"
+			}
+			return fmt.Sprintf("<%[1]s>2024-01-15</%[1]s>", name)
+		}))
+
+		for field, date := range dates {
+			if (date == nil) != (field == "Video.ExpirationDate") {
+				t.Errorf("%s: got %v", field, date)
+			}
+		}
+		assertStringSlice(t, "errors", errs, []string{})
 	})
 }
 
@@ -4777,6 +5004,76 @@ func TestParseElement(t *testing.T) {
 	})
 }
 
+func TestParseDate(t *testing.T) {
+	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		text *string
+		// want is the date the element yields, nil if it yields none.
+		want *time.Time
+		// wantInvalid is the error the element is reported with, if it is.
+		wantInvalid string
+	}{
+		{name: "absent element", text: nil},
+		{name: "empty element", text: pointerOfString("")},
+		{name: "element of whitespace", text: pointerOfString(" \t\r\n")},
+		{name: "date", text: pointerOfString("2024-01-15"), want: &date},
+		{name: "date in whitespace", text: pointerOfString("\n  2024-01-15\n"), want: &date},
+		{name: "first day of the year 1", text: pointerOfString("0001-01-01"), want: &time.Time{}},
+		{name: "no date", text: pointerOfString("yesterday"), wantInvalid: `invalid <lastmod> value "yesterday"`},
+		{name: "no date in whitespace", text: pointerOfString(" - "), wantInvalid: `invalid <lastmod> value "-"`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var invalid []invalidValue
+			got := parseDate(&invalid, "<lastmod>", test.text)
+
+			switch {
+			case test.want == nil && got != nil:
+				t.Errorf("got %v, want nil", got.Time)
+			case test.want != nil && (got == nil || !got.Equal(*test.want)):
+				t.Errorf("got %v, want %v", got, *test.want)
+			}
+
+			reported := []string{}
+			for _, value := range invalid {
+				reported = append(reported, value.err().Error())
+			}
+			want := []string{}
+			if test.wantInvalid != "" {
+				want = append(want, test.wantInvalid)
+			}
+			assertStringSlice(t, "invalid values", reported, want)
+		})
+	}
+}
+
+func TestEmptyElement(t *testing.T) {
+	tests := []struct {
+		text *string
+		want bool
+	}{
+		{nil, false},
+		{pointerOfString(""), true},
+		{pointerOfString(" "), true},
+		{pointerOfString(" \t\r\n"), true},
+		{pointerOfString("2024-01-15"), false},
+		{pointerOfString(" 0 "), false},
+	}
+
+	for _, test := range tests {
+		name := "absent"
+		if test.text != nil {
+			name = fmt.Sprintf("%q", *test.text)
+		}
+		t.Run(name, func(t *testing.T) {
+			mustEqual(t, "emptyElement", emptyElement(test.text), test.want)
+		})
+	}
+}
+
 func TestParseFloat32(t *testing.T) {
 	tests := []struct {
 		text    string
@@ -4845,8 +5142,9 @@ func TestParseLastModTime(t *testing.T) {
 	}{
 		{"2024-01-15", time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC), false},
 		{" 2024-01-15T10:30:00Z\n", time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC), false},
-		{"", time.Time{}, false},
-		{" \t\n", time.Time{}, false},
+		{"0001-01-01", time.Time{}, false},
+		{"", time.Time{}, true},
+		{" \t\n", time.Time{}, true},
 		{"2024-01-15T10:30:00", time.Time{}, true},
 		{"yesterday", time.Time{}, true},
 	}
