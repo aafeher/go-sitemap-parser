@@ -40,7 +40,7 @@ If a fix is warranted, a patched release will be published and you will be credi
 
 A sitemap document can reference tens of thousands of child sitemaps or URLs. Without limits, parsing an adversarial document could exhaust memory or connections:
 
-- `SetMaxResponseSize()` caps the response body size per fetch (default: 50 MB, matching the sitemaps.org protocol limit).
+- `SetMaxResponseSize()` caps the response body size per fetch and the decompressed size of gzip content (default: 50 MB, matching the sitemaps.org protocol limit).
 - `SetMaxDepth()` limits sitemap index recursion depth (default: 10).
 - `SetMaxConcurrency()` bounds concurrent HTTP fetches (default: 16).
 - Pass a `context.Context` with a deadline via `ParseContext()` to enforce a wall-clock time limit.
@@ -48,7 +48,7 @@ A sitemap document can reference tens of thousands of child sitemaps or URLs. Wi
 ### XML security
 
 Go's `encoding/xml` package does not expand XML external entities (XXE), so the parser is **not vulnerable to XXE attacks** by default.
-Gzip-compressed sitemaps are decompressed with a size limit enforced by `SetMaxResponseSize()`, which mitigates zip-bomb style attacks.
+Gzip-compressed sitemaps are decompressed with a size limit enforced by `SetMaxResponseSize()`: decompression stops as soon as the output exceeds the limit and the content is rejected, which mitigates zip-bomb style attacks. Versions up to and including v1.1.0 did not enforce this limit on decompressed data.
 
 ### TLS verification
 

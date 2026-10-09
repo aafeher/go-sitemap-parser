@@ -41,7 +41,7 @@ func mustGetBody(t *testing.T, url string) (int, []byte) {
 
 func mustUnzip(t *testing.T, data []byte) []byte {
 	t.Helper()
-	result, err := unzip(data)
+	result, err := unzip(data, defaultMaxResponseSize)
 	if err != nil {
 		t.Fatalf("Failed to unzip response body: %v", err)
 	}

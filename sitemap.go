@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	neturl "net/url"
@@ -250,7 +251,7 @@ func (s *S) setConfigDefaults() {
 	s.cfg = config{
 		userAgent:       "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
 		fetchTimeout:    3,
-		maxResponseSize: 50 * 1024 * 1024, // 50 MB per sitemaps.org spec
+		maxResponseSize: defaultMaxResponseSize,
 		maxDepth:        10,
 		maxConcurrency:  defaultMaxConcurrency,
 		multiThread:     true,
@@ -301,7 +302,10 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 }
 
 // SetMaxResponseSize sets the maximum allowed HTTP response size in bytes.
-// Responses exceeding this limit will be truncated and may cause parsing errors.
+// Responses exceeding this limit are rejected with a *NetworkError.
+// The same limit caps the decompressed size of gzip-compressed content, whether it was
+// fetched or supplied through the urlContent argument of Parse; content that expands
+// beyond it is rejected with a *ParseError.
 // The default is 50 MB, matching the sitemaps.org protocol limit.
 // The value must be greater than 0; invalid values are ignored and a *ConfigError is recorded.
 // The function returns a pointer to the S structure to allow method chaining.
@@ -883,8 +887,10 @@ func (s *S) fetch(ctx context.Context, url string) ([]byte, error) {
 
 // checkAndUnzipContent checks if the content is a gzip file and unzips it if necessary.
 // If the content is a gzip file, it returns the uncompressed content.
-// If an error occurs during unzipping, it appends a *ParseError (with the provided url) and
-// returns the original content.
+// The decompressed size is capped at cfg.maxResponseSize, so a small compressed payload
+// cannot expand without bound.
+// If an error occurs during unzipping, or the decompressed size exceeds the cap, it appends
+// a *ParseError (with the provided url) and returns the original content.
 //
 // Param url: The URL the content was fetched from (used for error context)
 // Param content: The content to be checked and possibly unzipped
@@ -892,7 +898,13 @@ func (s *S) fetch(ctx context.Context, url string) ([]byte, error) {
 func (s *S) checkAndUnzipContent(url string, content []byte) []byte {
 	gzipPrefix := []byte("\x1f\x8b\x08")
 	if bytes.HasPrefix(content, gzipPrefix) {
-		uncompressed, err := unzip(content)
+		maxSize := s.cfg.maxResponseSize
+		if maxSize <= 0 {
+			// A zero-value S (one not created via New) has no configured limit.
+			// Fall back to the default rather than leaving decompression unbounded.
+			maxSize = defaultMaxResponseSize
+		}
+		uncompressed, err := unzip(content, maxSize)
 		if err != nil {
 			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
 			// return the original content if error
@@ -1294,6 +1306,11 @@ const maxVideoRating = float32(5.0)
 // but arbitrarily long patterns can still produce large compiled automata and consume significant memory.
 const maxRegexPatternLength = 1000
 
+// defaultMaxResponseSize is the default maximum size in bytes of an HTTP response body and of
+// decompressed gzip content. 50 MB is the uncompressed sitemap size limit of the sitemaps.org
+// specification.
+const defaultMaxResponseSize = 50 * 1024 * 1024
+
 // defaultMaxConcurrency is the default maximum number of concurrent HTTP fetches per Parse call.
 // Limiting concurrency by default prevents unbounded goroutine and connection growth when parsing
 // large sitemap indexes. Pass 0 to SetMaxConcurrency to restore unlimited concurrency.
@@ -1567,11 +1584,14 @@ func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
 
 // unzip decompresses the given content using gzip compression.
 // It returns the uncompressed content and any error encountered during decompression.
+// At most maxSize bytes are decompressed. If the payload is larger, decompression stops and
+// an error is returned without any data, so a small compressed input cannot exhaust memory
+// (decompression bomb).
 // If the gzip header is invalid, the original content is returned together with the error.
 // If decompression fails mid-stream (e.g. truncated/corrupted gzip data), the partially
 // decompressed bytes are returned together with the error so the caller can decide how to react.
 // In all error cases a non-nil error is returned; callers must not silently use the data.
-func unzip(content []byte) ([]byte, error) {
+func unzip(content []byte, maxSize int64) ([]byte, error) {
 	reader, err := gzip.NewReader(bytes.NewReader(content))
 	if err != nil {
 		return content, err
@@ -1587,9 +1607,20 @@ func unzip(content []byte) ([]byte, error) {
 		_ = reader.Close()
 	}(reader)
 
-	uncompressed, err := io.ReadAll(reader)
+	// Read one byte past the limit so that a payload exceeding it can be told apart from one
+	// that fits exactly, while never buffering more than maxSize+1 bytes.
+	readLimit := maxSize
+	if readLimit < math.MaxInt64 {
+		readLimit++
+	}
+
+	uncompressed, err := io.ReadAll(io.LimitReader(reader, readLimit))
 	if err != nil {
 		return uncompressed, fmt.Errorf("gzip decompression failed: %w", err)
+	}
+
+	if int64(len(uncompressed)) > maxSize {
+		return nil, fmt.Errorf("decompressed size exceeds limit of %d bytes", maxSize)
 	}
 
 	return uncompressed, nil

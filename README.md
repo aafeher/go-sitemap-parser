@@ -99,6 +99,8 @@ s := sitemap.New().SetFetchTimeout(10)
 
 To set the maximum allowed HTTP response size, use the `SetMaxResponseSize()` function. It should be specified in bytes as an **int64** value. The default is 50 MB, matching the [sitemaps.org protocol](http://www.sitemaps.org/protocol.html) limit. Responses exceeding this limit will result in an error.
 
+The same limit caps the **decompressed** size of gzip-compressed content, so a small `.gz` response cannot expand without bound in memory. This applies both to fetched content and to gzip content passed in through the `urlContent` argument of `Parse()`. Content that expands beyond the limit is rejected and reported via `GetErrors()` as a `*ParseError`.
+
 ```go
 s := sitemap.New()
 s = s.SetMaxResponseSize(10 * 1024 * 1024) // 10 MB

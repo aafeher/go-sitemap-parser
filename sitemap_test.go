@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -3400,6 +3401,93 @@ func TestS_checkAndUnzipContent(t *testing.T) {
 	}
 }
 
+// requireSizeLimitError fails unless errs holds a *ParseError for url reporting
+// that the decompressed size exceeded limit.
+func requireSizeLimitError(t *testing.T, errs []error, url string, limit int64) {
+	t.Helper()
+	want := fmt.Sprintf("decompressed size exceeds limit of %d bytes", limit)
+	for _, err := range errs {
+		var parseErr *ParseError
+		if errors.As(err, &parseErr) && parseErr.URL == url && strings.Contains(parseErr.Error(), want) {
+			return
+		}
+	}
+	t.Fatalf("expected a *ParseError for %q containing %q, got %v", url, want, errs)
+}
+
+func TestS_checkAndUnzipContent_SizeLimit(t *testing.T) {
+	const url = "https://example.com/sitemap.xml.gz"
+	payload := strings.Repeat("A", 64)
+	gzipped := gzipByte(payload)
+
+	t.Run("within limit", func(t *testing.T) {
+		s := New().SetMaxResponseSize(64)
+		got := s.checkAndUnzipContent(url, gzipped)
+		mustEqual(t, "content", string(got), payload)
+		mustEqual(t, "errors", len(s.errs), 0)
+	})
+
+	t.Run("exceeds limit", func(t *testing.T) {
+		s := New().SetMaxResponseSize(63)
+		got := s.checkAndUnzipContent(url, gzipped)
+		if !bytes.Equal(got, gzipped) {
+			t.Errorf("expected the original content to be returned, got %d bytes", len(got))
+		}
+		mustEqual(t, "errors", len(s.errs), 1)
+		requireSizeLimitError(t, s.errs, url, 63)
+	})
+
+	t.Run("zero-value S falls back to the default limit", func(t *testing.T) {
+		s := &S{}
+		got := s.checkAndUnzipContent(url, gzipped)
+		mustEqual(t, "content", string(got), payload)
+		mustEqual(t, "errors", len(s.errs), 0)
+	})
+}
+
+// TestS_Parse_GzipSizeLimit covers the decompression-bomb case end to end: a
+// gzip payload small enough to pass the response size limit must not be allowed
+// to expand beyond that same limit.
+func TestS_Parse_GzipSizeLimit(t *testing.T) {
+	const limit = 4096
+	const lines = 4000
+	payload := strings.Repeat("https://example.com/page\n", lines)
+	gzipped := gzipByte(payload)
+	if len(gzipped) >= limit || len(payload) <= limit {
+		t.Fatalf("fixture must compress below the limit and expand beyond it: compressed %d, uncompressed %d, limit %d",
+			len(gzipped), len(payload), limit)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		_, _ = w.Write(gzipped)
+	}))
+	defer server.Close()
+	url := server.URL + "/sitemap.txt.gz"
+
+	t.Run("fetched content expanding beyond the limit is rejected", func(t *testing.T) {
+		s := New().SetMaxResponseSize(limit)
+		requireParse(t, s, url, nil)
+		mustEqual(t, "GetURLCount", s.GetURLCount(), 0)
+		requireSizeLimitError(t, s.GetErrors(), url, limit)
+	})
+
+	t.Run("fetched content within the limit is parsed", func(t *testing.T) {
+		s := New().SetMaxResponseSize(int64(len(payload)))
+		requireParse(t, s, url, nil)
+		assertCounts(t, s, lines, 0)
+	})
+
+	t.Run("supplied content expanding beyond the limit is rejected", func(t *testing.T) {
+		const suppliedURL = "https://example.com/sitemap.txt.gz"
+		content := string(gzipped)
+		s := New().SetMaxResponseSize(limit)
+		requireParse(t, s, suppliedURL, &content)
+		mustEqual(t, "GetURLCount", s.GetURLCount(), 0)
+		requireSizeLimitError(t, s.GetErrors(), suppliedURL, limit)
+	})
+}
+
 func TestS_parseAndFetchUrlsMultiThread(t *testing.T) {
 	server := testServer()
 	defer server.Close()
@@ -3889,7 +3977,7 @@ func TestUnzip(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			uncompressed, err := unzip(test.input)
+			uncompressed, err := unzip(test.input, defaultMaxResponseSize)
 
 			if (err != nil) != test.hasError {
 				t.Errorf("expected %v, got %v", test.hasError, err)
@@ -3899,6 +3987,48 @@ func TestUnzip(t *testing.T) {
 				t.Errorf("expected %v, got %v", test.output, uncompressed)
 			}
 
+		})
+	}
+}
+
+func TestUnzip_SizeLimit(t *testing.T) {
+	payload := strings.Repeat("A", 1024)
+	gzipped := gzipByte(payload)
+
+	tests := []struct {
+		name     string
+		maxSize  int64
+		hasError bool
+	}{
+		{name: "Limit above payload size", maxSize: 2048},
+		{name: "Limit equal to payload size", maxSize: 1024},
+		{name: "Limit one byte below payload size", maxSize: 1023, hasError: true},
+		{name: "Limit far below payload size", maxSize: 1, hasError: true},
+		{name: "Maximum limit does not overflow", maxSize: math.MaxInt64},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			uncompressed, err := unzip(gzipped, test.maxSize)
+
+			if !test.hasError {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				mustEqual(t, "content", string(uncompressed), payload)
+				return
+			}
+
+			if err == nil {
+				t.Fatal("expected a size limit error, got nil")
+			}
+			want := fmt.Sprintf("decompressed size exceeds limit of %d bytes", test.maxSize)
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("expected error containing %q, got %v", want, err)
+			}
+			if uncompressed != nil {
+				t.Errorf("expected no data alongside a size limit error, got %d bytes", len(uncompressed))
+			}
 		})
 	}
 }

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Gzip decompression is now capped at the `SetMaxResponseSize()` limit (default: 50 MB). Previously only the compressed HTTP response body was limited, so a small `.gz` response could expand without bound in memory (decompression bomb), contrary to what `SECURITY.md` stated. Decompression now stops as soon as the output exceeds the limit, and the content is rejected with a `*ParseError` (`decompressed size exceeds limit of N bytes`). The cap also applies to gzip content passed in through the `urlContent` argument of `Parse()` / `ParseContext()`
+
 ## [1.1.0] - 2026-09-21
 
 ### Added

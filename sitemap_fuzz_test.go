@@ -144,8 +144,14 @@ func FuzzDetectRootElement(f *testing.F) {
 	})
 }
 
-// FuzzUnzip checks that gzip handling survives arbitrary bytes, and that any
-// data the package compresses can be read back unchanged.
+// fuzzUnzipLimit is the decompressed-size limit FuzzUnzip uses to check that
+// unzip enforces its cap. It is small enough that mutated seeds regularly land
+// on both sides of it.
+const fuzzUnzipLimit = 64
+
+// FuzzUnzip checks that gzip handling survives arbitrary bytes, that any data
+// the package compresses can be read back unchanged, and that the
+// decompressed-size limit is enforced.
 func FuzzUnzip(f *testing.F) {
 	f.Add([]byte(nil))
 	f.Add([]byte("not gzip"))
@@ -154,8 +160,11 @@ func FuzzUnzip(f *testing.F) {
 	addFileSeeds(f, "*.gz", func(f *testing.F, data []byte) { f.Add(data) })
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// Arbitrary input: unzip must fail cleanly rather than panic.
-		_, _ = unzip(data)
+		// Arbitrary input: unzip must fail cleanly rather than panic, and must
+		// never hand back more than the limit allows.
+		if out, err := unzip(data, fuzzUnzipLimit); err == nil && len(out) > fuzzUnzipLimit {
+			t.Fatalf("unzip returned %d bytes, limit is %d", len(out), fuzzUnzipLimit)
+		}
 
 		// Round trip: whatever we compress must come back byte-for-byte.
 		var buf bytes.Buffer
@@ -167,12 +176,23 @@ func FuzzUnzip(f *testing.F) {
 			t.Fatalf("closing gzip writer: %v", err)
 		}
 
-		out, err := unzip(buf.Bytes())
+		out, err := unzip(buf.Bytes(), defaultMaxResponseSize)
 		if err != nil {
 			t.Fatalf("unzip rejected data this package compressed: %v", err)
 		}
 		if !bytes.Equal(out, data) {
 			t.Fatalf("gzip round trip altered the payload: got %d bytes, want %d", len(out), len(data))
+		}
+
+		// Size limit: a payload that fits must come back intact, and one that
+		// does not must be rejected without returning any data.
+		limited, err := unzip(buf.Bytes(), fuzzUnzipLimit)
+		if len(data) <= fuzzUnzipLimit {
+			if err != nil || !bytes.Equal(limited, data) {
+				t.Fatalf("unzip rejected or altered a %d-byte payload within the %d-byte limit: %v", len(data), fuzzUnzipLimit, err)
+			}
+		} else if err == nil || limited != nil {
+			t.Fatalf("unzip accepted a %d-byte payload over the %d-byte limit (returned %d bytes, err %v)", len(data), fuzzUnzipLimit, len(limited), err)
 		}
 
 		// checkAndUnzipContent must agree with unzip on well-formed input.
