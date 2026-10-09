@@ -87,6 +87,9 @@ func FuzzParse(f *testing.F) {
 		`<urlset><url><loc>javascript:alert(1)</loc></url></urlset>`,
 		`<urlset><url><loc>   https://example.com/padded   </loc></url></urlset>`,
 		"\ufeff<urlset><url><loc>https://example.com/bom</loc></url></urlset>",
+		"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><urlset><url><loc>https://example.com/caf\xe9</loc></url></urlset>",
+		"<?xml version=\"1.0\" encoding=\"windows-1250\"?><rss><channel><item><link>https://example.com/t\xfbr\xf5</link></item></channel></rss>",
+		`<?xml version="1.0" encoding="IBM437"?><sitemapindex><sitemap><loc>https://example.com/sitemap-1.xml</loc></sitemap></sitemapindex>`,
 		`<urlset><url><loc>https://example.com/img</loc><image:image xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"><image:loc>https://example.com/i.jpg</image:loc></image:image></url></urlset>`,
 		`<sitemapindex><sitemap><loc>`,
 		"",
@@ -125,6 +128,8 @@ func FuzzDetectRootElement(f *testing.F) {
 		`<!DOCTYPE html><html><body>hi</body></html>`,
 		"<<<<<<",
 		"<a:b xmlns:a='urn:x'/>",
+		"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><!-- caf\xe9 --><urlset/>",
+		`<?xml version="1.0" encoding="IBM437"?><feed/>`,
 		"",
 		"plain text",
 	}

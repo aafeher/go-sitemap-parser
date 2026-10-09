@@ -1079,11 +1079,34 @@ func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string,
 	}
 }
 
+// newXMLDecoder returns a decoder for content that honours the encoding named in its XML
+// declaration, so that a document in an encoding other than UTF-8 is transcoded while it is
+// read. Every XML read in this package goes through it: a decoder without a CharsetReader
+// rejects any document that declares another encoding.
+func newXMLDecoder(content string) *xml.Decoder {
+	decoder := xml.NewDecoder(strings.NewReader(content))
+	decoder.CharsetReader = charset.NewReaderLabel
+	return decoder
+}
+
+// detectionCharsetReader is the CharsetReader of root element detection. It transcodes like
+// the one newXMLDecoder installs, but reads the bytes as they are when the declared encoding
+// is not supported. An encoding that cannot be transcoded must not hide the document type:
+// the parser of the detected type then reports the unsupported encoding, instead of the
+// document being taken for an unknown format.
+func detectionCharsetReader(label string, input io.Reader) (io.Reader, error) {
+	if reader, err := charset.NewReaderLabel(label, input); err == nil {
+		return reader, nil
+	}
+	return input, nil
+}
+
 // detectRootElement reads the first XML start element from the content
 // to determine the document type without fully parsing it.
 // Returns the local name of the root element, or an empty string if detection fails.
 func detectRootElement(content string) string {
-	decoder := xml.NewDecoder(bytes.NewReader([]byte(content)))
+	decoder := newXMLDecoder(content)
+	decoder.CharsetReader = detectionCharsetReader
 	for {
 		token, err := decoder.Token()
 		if err != nil {
@@ -1286,10 +1309,7 @@ func (s *S) parseSitemapIndex(data string) (sitemapIndex, error) {
 		return smIndex, fmt.Errorf("sitemapindex is empty")
 	}
 
-	decoder := xml.NewDecoder(bytes.NewReader([]byte(data)))
-	decoder.CharsetReader = charset.NewReaderLabel
-
-	err := decoder.Decode(&smIndex)
+	err := newXMLDecoder(data).Decode(&smIndex)
 	return smIndex, err
 
 }
@@ -1305,10 +1325,7 @@ func (s *S) parseURLSet(data string) (urlSet, error) {
 		return us, fmt.Errorf("sitemap is empty")
 	}
 
-	decoder := xml.NewDecoder(bytes.NewReader([]byte(data)))
-	decoder.CharsetReader = charset.NewReaderLabel
-
-	err := decoder.Decode(&us)
+	err := newXMLDecoder(data).Decode(&us)
 	return us, err
 }
 
@@ -1319,10 +1336,7 @@ func (s *S) parseRSS(data string) (rss, error) {
 		return feed, fmt.Errorf("rss is empty")
 	}
 
-	decoder := xml.NewDecoder(bytes.NewReader([]byte(data)))
-	decoder.CharsetReader = charset.NewReaderLabel
-
-	err := decoder.Decode(&feed)
+	err := newXMLDecoder(data).Decode(&feed)
 	return feed, err
 }
 
@@ -1333,10 +1347,7 @@ func (s *S) parseAtom(data string) (atom, error) {
 		return feed, fmt.Errorf("atom is empty")
 	}
 
-	decoder := xml.NewDecoder(bytes.NewReader([]byte(data)))
-	decoder.CharsetReader = charset.NewReaderLabel
-
-	err := decoder.Decode(&feed)
+	err := newXMLDecoder(data).Decode(&feed)
 	return feed, err
 }
 

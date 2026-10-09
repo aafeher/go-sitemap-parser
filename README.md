@@ -22,6 +22,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Google News Sitemap extension (`<news:news>`)
 - Google Video Sitemap extension (`<video:video>`)
 - XHTML hreflang extension (`<xhtml:link>`)
+- XML documents in encodings other than UTF-8 (e.g. `ISO-8859-1`, `windows-1252`) are transcoded automatically
 - Typed errors: `*ConfigError`, `*NetworkError`, `*ParseError`, `*ValidationError` — inspectable via `errors.As`
 - Thread-safe
 
@@ -32,6 +33,8 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Atom 1.0
 - Plain text `.txt`
 - Gzip compressed files (e.g., `.xml.gz`, `.txt.gz`)
+
+XML documents do not have to be UTF-8 encoded, see [Character encoding](#character-encoding).
 
 ## Requirements
 
@@ -368,6 +371,31 @@ _, err = s.Parse(url, nil) // parses normally
 Each setter call replaces the errors recorded by the previous call for the same setting, so repeating an invalid value does not accumulate errors.
 
 See [`examples/reuse`](examples/reuse/main.go) for a runnable example.
+
+### Character encoding
+
+The sitemaps.org protocol requires sitemaps to be UTF-8 encoded, but XML documents in other encodings are accepted as well. The parser honours the encoding named in the XML declaration and transcodes the document while reading it, so every string it returns is UTF-8:
+
+```go
+// "\xe9" is the letter "é" in ISO-8859-1
+content := "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n" +
+    "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n" +
+    "  <url><loc>https://example.com/caf\xe9</loc></url>\n" +
+    "</urlset>"
+
+s, err := sitemap.New().Parse("https://example.com/sitemap.xml", &content)
+// s.GetURLs()[0].Loc == "https://example.com/caf%C3%A9"
+```
+
+This applies to every XML format (sitemap index, urlset, RSS and Atom), in tolerant and in strict mode alike. The encodings of the [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/#names-and-labels) are supported, among them the `ISO-8859` and `windows-125x` families, `US-ASCII`, `KOI8-R`, `Shift_JIS`, `EUC-JP`, `EUC-KR`, `GBK`, `gb18030` and `Big5`.
+
+Limitations:
+- A document that declares any other encoding is not parsed; a `*ParseError` naming the encoding is reported via `GetErrors()`.
+- Only the XML declaration is consulted. The `charset` parameter of the HTTP `Content-Type` header is ignored, and a document without a declared encoding is read as UTF-8.
+- UTF-16 and UTF-32 documents are not supported.
+- Plain text sitemaps and `robots.txt` files carry no encoding declaration and are not transcoded.
+
+See [`examples/encoding`](examples/encoding/main.go) for a runnable example.
 
 ### Results
 

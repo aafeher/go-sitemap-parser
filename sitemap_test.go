@@ -3868,6 +3868,179 @@ func TestS_parse(t *testing.T) {
 	}
 }
 
+// encodedDocuments returns one document of every XML format the parser reads.
+// Each of them declares encoding in its XML declaration and holds a single
+// location, whose last path segment is word. The caller passes word in the
+// bytes of that encoding.
+func encodedDocuments(encoding, word string) map[string]string {
+	templates := map[string]string{
+		"sitemapindex": `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://example.com/%s</loc></sitemap></sitemapindex>`,
+		"urlset":       `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com/%s</loc></url></urlset>`,
+		"rss":          `<rss version="2.0"><channel><item><link>https://example.com/%s</link></item></channel></rss>`,
+		"feed":         `<feed xmlns="http://www.w3.org/2005/Atom"><entry><link href="https://example.com/%s"/></entry></feed>`,
+	}
+
+	documents := make(map[string]string, len(templates))
+	for format, template := range templates {
+		documents[format] = fmt.Sprintf(`<?xml version="1.0" encoding="%s"?>`, encoding) + fmt.Sprintf(template, word)
+	}
+	return documents
+}
+
+// parsedLocations runs parse over content and returns every location it
+// yields: the sitemaps to follow for a sitemap index, the URLs otherwise.
+func parsedLocations(s *S, content string) []string {
+	locations := append([]string(nil), s.parse("https://example.com/sitemap.xml", content)...)
+	for _, u := range s.urls {
+		locations = append(locations, u.Loc)
+	}
+	return locations
+}
+
+func TestDetectRootElement(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"no XML declaration", `<urlset></urlset>`, "urlset"},
+		{"UTF-8 declared", `<?xml version="1.0" encoding="UTF-8"?><sitemapindex/>`, "sitemapindex"},
+		{"comment before the root element", `<?xml version="1.0"?><!-- comment --><rss/>`, "rss"},
+		{"namespace prefix", `<a:feed xmlns:a="http://www.w3.org/2005/Atom"/>`, "feed"},
+		{"ISO-8859-1 declared", "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><!-- caf\xe9 --><urlset/>", "urlset"},
+		{"windows-1252 declared", "<?xml version=\"1.0\" encoding=\"windows-1252\"?><rss title=\"\x80\"/>", "rss"},
+		{"US-ASCII declared", `<?xml version="1.0" encoding="US-ASCII"?><feed/>`, "feed"},
+		{"unsupported encoding declared", `<?xml version="1.0" encoding="IBM437"?><urlset/>`, "urlset"},
+		{"plain text", "https://example.com/page", ""},
+		{"malformed XML", "<<<<<<", ""},
+		{"empty", "", ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mustEqual(t, "root element", detectRootElement(test.content), test.want)
+		})
+	}
+}
+
+// TestS_parse_DeclaredEncoding verifies that a document declaring an encoding
+// other than UTF-8 is recognised and transcoded, whichever XML format it is in.
+func TestS_parse_DeclaredEncoding(t *testing.T) {
+	tests := []struct {
+		encoding string
+		// word is a path segment in the bytes of the encoding, escaped is the
+		// same segment as it appears in the parsed location.
+		word    string
+		escaped string
+	}{
+		{"UTF-8", "caf\xc3\xa9", "caf%C3%A9"},
+		{"utf8", "caf\xc3\xa9", "caf%C3%A9"},
+		{"US-ASCII", "cafe", "cafe"},
+		{"ISO-8859-1", "caf\xe9", "caf%C3%A9"},
+		{"iso-8859-1", "caf\xe9", "caf%C3%A9"},
+		{"latin1", "caf\xe9", "caf%C3%A9"},
+		{"windows-1252", "\x80uro", "%E2%82%ACuro"},
+		{"ISO-8859-2", "t\xfbr\xf5", "t%C5%B1r%C5%91"},
+		{"windows-1250", "t\xfbr\xf5", "t%C5%B1r%C5%91"},
+	}
+
+	for _, test := range tests {
+		for format, content := range encodedDocuments(test.encoding, test.word) {
+			t.Run(test.encoding+" "+format, func(t *testing.T) {
+				s := New()
+				locations := parsedLocations(s, content)
+
+				if len(s.errs) != 0 {
+					t.Fatalf("unexpected errors: %v", s.errs)
+				}
+				if len(locations) != 1 {
+					t.Fatalf("expected 1 location, got %d: %q", len(locations), locations)
+				}
+				mustEqual(t, "location", locations[0], "https://example.com/"+test.escaped)
+			})
+		}
+	}
+}
+
+// TestS_parse_UnsupportedEncoding verifies that a document declaring an
+// encoding that cannot be transcoded is reported as such, rather than as a
+// document of an unknown format.
+func TestS_parse_UnsupportedEncoding(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+
+	for format, content := range encodedDocuments("IBM437", "cafe") {
+		t.Run(format, func(t *testing.T) {
+			s := New()
+			locations := parsedLocations(s, content)
+
+			if len(locations) != 0 {
+				t.Errorf("expected no locations, got %q", locations)
+			}
+			if len(s.errs) != 1 {
+				t.Fatalf("expected 1 error, got %d: %v", len(s.errs), s.errs)
+			}
+			var parseErr *ParseError
+			if !errors.As(s.errs[0], &parseErr) {
+				t.Fatalf("expected *ParseError, got %T: %v", s.errs[0], s.errs[0])
+			}
+			mustEqual(t, "error URL", parseErr.URL, url)
+			if !strings.Contains(parseErr.Error(), `"IBM437"`) {
+				t.Errorf("error does not name the encoding: %v", parseErr)
+			}
+			if strings.Contains(parseErr.Error(), "unrecognized sitemap format") {
+				t.Errorf("document was not recognised: %v", parseErr)
+			}
+		})
+	}
+}
+
+// TestS_Parse_DeclaredEncoding verifies the whole path for a fetched document
+// in an encoding other than UTF-8: the text it contains comes back as UTF-8.
+func TestS_Parse_DeclaredEncoding(t *testing.T) {
+	const (
+		title     = "Árvíztűrő tükörfúrógép"
+		isoLatin2 = "\xc1rv\xedzt\xfbr\xf5 t\xfck\xf6rf\xfar\xf3g\xe9p"
+	)
+	content := `<?xml version="1.0" encoding="ISO-8859-2"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url>
+    <loc>/page</loc>
+    <image:image>
+      <image:loc>/image.jpg</image:loc>
+      <image:title>` + isoLatin2 + `</image:title>
+    </image:image>
+  </url>
+</urlset>`
+
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{"plain", []byte(content)},
+		{"gzip", gzipByte(content)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write(test.body)
+			}))
+			defer server.Close()
+
+			s := New()
+			requireParse(t, s, server.URL+"/sitemap.xml", nil)
+			assertCounts(t, s, 1, 0)
+
+			u := s.GetURLs()[0]
+			mustEqual(t, "location", u.Loc, server.URL+"/page")
+			if len(u.Images) != 1 {
+				t.Fatalf("expected 1 image, got %d", len(u.Images))
+			}
+			mustEqual(t, "image title", u.Images[0].Title, title)
+		})
+	}
+}
+
 func TestS_parseSitemapIndex(t *testing.T) {
 	server := testServer()
 	defer server.Close()

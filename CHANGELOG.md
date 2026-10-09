@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `examples/reuse`: runnable example of reusing one instance for several `Parse()` calls and of correcting an invalid setting. `README.md` gained a matching `Reusing an instance` section
+- `examples/encoding`: runnable example of parsing a sitemap that is not UTF-8 encoded. `README.md` gained a matching `Character encoding` section, which also lists the limitations (UTF-16 / UTF-32 and the HTTP `Content-Type` charset are not supported)
 
 ### Changed
 - A `Parse()` / `ParseContext()` call that returns early — because a configuration error is outstanding or the input URL is invalid — now leaves `GetURLs()` empty. Previously the URLs collected by the preceding call were still returned in that case, so a failed call could be mistaken for a successful one. `GetURLs()` and `GetErrors()` now always describe the most recent call only
 
 ### Fixed
+- XML documents that declare an encoding other than UTF-8 are parsed again. Since v0.3.0 the root element detection that selects the parser used an XML decoder without charset support, so every sitemap index, urlset, RSS or Atom document with a declaration such as `encoding="ISO-8859-1"`, `"windows-1252"`, `"US-ASCII"` or `"utf8"` was rejected with `unrecognized sitemap format (root element: "")` — the charset support added in v0.1.5 could no longer be reached. Detection and parsing now share one charset-aware decoder
+- A document that declares an encoding that cannot be transcoded is now reported with a `*ParseError` naming the encoding (`xml: opening charset "IBM437": unsupported charset: "IBM437"`) instead of `unrecognized sitemap format`
 - An instance can be reused after a `Parse()` / `ParseContext()` call that recorded an error. Previously any error left over from a call — a failed fetch, an entry skipped during validation, an invalid input URL — made every later call on the same instance fail immediately with `errors occurred before parsing, see GetErrors() for details`, because the check for outstanding configuration errors also counted the errors of the previous call. Each call now discards the URLs and errors of the previous call before anything else
 - Configuration errors can be corrected. A `*ConfigError` recorded by `SetFetchTimeout()`, `SetMaxResponseSize()`, `SetMaxDepth()`, `SetMaxConcurrency()`, `SetFollow()` or `SetRules()` used to stay in the error list for the lifetime of the instance, so a single invalid call made the instance permanently unusable even after the value was corrected. Each call to one of these setters now replaces the errors recorded by its previous call: a valid value clears them, and repeating an invalid value no longer accumulates duplicates
 
