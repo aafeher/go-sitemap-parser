@@ -338,6 +338,37 @@ returned by `ParseContext`.
 
 See [`examples/context`](examples/context/main.go) for a runnable example.
 
+### Reusing an instance
+
+An instance can be used for any number of `Parse()` / `ParseContext()` calls. Every call starts from a clean state: the URLs and errors collected by the previous call are discarded first, so `GetURLs()` and `GetErrors()` always describe the most recent call only. This also holds when a call returns early, for example because the input URL is invalid.
+
+```go
+s := sitemap.New()
+
+for _, url := range []string{"https://example.com/sitemap.xml", "https://example.org/sitemap.xml"} {
+    if _, err := s.Parse(url, nil); err != nil {
+        log.Printf("%s: %v", url, err)
+        continue
+    }
+    fmt.Printf("%s: %d URLs, %d errors\n", url, s.GetURLCount(), s.GetErrorsCount())
+}
+```
+
+Configuration errors are the exception, because they belong to the instance rather than to a single call. A `*ConfigError` recorded by a `Set*` method stays in `GetErrors()`, and while any of them is outstanding `Parse()` does not parse anything and returns the error `errors occurred before parsing, see GetErrors() for details`. Calling the same setter again with a valid value clears its error:
+
+```go
+s := sitemap.New().SetMaxDepth(0) // invalid: recorded as a *ConfigError
+
+_, err := s.Parse(url, nil) // err: errors occurred before parsing, see GetErrors() for details
+
+s.SetMaxDepth(5)           // valid: clears the error recorded for maxDepth
+_, err = s.Parse(url, nil) // parses normally
+```
+
+Each setter call replaces the errors recorded by the previous call for the same setting, so repeating an invalid value does not accumulate errors.
+
+See [`examples/reuse`](examples/reuse/main.go) for a runnable example.
+
 ### Results
 
 After parsing, you can retrieve the results using the following methods:
@@ -426,7 +457,7 @@ randomURLs := s.GetRandomURLs(5)
 
 #### GetErrors
 
-Returns all errors encountered during parsing.
+Returns the errors encountered during the most recent `Parse()` / `ParseContext()` call, together with any outstanding configuration errors recorded by the `Set*` methods (see [Reusing an instance](#reusing-an-instance)).
 
 ```go
 errs := s.GetErrors()

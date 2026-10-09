@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `examples/reuse`: runnable example of reusing one instance for several `Parse()` calls and of correcting an invalid setting. `README.md` gained a matching `Reusing an instance` section
+
+### Changed
+- A `Parse()` / `ParseContext()` call that returns early — because a configuration error is outstanding or the input URL is invalid — now leaves `GetURLs()` empty. Previously the URLs collected by the preceding call were still returned in that case, so a failed call could be mistaken for a successful one. `GetURLs()` and `GetErrors()` now always describe the most recent call only
+
+### Fixed
+- An instance can be reused after a `Parse()` / `ParseContext()` call that recorded an error. Previously any error left over from a call — a failed fetch, an entry skipped during validation, an invalid input URL — made every later call on the same instance fail immediately with `errors occurred before parsing, see GetErrors() for details`, because the check for outstanding configuration errors also counted the errors of the previous call. Each call now discards the URLs and errors of the previous call before anything else
+- Configuration errors can be corrected. A `*ConfigError` recorded by `SetFetchTimeout()`, `SetMaxResponseSize()`, `SetMaxDepth()`, `SetMaxConcurrency()`, `SetFollow()` or `SetRules()` used to stay in the error list for the lifetime of the instance, so a single invalid call made the instance permanently unusable even after the value was corrected. Each call to one of these setters now replaces the errors recorded by its previous call: a valid value clears them, and repeating an invalid value no longer accumulates duplicates
+
 ### Security
 - Gzip decompression is now capped at the `SetMaxResponseSize()` limit (default: 50 MB). Previously only the compressed HTTP response body was limited, so a small `.gz` response could expand without bound in memory (decompression bomb), contrary to what `SECURITY.md` stated. Decompression now stops as soon as the output exceeds the limit, and the content is rejected with a `*ParseError` (`decompressed size exceeds limit of N bytes`). The cap also applies to gzip content passed in through the `urlContent` argument of `Parse()` / `ParseContext()`
 

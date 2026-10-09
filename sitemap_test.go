@@ -380,6 +380,71 @@ func TestS_SetRules(t *testing.T) {
 	})
 }
 
+// configErrorFields returns the Field of every error in errs, comma-separated and
+// in order. An error that is not a *ConfigError is reported by its type instead,
+// so an unexpected entry shows up in the comparison.
+func configErrorFields(errs []error) string {
+	fields := make([]string, 0, len(errs))
+	for _, err := range errs {
+		var cfgErr *ConfigError
+		if errors.As(err, &cfgErr) {
+			fields = append(fields, cfgErr.Field)
+			continue
+		}
+		fields = append(fields, fmt.Sprintf("%T", err))
+	}
+	return strings.Join(fields, ",")
+}
+
+// TestS_Setters_ConfigErrors verifies that every setter call replaces the
+// configuration errors recorded by the previous call for the same setting.
+func TestS_Setters_ConfigErrors(t *testing.T) {
+	tests := []struct {
+		field   string
+		invalid func(s *S)
+		valid   func(s *S)
+	}{
+		{"fetchTimeout", func(s *S) { s.SetFetchTimeout(0) }, func(s *S) { s.SetFetchTimeout(5) }},
+		{"maxResponseSize", func(s *S) { s.SetMaxResponseSize(0) }, func(s *S) { s.SetMaxResponseSize(1024) }},
+		{"maxDepth", func(s *S) { s.SetMaxDepth(0) }, func(s *S) { s.SetMaxDepth(5) }},
+		{"maxConcurrency", func(s *S) { s.SetMaxConcurrency(-1) }, func(s *S) { s.SetMaxConcurrency(4) }},
+		{"follow", func(s *S) { s.SetFollow([]string{`(`}) }, func(s *S) { s.SetFollow([]string{`alpha`}) }},
+		{"rules", func(s *S) { s.SetRules([]string{`(`}) }, func(s *S) { s.SetRules([]string{`alpha`}) }},
+	}
+
+	for _, test := range tests {
+		t.Run(test.field+" valid value clears the error", func(t *testing.T) {
+			s := New()
+			test.invalid(s)
+			mustEqual(t, "errors after invalid value", configErrorFields(s.errs), test.field)
+			test.valid(s)
+			mustEqual(t, "errors after valid value", configErrorFields(s.errs), "")
+		})
+
+		t.Run(test.field+" repeated invalid value is recorded once", func(t *testing.T) {
+			s := New()
+			test.invalid(s)
+			test.invalid(s)
+			mustEqual(t, "errors", configErrorFields(s.errs), test.field)
+		})
+	}
+
+	t.Run("errors of other settings and of other kinds are kept", func(t *testing.T) {
+		s := New().SetMaxDepth(0).SetFetchTimeout(0)
+		s.errs = append(s.errs, errors.New("Dummy error"))
+		s.SetMaxDepth(5)
+		mustEqual(t, "errors", configErrorFields(s.errs), "fetchTimeout,*errors.errorString")
+	})
+
+	t.Run("a slice returned earlier by GetErrors is not modified", func(t *testing.T) {
+		s := New().SetMaxDepth(0).SetFetchTimeout(0)
+		before := s.GetErrors()
+		s.SetMaxDepth(5)
+		mustEqual(t, "errors returned before the call", configErrorFields(before), "maxDepth,fetchTimeout")
+		mustEqual(t, "errors returned after the call", configErrorFields(s.GetErrors()), "fetchTimeout")
+	})
+}
+
 func TestS_SetStrict(t *testing.T) {
 	t.Run("default is false", func(t *testing.T) {
 		s := New()
@@ -2788,6 +2853,99 @@ func TestS_Parse_Reuse(t *testing.T) {
 	if s.GetErrorsCount() != 0 {
 		t.Errorf("after second parse: expected 0 errors, got %d", s.GetErrorsCount())
 	}
+}
+
+// TestS_Parse_ReuseAfterErrors verifies that errors recorded by one Parse call
+// neither block the next call nor leak into its results.
+func TestS_Parse_ReuseAfterErrors(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	valid := `<urlset><url><loc>https://example.com/ok</loc></url></urlset>`
+
+	t.Run("after a call that recorded a non-fatal error", func(t *testing.T) {
+		withInvalidLoc := `<urlset><url><loc>https://example.com/a</loc></url><url><loc>ftp://example.com/b</loc></url></urlset>`
+		s := New()
+		requireParse(t, s, url, &withInvalidLoc)
+		assertCounts(t, s, 1, 1)
+
+		requireParse(t, s, url, &valid)
+		assertCounts(t, s, 1, 0)
+		mustEqual(t, "Loc", s.GetURLs()[0].Loc, "https://example.com/ok")
+	})
+
+	t.Run("after a call whose fetch failed", func(t *testing.T) {
+		server := testServer()
+		defer server.Close()
+
+		s := New()
+		if _, err := s.Parse(server.URL+"/nonexistent.xml", nil); err == nil {
+			t.Fatal("expected a fetch error, got nil")
+		}
+		assertCounts(t, s, 0, 1)
+
+		requireParse(t, s, url, &valid)
+		assertCounts(t, s, 1, 0)
+	})
+
+	t.Run("after a call with an invalid input URL", func(t *testing.T) {
+		s := New()
+		requireParse(t, s, url, &valid)
+		assertCounts(t, s, 1, 0)
+
+		// The rejected call must not keep serving the results of the call before it.
+		_, err := s.Parse("ftp://example.com/sitemap.xml", nil)
+		var valErr *ValidationError
+		if !errors.As(err, &valErr) {
+			t.Fatalf("expected *ValidationError, got %v", err)
+		}
+		assertCounts(t, s, 0, 1)
+
+		requireParse(t, s, url, &valid)
+		assertCounts(t, s, 1, 0)
+	})
+}
+
+// TestS_Parse_ConfigErrors verifies that configuration errors, unlike the errors
+// of a Parse call, persist until the setting is corrected.
+func TestS_Parse_ConfigErrors(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	const blocked = "errors occurred before parsing, see GetErrors() for details"
+	valid := `<urlset><url><loc>https://example.com/ok</loc></url></urlset>`
+
+	requireBlocked := func(t *testing.T, s *S) {
+		t.Helper()
+		_, err := s.Parse(url, &valid)
+		if err == nil || err.Error() != blocked {
+			t.Fatalf("expected %q, got %v", blocked, err)
+		}
+	}
+
+	t.Run("block parsing until the setting is corrected", func(t *testing.T) {
+		s := New().SetMaxDepth(0)
+		requireBlocked(t, s)
+		// A blocked call must leave the configuration error in place, exactly once.
+		requireBlocked(t, s)
+		assertCounts(t, s, 0, 1)
+
+		s.SetMaxDepth(5)
+		requireParse(t, s, url, &valid)
+		assertCounts(t, s, 1, 0)
+	})
+
+	t.Run("discard the results of the previous call", func(t *testing.T) {
+		withInvalidLoc := `<urlset><url><loc>https://example.com/a</loc></url><url><loc>ftp://example.com/b</loc></url></urlset>`
+		s := New()
+		requireParse(t, s, url, &withInvalidLoc)
+		assertCounts(t, s, 1, 1)
+
+		s.SetRules([]string{`(`})
+		requireBlocked(t, s)
+		assertCounts(t, s, 0, 1)
+		var cfgErr *ConfigError
+		if !errors.As(s.GetErrors()[0], &cfgErr) {
+			t.Fatalf("expected the remaining error to be a *ConfigError, got %T", s.GetErrors()[0])
+		}
+		mustEqual(t, "ConfigError.Field", cfgErr.Field, "rules")
+	})
 }
 
 func TestS_Parse_ConcurrentSafety(t *testing.T) {

@@ -275,12 +275,14 @@ func (s *S) SetUserAgent(userAgent string) *S {
 // SetFetchTimeout sets the fetch timeout for the Sitemap Parser.
 // The fetch timeout determines how long the parser will wait for an HTTP request to complete.
 // It should be specified in seconds as a uint16 value and must be greater than 0.
-// Invalid values are ignored and a *ConfigError is recorded.
+// Invalid values are ignored and a *ConfigError is recorded; a later call with a valid
+// value clears it.
 // Note: when a custom HTTP client is set via SetHTTPClient, this value has no effect.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetFetchTimeout(fetchTimeout uint16) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.clearConfigErrors("fetchTimeout")
 	if fetchTimeout == 0 {
 		s.errs = append(s.errs, &ConfigError{Field: "fetchTimeout", Err: fmt.Errorf("must be greater than 0, got %d", fetchTimeout)})
 		return s
@@ -308,10 +310,12 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 // beyond it is rejected with a *ParseError.
 // The default is 50 MB, matching the sitemaps.org protocol limit.
 // The value must be greater than 0; invalid values are ignored and a *ConfigError is recorded.
+// A later call with a valid value clears it.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.clearConfigErrors("maxResponseSize")
 	if maxResponseSize <= 0 {
 		s.errs = append(s.errs, &ConfigError{Field: "maxResponseSize", Err: fmt.Errorf("must be greater than 0, got %d", maxResponseSize)})
 		return s
@@ -325,10 +329,12 @@ func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
 // A sitemap index may reference other sitemap indexes; this limits how many levels deep
 // the parser will follow. The default is 10.
 // The value must be greater than 0; invalid values are ignored and a *ConfigError is recorded.
+// A later call with a valid value clears it.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxDepth(maxDepth int) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.clearConfigErrors("maxDepth")
 	if maxDepth <= 0 {
 		s.errs = append(s.errs, &ConfigError{Field: "maxDepth", Err: fmt.Errorf("must be greater than 0, got %d", maxDepth)})
 		return s
@@ -343,11 +349,13 @@ func (s *S) SetMaxDepth(maxDepth int) *S {
 // unlimited concurrency. A positive value caps the number of in-flight HTTP fetches
 // across the recursive sitemap-index traversal, which is recommended for very large
 // sitemap indexes to avoid goroutine and connection blow-up.
-// Negative values are rejected and a *ConfigError is recorded.
+// Negative values are rejected and a *ConfigError is recorded; a later call with a valid
+// value clears it.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.clearConfigErrors("maxConcurrency")
 	if maxConcurrency < 0 {
 		s.errs = append(s.errs, &ConfigError{Field: "maxConcurrency", Err: fmt.Errorf("must be >= 0, got %d", maxConcurrency)})
 		return s
@@ -360,10 +368,12 @@ func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
 // SetFollow sets the follow patterns using the provided list of regex strings and compiles them into regex objects.
 // Patterns longer than maxRegexPatternLength characters are rejected with a *ConfigError.
 // Any errors encountered during compilation are recorded as *ConfigError values.
+// Each call replaces both the patterns and the errors recorded by the previous call.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetFollow(regexes []string) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.clearConfigErrors("follow")
 	s.cfg.follow = regexes
 	s.cfg.followRegexes = nil
 	for _, followPattern := range s.cfg.follow {
@@ -385,10 +395,12 @@ func (s *S) SetFollow(regexes []string) *S {
 // SetRules sets the rules patterns using the provided list of regex strings and compiles them into regex objects.
 // Patterns longer than maxRegexPatternLength characters are rejected with a *ConfigError.
 // Any errors encountered during compilation are recorded as *ConfigError values.
+// Each call replaces both the patterns and the errors recorded by the previous call.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetRules(regexes []string) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.clearConfigErrors("rules")
 	s.cfg.rules = regexes
 	s.cfg.rulesRegexes = nil
 	for _, rulePattern := range s.cfg.rules {
@@ -434,6 +446,35 @@ func (s *S) SetStrict(strict bool) *S {
 	s.cfg.strict = strict
 
 	return s
+}
+
+// clearConfigErrors drops the configuration errors recorded for field, so that every setter
+// call replaces the outcome of the previous call for the same setting instead of leaving a
+// stale error behind. Must be called with s.mu held.
+func (s *S) clearConfigErrors(field string) {
+	s.errs = filterErrors(s.errs, func(err error) bool {
+		cfgErr, ok := err.(*ConfigError)
+		return !ok || cfgErr.Field != field
+	})
+}
+
+// isConfigError reports whether err was recorded by a configuration setter.
+func isConfigError(err error) bool {
+	_, ok := err.(*ConfigError)
+	return ok
+}
+
+// filterErrors returns the errors for which keep reports true, in their original order.
+// It builds a new slice instead of filtering in place: GetErrors hands the backing array of
+// the error list out to callers, and that copy must not change underneath them.
+func filterErrors(errs []error, keep func(error) bool) []error {
+	var kept []error
+	for _, err := range errs {
+		if keep(err) {
+			kept = append(kept, err)
+		}
+	}
+	return kept
 }
 
 // GetUserAgent returns the current user agent string used for HTTP requests.
@@ -517,8 +558,12 @@ func (s *S) GetStrict() bool {
 // context.Background(). For new code, prefer ParseContext so that callers
 // can propagate cancellation and deadlines.
 //
-// If the S object has any errors, it returns an error with the message
-// "errors occurred before parsing, see GetErrors() for details".
+// An instance can be reused: every call first discards the URLs and errors
+// collected by the previous call. Configuration errors recorded by the Set*
+// methods are the exception. They persist across calls, and while any of them
+// is outstanding Parse does not parse anything and returns an error with the
+// message "errors occurred before parsing, see GetErrors() for details".
+// Calling the same setter again with a valid value clears its error.
 // It sets the mainURL field to the given URL and the mainURLContent field to
 // the given URL content. It returns an error if there was an error setting
 // the content.
@@ -570,6 +615,18 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	var wg sync.WaitGroup
 
 	s.mu.Lock()
+	// Every call starts from a clean state, so nothing collected by a previous call carries
+	// over into this one, whichever way this call ends. Configuration errors are the
+	// exception: they belong to the instance rather than to a call, and keep blocking
+	// parsing until the offending setting is corrected.
+	s.mainURL = ""
+	s.mainURLContent = ""
+	s.robotsTxtSitemapURLs = nil
+	s.sitemapLocations = nil
+	s.fetchedURLs = make(map[string]struct{})
+	s.urls = nil
+	s.errs = filterErrors(s.errs, isConfigError)
+
 	if len(s.errs) > 0 {
 		s.mu.Unlock()
 		return s, errors.New("errors occurred before parsing, see GetErrors() for details")
@@ -582,12 +639,6 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 			return s, vErr
 		}
 	}
-
-	s.robotsTxtSitemapURLs = nil
-	s.sitemapLocations = nil
-	s.fetchedURLs = make(map[string]struct{})
-	s.urls = nil
-	s.errs = nil
 
 	if s.cfg.maxConcurrency > 0 {
 		s.sem = make(chan struct{}, s.cfg.maxConcurrency)
