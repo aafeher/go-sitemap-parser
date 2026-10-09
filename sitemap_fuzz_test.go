@@ -3,6 +3,8 @@ package sitemap
 import (
 	"bytes"
 	"compress/gzip"
+	"errors"
+	"net/http"
 	neturl "net/url"
 	"os"
 	"path/filepath"
@@ -75,10 +77,42 @@ func collectLocs(strict bool, content string) []string {
 	return locs
 }
 
+// offlineClient is an HTTP client that fails every request without sending it,
+// so that no request leaves the process whatever the fuzzed content lists.
+var offlineClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+	return nil, errors.New("offline")
+})}
+
+// assertReturnedError checks the error Parse returns for content against the
+// errors it records. The call must fail if, and only if, the document could not
+// be parsed, and the error it returns must be the first *ParseError recorded
+// then: the very error, not one that reads the same.
+func assertReturnedError(t *testing.T, mode string, strict bool, content string) {
+	t.Helper()
+
+	s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(offlineClient)
+	_, err := s.Parse(fuzzBaseURL, &content)
+
+	// The sitemaps a sitemap index lists are not fetched, so every *ParseError
+	// there is concerns the document itself.
+	var want error
+	for _, recorded := range s.GetErrors() {
+		var parseErr *ParseError
+		if errors.As(recorded, &parseErr) {
+			want = recorded
+			break
+		}
+	}
+	if err != want {
+		t.Fatalf("%s mode: Parse returned %v, the first *ParseError recorded is %v", mode, err, want)
+	}
+}
+
 // FuzzParse exercises the full format-dispatch path — sitemap index, urlset,
 // RSS, Atom and plain text — with untrusted content. Every location the parser
 // hands back must satisfy the documented URL invariants in both tolerant and
-// strict mode, and parsing must be deterministic.
+// strict mode, parsing must be deterministic, and the call must fail exactly
+// when the document cannot be parsed.
 func FuzzParse(f *testing.F) {
 	seeds := []string{
 		`<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://example.com/sitemap-1.xml</loc><lastmod>2024-01-01</lastmod></sitemap></sitemapindex>`,
@@ -126,6 +160,8 @@ func FuzzParse(f *testing.F) {
 			if again := collectLocs(strict, content); !slicesEqual(locs, again) {
 				t.Fatalf("%s mode: parse is not deterministic: %q vs %q", mode, locs, again)
 			}
+
+			assertReturnedError(t, mode, strict, content)
 		}
 	})
 }

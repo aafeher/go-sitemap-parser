@@ -103,7 +103,7 @@ s := sitemap.New().SetFetchTimeout(10)
 
 To set the maximum allowed HTTP response size, use the `SetMaxResponseSize()` function. It should be specified in bytes as an **int64** value. The default is 50 MB, matching the [sitemaps.org protocol](http://www.sitemaps.org/protocol.html) limit. Responses exceeding this limit will result in an error.
 
-The same limit caps the **decompressed** size of gzip-compressed content, so a small `.gz` response cannot expand without bound in memory. This applies both to fetched content and to gzip content passed in through the `urlContent` argument of `Parse()`. Content that expands beyond the limit is rejected and reported via `GetErrors()` as a `*ParseError`.
+The same limit caps the **decompressed** size of gzip-compressed content, so a small `.gz` response cannot expand without bound in memory. This applies both to fetched content and to gzip content passed in through the `urlContent` argument of `Parse()`. Content that expands beyond the limit is rejected and reported via `GetErrors()` as a `*ParseError`. If it is the content of the URL passed to `Parse()`, the call fails with that error, see [Parse](#parse).
 
 ```go
 s := sitemap.New()
@@ -126,6 +126,16 @@ s = s.SetMaxDepth(5)
 ```go
 s := sitemap.New().SetMaxDepth(5)
 ```
+
+With `SetMaxDepth(1)` the sitemaps listed by the document passed to `Parse()` are fetched, but if one of them is a sitemap index itself, the sitemaps it lists are not. A `robots.txt` does not count as a level: the sitemaps it names are treated like the document passed to `Parse()`.
+
+When the limit is reached, a `*ParseError` is recorded in `GetErrors()` for every sitemap index whose sitemaps are not followed. It names that sitemap index, by the URL it was served from:
+
+```
+parse "https://example.com/sitemap-index-2.xml": max recursion depth of 1 reached
+```
+
+Reaching the limit does not fail `Parse()`: the URLs collected up to that depth are returned.
 
 See [`examples/maxdepth`](examples/maxdepth/main.go) for a runnable example.
 
@@ -152,7 +162,7 @@ s = s.SetMaxConcurrency(8)
 s := sitemap.New().SetMaxConcurrency(8)
 ```
 
-Cancelling the supplied `context.Context` while sitemaps wait for a slot ends the wait at once. The sitemaps that were still waiting are not fetched, and the cancellation is recorded in `GetErrors()` once for the sitemap index or `robots.txt` that lists them, next to the errors of the requests that were cut short.
+Cancelling the supplied `context.Context` while sitemaps wait for a slot ends the wait at once. The sitemaps that were still waiting are not fetched, and nothing is recorded for them: that the call was cut short is reported once for the call, see [Parse with context](#parse-with-context).
 
 #### Multi-threading
 
@@ -258,7 +268,7 @@ To enable **strict mode**, use the `SetStrict()` function. In strict mode, all U
 - `<loc>` must not exceed 2,048 characters
 - `<priority>` must be between `0.0` and `1.0` inclusive (if present)
 - `<lastmod>` and `<priority>` must hold a value that can be parsed (if present)
-- The document must be well-formed XML, otherwise it is rejected as a whole
+- The document must be well-formed XML, otherwise it is rejected as a whole and reported as a `*ParseError`
 
 In **tolerant mode** (the default):
 - Relative `<loc>` URLs are resolved against the parent sitemap URL
@@ -362,6 +372,31 @@ s, err := s.Parse("https://www.sitemaps.org/sitemap.xml", nil)
 ```
 In this example, sitemap is parsed from "https://www.sitemaps.org/sitemap.xml". The function fetches the content itself, as we passed nil as the urlContent.
 
+The error `Parse()` returns is about the document at `url` itself. It is `nil` if that document was fetched and parsed, otherwise it tells why it was not:
+
+| Error returned | Meaning |
+|---|---|
+| `*ValidationError` | `url` is not an HTTP or HTTPS URL with a host (checked when the content is to be fetched) |
+| `*NetworkError` | The document could not be fetched |
+| `*ParseError` | The document could not be parsed: it is not a sitemap, it is empty, its XML or gzip content is broken, it expands beyond the size limit |
+| an untyped error | A configuration error is outstanding, so nothing was parsed, see [Reusing an instance](#reusing-an-instance) |
+
+Except for the last, the error returned is the very one `GetErrors()` holds about the document.
+
+What goes wrong further on does not fail the call and is reported via [`GetErrors()`](#geterrors) only: a sitemap the document lists that cannot be fetched or parsed, an entry that is not valid, the depth limit being reached. A `nil` error therefore does not mean that nothing was skipped, and `GetErrors()` is worth checking after every call:
+
+```go
+s, err := sitemap.New().Parse("https://www.sitemaps.org/sitemap.xml", nil)
+if err != nil {
+    // The document at the URL could not be fetched or parsed.
+    log.Fatalf("parse error: %v", err)
+}
+for _, e := range s.GetErrors() {
+    // A sitemap it lists, or an entry, was skipped.
+    log.Printf("warning: %v", e)
+}
+```
+
 ### Parse with context
 
 For new code, prefer `ParseContext()` so that callers can propagate cancellation
@@ -379,8 +414,29 @@ s, err := sitemap.New().ParseContext(ctx, "https://www.sitemaps.org/sitemap.xml"
 
 Cancelling `ctx` aborts in-flight downloads and prevents new ones from starting.
 Already-parsed URLs accumulated before cancellation remain available via
-`GetURLs()`; the cancellation cause is also recorded in the error list and
-returned by `ParseContext`.
+`GetURLs()`.
+
+A call that was cut short returns a `*ParseError` that names the URL passed to
+`ParseContext()` and wraps the error of the context, so `errors.Is` tells why
+the call ended:
+
+```go
+if errors.Is(err, context.DeadlineExceeded) {
+    // the deadline passed
+}
+if errors.Is(err, context.Canceled) {
+    // ctx was cancelled
+}
+```
+
+The same error is recorded in `GetErrors()`, once for the call: in
+multi-threaded and in sequential mode alike, and however many sitemaps were
+not fetched. Nothing is recorded for the sitemaps the call did not get to. A
+request that was under way is reported in addition, as the `*NetworkError` of
+its sitemap, which wraps the error of the context as well.
+
+When it is the request for the URL passed to `ParseContext()` that is cut
+short, the call returns and records that `*NetworkError` alone.
 
 See [`examples/context`](examples/context/main.go) for a runnable example.
 
@@ -449,7 +505,7 @@ s, err := sitemap.New().Parse("https://example.com/sitemap.xml", &content)
 This applies to every XML format (sitemap index, urlset, RSS and Atom), in tolerant and in strict mode alike. The encodings of the [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/#names-and-labels) are supported, among them the `ISO-8859` and `windows-125x` families, `US-ASCII`, `KOI8-R`, `Shift_JIS`, `EUC-JP`, `EUC-KR`, `GBK`, `gb18030` and `Big5`.
 
 Limitations:
-- A document that declares any other encoding is not parsed; a `*ParseError` naming the encoding is reported via `GetErrors()`.
+- A document that declares any other encoding is not parsed; a `*ParseError` naming the encoding is reported via `GetErrors()`, and returned by `Parse()` when it is the document `Parse()` was called for.
 - Only the XML declaration is consulted. The `charset` parameter of the HTTP `Content-Type` header is ignored, and a document without a declared encoding is read as UTF-8.
 - UTF-16 and UTF-32 documents are not supported.
 - Plain text sitemaps and `robots.txt` files carry no encoding declaration and are not transcoded.
@@ -558,10 +614,14 @@ Errors are typed and can be inspected with `errors.As`:
 |---|---|---|
 | `*ConfigError` | A `Set*` method received an invalid value | `Field` (setting name), `Err` (root cause) |
 | `*NetworkError` | An HTTP fetch failed | `URL` (requested URL), `Err` (root cause) |
-| `*ParseError` | XML or gzip parsing failed | `URL` (sitemap URL; after a redirect, the URL the sitemap was served from), `Err` (root cause) |
+| `*ParseError` | A sitemap document could not be parsed (not a sitemap, empty, broken XML or gzip content, larger than the size limit) | `URL` (sitemap URL; after a redirect, the URL the sitemap was served from), `Err` (root cause) |
+| `*ParseError` | The depth limit was reached, see [Max depth](#max-depth) | `URL` (the sitemap index whose sitemaps were not followed), `Err` (root cause) |
+| `*ParseError` | The call was cut short by its context, see [Parse with context](#parse-with-context) | `URL` (the URL passed to `ParseContext()`), `Err` (the error of the context) |
 | `*ValidationError` | A URL or field value failed validation | `URL` (the rejected URL, or the page or sitemap the rejected value belongs to), `Err` (root cause) |
 
 All types implement `Unwrap()`, enabling `errors.Is` traversal to the root cause.
+
+The error that `Parse()` / `ParseContext()` return is one of these as well, see [Parse](#parse).
 
 ```go
 for _, err := range s.GetErrors() {

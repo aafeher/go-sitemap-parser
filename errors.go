@@ -55,6 +55,11 @@ func (e *NetworkError) Unwrap() error {
 // ParseError is returned when XML or gzip parsing of a sitemap document fails.
 // Callers can inspect URL to determine which sitemap could not be parsed.
 //
+// It is also the error of a parse that was not carried through for another reason: the
+// sitemaps a sitemap index lists were not followed because the depth limit is reached, or the
+// call was cut short because its context is done. In the latter case Err is the error of the
+// context, so errors.Is matches context.Canceled and context.DeadlineExceeded.
+//
 // Example usage:
 //
 //	var parseErr *sitemap.ParseError
@@ -64,7 +69,8 @@ func (e *NetworkError) Unwrap() error {
 type ParseError struct {
 	// URL is the sitemap URL that was being parsed when the error occurred. For a sitemap
 	// reached through a redirect it is the URL the sitemap was served from.
-	// May be empty when the error is not tied to a specific URL (e.g. max depth reached).
+	// When the depth limit is reached, it is the sitemap index whose sitemaps were not
+	// followed. When the call was cut short, it is the URL the call was made for.
 	URL string
 	// Err is the underlying parse error.
 	Err error

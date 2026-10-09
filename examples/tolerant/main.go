@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 
@@ -19,7 +20,9 @@ import (
 //
 // Tolerant mode also reads past the XML mistakes that can be read past, such
 // as an unescaped "&" in a URL. Strict mode requires well-formed XML and
-// rejects such a document as a whole.
+// rejects such a document as a whole. Parse() fails then, as the document it
+// was called for could not be parsed: it returns the *ParseError that
+// GetErrors() holds about the document.
 //
 // The sitemap content is passed in directly, so the example runs without
 // network access.
@@ -87,7 +90,10 @@ func main() {
 // parse parses content with s and prints the URLs and the errors it yields.
 func parse(s *sitemap.S, content string) {
 	sm, err := s.Parse("https://example.com/sitemap.xml", &content)
-	if err != nil {
+	// A document that cannot be parsed fails the call. That error is in
+	// GetErrors() as well, and is printed with the others below.
+	var parseErr *sitemap.ParseError
+	if err != nil && !errors.As(err, &parseErr) {
 		log.Fatalf("parse error: %v", err)
 	}
 

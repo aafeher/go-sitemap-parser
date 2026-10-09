@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -2422,6 +2423,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
+			err:                  pointerOfString(fmt.Sprintf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty-corrupted.xml.gz", server.URL), "")),
 			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty-corrupted.xml.gz", server.URL), "")},
 		},
 		{
@@ -2433,6 +2435,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
+			err:                  pointerOfString(fmt.Sprintf("parse %q: sitemap content is empty", fmt.Sprintf("%s/sitemapindex-empty.xml.gz", server.URL))),
 			errs:                 []error{fmt.Errorf("parse %q: sitemap content is empty", fmt.Sprintf("%s/sitemapindex-empty.xml.gz", server.URL))},
 		},
 		{
@@ -2498,6 +2501,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
+			err:                  pointerOfString(fmt.Sprintf("parse %q: sitemap content is empty", fmt.Sprintf("%s/sitemap-empty.xml.gz", server.URL))),
 			errs:                 []error{fmt.Errorf("parse %q: sitemap content is empty", fmt.Sprintf("%s/sitemap-empty.xml.gz", server.URL))},
 		},
 		{
@@ -2534,6 +2538,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
+			err:                  pointerOfString(fmt.Sprintf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")),
 			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")},
 		},
 		{
@@ -2546,6 +2551,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
+			err:                  pointerOfString(fmt.Sprintf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")),
 			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")},
 		},
 		{
@@ -2681,6 +2687,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
+			err:                  pointerOfString(fmt.Sprintf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")),
 			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")},
 		},
 		{
@@ -2763,6 +2770,7 @@ func TestS_Parse(t *testing.T) {
 			url:         "http://www.example.com/rss-empty.xml",
 			multiThread: true,
 			content:     pointerOfString(""),
+			err:         pointerOfString("parse \"http://www.example.com/rss-empty.xml\": sitemap content is empty"),
 			errs:        []error{fmt.Errorf("parse \"http://www.example.com/rss-empty.xml\": sitemap content is empty")},
 		},
 		{
@@ -2770,6 +2778,7 @@ func TestS_Parse(t *testing.T) {
 			url:         "http://www.example.com/atom-empty.xml",
 			multiThread: true,
 			content:     pointerOfString(""),
+			err:         pointerOfString("parse \"http://www.example.com/atom-empty.xml\": sitemap content is empty"),
 			errs:        []error{fmt.Errorf("parse \"http://www.example.com/atom-empty.xml\": sitemap content is empty")},
 		},
 		{
@@ -2777,6 +2786,7 @@ func TestS_Parse(t *testing.T) {
 			url:         "http://www.example.com/rss-malformed.xml",
 			multiThread: true,
 			content:     pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item>`),
+			err:         pointerOfString("parse \"http://www.example.com/rss-malformed.xml\": XML syntax error on line 1: unexpected EOF"),
 			errs:        []error{fmt.Errorf("parse \"http://www.example.com/rss-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
 		},
 		{
@@ -2784,6 +2794,7 @@ func TestS_Parse(t *testing.T) {
 			url:         "http://www.example.com/atom-malformed.xml",
 			multiThread: true,
 			content:     pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>`),
+			err:         pointerOfString("parse \"http://www.example.com/atom-malformed.xml\": XML syntax error on line 1: unexpected EOF"),
 			errs:        []error{fmt.Errorf("parse \"http://www.example.com/atom-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
 		},
 		{
@@ -2809,6 +2820,7 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
+			err:                  pointerOfString(fmt.Sprintf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")),
 			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")},
 		},
 		{
@@ -2840,10 +2852,13 @@ func TestS_Parse(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			s := New().SetStrict(test.strict)
 			sitemap, err := s.SetMultiThread(test.multiThread).SetFollow(test.follow).SetRules(test.rules).Parse(test.url, test.content)
-			if err != nil {
-				if err.Error() != *test.err {
-					t.Errorf("Unexpected error: %v", err)
-				}
+			switch {
+			case test.err == nil && err != nil:
+				t.Errorf("Unexpected error: %v", err)
+			case test.err != nil && err == nil:
+				t.Errorf("Expected error %q, but got nil", *test.err)
+			case test.err != nil && err.Error() != *test.err:
+				t.Errorf("Expected error %q, but got %q", *test.err, err)
 			}
 
 			if sitemap == nil {
@@ -3888,9 +3903,11 @@ func TestS_Parse_GzipSizeLimit(t *testing.T) {
 
 	t.Run("fetched content expanding beyond the limit is rejected", func(t *testing.T) {
 		s := New().SetMaxResponseSize(limit)
-		requireParse(t, s, url, nil)
+		_, err := s.Parse(url, nil)
 		mustEqual(t, "GetURLCount", s.GetURLCount(), 0)
 		requireSizeLimitError(t, s.GetErrors(), url, limit)
+		// The document Parse was called for cannot be parsed, so the call fails with it.
+		requireSizeLimitError(t, []error{err}, url, limit)
 	})
 
 	t.Run("fetched content within the limit is parsed", func(t *testing.T) {
@@ -3903,9 +3920,10 @@ func TestS_Parse_GzipSizeLimit(t *testing.T) {
 		const suppliedURL = "https://example.com/sitemap.txt.gz"
 		content := string(gzipped)
 		s := New().SetMaxResponseSize(limit)
-		requireParse(t, s, suppliedURL, &content)
+		_, err := s.Parse(suppliedURL, &content)
 		mustEqual(t, "GetURLCount", s.GetURLCount(), 0)
 		requireSizeLimitError(t, s.GetErrors(), suppliedURL, limit)
+		requireSizeLimitError(t, []error{err}, suppliedURL, limit)
 	})
 }
 
@@ -3951,7 +3969,7 @@ func TestS_parseAndFetchUrlsMultiThread(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3, maxResponseSize: 50 * 1024 * 1024, maxDepth: 10}, errs: []error{}}
-			s.parseAndFetchUrlsMultiThread(context.Background(), test.locations, 0)
+			s.parseAndFetchUrlsMultiThread(context.Background(), server.URL+"/index.xml", test.locations, 0)
 
 			if len(s.urls) != int(test.urlsCount) {
 				t.Errorf("expected %d, got %d", test.urlsCount, len(s.urls))
@@ -4006,7 +4024,7 @@ func TestS_parseAndFetchUrlsSequential(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			s := &S{cfg: config{userAgent: "test-agent", fetchTimeout: 3, maxResponseSize: 50 * 1024 * 1024, maxDepth: 10}, errs: []error{}}
-			s.parseAndFetchUrlsSequential(context.Background(), test.locations, 0)
+			s.parseAndFetchUrlsSequential(context.Background(), server.URL+"/index.xml", test.locations, 0)
 
 			if len(s.urls) != int(test.urlsCount) {
 				t.Errorf("expected %d, got %d", test.urlsCount, len(s.urls))
@@ -4024,18 +4042,14 @@ func TestS_parseAndFetchUrlsMultiThread_MaxDepth(t *testing.T) {
 	defer server.Close()
 
 	s := New().SetMaxDepth(1)
+	index := server.URL + "/index.xml"
 	locations := []string{fmt.Sprintf("%s/sitemapindex-1.xml", server.URL)}
-	s.parseAndFetchUrlsMultiThread(context.Background(), locations, 1)
+	s.parseAndFetchUrlsMultiThread(context.Background(), index, locations, 1)
 
 	if len(s.urls) != 0 {
 		t.Errorf("expected 0 URLs at depth limit, got %d", len(s.urls))
 	}
-	if s.GetErrorsCount() != 1 {
-		t.Errorf("expected 1 depth error, got %d", s.GetErrorsCount())
-	}
-	if !strings.Contains(s.GetErrors()[0].Error(), "max recursion depth") {
-		t.Errorf("expected max recursion depth error, got: %v", s.GetErrors()[0])
-	}
+	requireDepthLimitErrors(t, s.GetErrors(), 1, index)
 }
 
 func TestS_parseAndFetchUrlsSequential_MaxDepth(t *testing.T) {
@@ -4043,18 +4057,32 @@ func TestS_parseAndFetchUrlsSequential_MaxDepth(t *testing.T) {
 	defer server.Close()
 
 	s := New().SetMaxDepth(1).SetMultiThread(false)
+	index := server.URL + "/index.xml"
 	locations := []string{fmt.Sprintf("%s/sitemapindex-1.xml", server.URL)}
-	s.parseAndFetchUrlsSequential(context.Background(), locations, 1)
+	s.parseAndFetchUrlsSequential(context.Background(), index, locations, 1)
 
 	if len(s.urls) != 0 {
 		t.Errorf("expected 0 URLs at depth limit, got %d", len(s.urls))
 	}
-	if s.GetErrorsCount() != 1 {
-		t.Errorf("expected 1 depth error, got %d", s.GetErrorsCount())
+	requireDepthLimitErrors(t, s.GetErrors(), 1, index)
+}
+
+// requireDepthLimitErrors verifies that errs holds nothing but the errors of
+// the depth limit being reached, one for each of the documents given: the
+// documents whose sitemaps were not followed.
+func requireDepthLimitErrors(t *testing.T, errs []error, maxDepth int, documents ...string) {
+	t.Helper()
+
+	var got []string
+	for _, err := range errs {
+		var parseErr *ParseError
+		if !errors.As(err, &parseErr) {
+			t.Fatalf("expected *ParseError, got %T: %v", err, err)
+		}
+		mustEqual(t, "error", parseErr.Err.Error(), fmt.Sprintf("max recursion depth of %d reached", maxDepth))
+		got = append(got, parseErr.URL)
 	}
-	if !strings.Contains(s.GetErrors()[0].Error(), "max recursion depth") {
-		t.Errorf("expected max recursion depth error, got: %v", s.GetErrors()[0])
-	}
+	assertStringSlice(t, "documents named by the depth limit errors", sortedCopy(got), sortedCopy(documents))
 }
 
 func TestS_parse(t *testing.T) {
@@ -5569,9 +5597,10 @@ func TestS_ParseContext_NilContext(t *testing.T) {
 }
 
 func TestS_ParseContext_PreCancelled_RobotsTXT(t *testing.T) {
-	// Covers the final `if ctxErr := ctx.Err(); ctxErr != nil { return s, ctxErr }`
-	// on the robots.txt path: with the context already cancelled, none of the
-	// sitemaps the robots.txt lists is fetched.
+	// Covers the final `if ctxErr := ctx.Err(); ctxErr != nil { ... }` on the
+	// robots.txt path: with the context already cancelled, none of the sitemaps
+	// the robots.txt lists is fetched, and the call reports that it was cut
+	// short.
 	// We pre-supply the robots.txt body via urlContent so setContent does not
 	// perform an HTTP fetch (which would fail before the sitemaps are reached).
 	robots := "Sitemap: http://127.0.0.1:1/sitemap.xml\n"
@@ -5581,11 +5610,8 @@ func TestS_ParseContext_PreCancelled_RobotsTXT(t *testing.T) {
 
 	s := New()
 	_, err := s.ParseContext(ctx, "http://example.com/robots.txt", &robots)
-	if err == nil {
-		t.Fatal("expected context error, got nil")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled, got %v", err)
+	if cutShort := requireCutShort(t, s, err, "http://example.com/robots.txt", context.Canceled); cutShort != 0 {
+		t.Errorf("expected no other error, got %v", s.GetErrors())
 	}
 }
 
@@ -5596,7 +5622,11 @@ func TestS_parseAndFetchUrlsMultiThread_PreCancelled(t *testing.T) {
 	cancel()
 
 	s := New()
-	s.parseAndFetchUrlsMultiThread(ctx, []string{"http://127.0.0.1:1/a", "http://127.0.0.1:1/b"}, 0)
+	s.parseAndFetchUrlsMultiThread(ctx, "http://127.0.0.1:1/index.xml", []string{"http://127.0.0.1:1/a", "http://127.0.0.1:1/b"}, 0)
+
+	// Nothing is fetched, and nothing is recorded: it is ParseContext that
+	// records that the call was cut short.
+	mustEqual(t, "errors", len(s.errs), 0)
 }
 
 func TestS_parseAndFetchUrlsMultiThread_AcquireSlotCancel(t *testing.T) {
@@ -5615,16 +5645,14 @@ func TestS_parseAndFetchUrlsMultiThread_AcquireSlotCancel(t *testing.T) {
 		cancel()
 	}()
 
-	s.parseAndFetchUrlsMultiThread(ctx, []string{"http://127.0.0.1:1/a", "http://127.0.0.1:1/b", "http://127.0.0.1:1/c"}, 0)
+	s.parseAndFetchUrlsMultiThread(ctx, "http://127.0.0.1:1/index.xml", []string{"http://127.0.0.1:1/a", "http://127.0.0.1:1/b", "http://127.0.0.1:1/c"}, 0)
 
-	// The cancellation is recorded once, not once for every location that was
-	// still to come, and nothing is fetched without a slot: a fetch attempt
-	// would have left an error of its own.
-	if len(s.errs) != 1 {
-		t.Fatalf("expected 1 error, got %d: %v", len(s.errs), s.errs)
-	}
-	if !errors.Is(s.errs[0], context.Canceled) {
-		t.Errorf("expected context.Canceled, got %v", s.errs[0])
+	// Nothing is recorded for the wait that was cut short, nor for the
+	// locations that were still to come: it is ParseContext that records that
+	// the call was cut short. Nothing is fetched without a slot either, a
+	// fetch attempt would have left an error of its own.
+	if len(s.errs) != 0 {
+		t.Fatalf("expected no errors, got %d: %v", len(s.errs), s.errs)
 	}
 	// The location the slot was waited for is the only one that was reached.
 	mustEqual(t, "locations reached", len(s.fetchedURLs), 1)
@@ -5637,7 +5665,9 @@ func TestS_parseAndFetchUrlsSequential_PreCancelled(t *testing.T) {
 	cancel()
 
 	s := New()
-	s.parseAndFetchUrlsSequential(ctx, []string{"http://127.0.0.1:1/a"}, 0)
+	s.parseAndFetchUrlsSequential(ctx, "http://127.0.0.1:1/index.xml", []string{"http://127.0.0.1:1/a"}, 0)
+
+	mustEqual(t, "errors", len(s.errs), 0)
 }
 
 func TestS_Parse_BackwardCompatible(t *testing.T) {
@@ -5939,9 +5969,12 @@ func TestS_Parse_RobotsTXT_MaxDepth(t *testing.T) {
 					requireParse(t, s, srv.URL+path, nil)
 
 					assertCounts(t, s, tt.wantURLs, tt.wantErrs)
-					for _, err := range s.GetErrors() {
-						mustEqual(t, "error", err.Error(), fmt.Sprintf(`parse "": max recursion depth of %d reached`, tt.maxDepth))
+					// The error names the sitemap index whose sitemaps are not followed.
+					var notFollowed []string
+					if tt.wantErrs > 0 {
+						notFollowed = []string{srv.URL + "/nested.xml"}
 					}
+					requireDepthLimitErrors(t, s.GetErrors(), tt.maxDepth, notFollowed...)
 				})
 			}
 		}
@@ -6092,6 +6125,8 @@ func TestS_Parse_Redirect(t *testing.T) {
 		url      string
 		wantURLs []string
 		wantErrs []string
+		// wantErr is the error Parse returns, if it returns one.
+		wantErr string
 	}{
 		{
 			name:     "relative URL of a redirected sitemap",
@@ -6148,6 +6183,7 @@ func TestS_Parse_Redirect(t *testing.T) {
 			name:     "error about the gzip content of a redirected sitemap",
 			url:      movedURL + "/corrupt.xml.gz",
 			wantErrs: corrupt,
+			wantErr:  corrupt[0],
 		},
 		{
 			name:     "errors about the redirected sitemaps of a robots.txt",
@@ -6160,7 +6196,14 @@ func TestS_Parse_Redirect(t *testing.T) {
 		for _, multiThread := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s, multiThread=%v", tt.name, multiThread), func(t *testing.T) {
 				s := New().SetStrict(tt.strict).SetMultiThread(multiThread)
-				requireParse(t, s, tt.url, nil)
+				_, err := s.Parse(tt.url, nil)
+				if tt.wantErr == "" {
+					if err != nil {
+						t.Fatalf("unexpected parse error: %v", err)
+					}
+				} else if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("expected parse error %q, got %v", tt.wantErr, err)
+				}
 
 				var gotURLs, gotErrs []string
 				for _, u := range s.GetURLs() {
@@ -6653,37 +6696,432 @@ func TestS_Parse_MaxConcurrency_BoundsGoroutines(t *testing.T) {
 
 // TestS_ParseContext_CancelledWhileWaitingForSlot verifies that a call that is
 // cancelled while sitemaps wait for a slot does not go on to fetch them, and
-// records the cancellation of the wait once rather than once for every sitemap
-// that was still to come.
+// records nothing for the sitemaps that were still to come.
 func TestS_ParseContext_CancelledWhileWaitingForSlot(t *testing.T) {
 	const sitemaps = 50
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var mu sync.Mutex
-	requested := 0
+	var requested atomic.Int64
 	server := sitemapIndexServer(t, sitemaps, 1, func() {
-		mu.Lock()
-		requested++
-		mu.Unlock()
+		requested.Add(1)
 		// The sitemap requested first has the only slot. The call is cancelled while it
 		// holds it, with all the other sitemaps yet to be fetched.
 		cancel()
 	})
+	url := server.URL + "/index.xml"
 
 	s := New().SetMaxConcurrency(1)
-	_, err := s.ParseContext(ctx, server.URL+"/index.xml", nil)
+	_, err := s.ParseContext(ctx, url, nil)
 
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
+	mustEqual(t, "sitemaps requested", requested.Load(), 1)
+	// The request that was cancelled is reported, and so may be the one of a sitemap that
+	// got the slot it gave up just as the wait for it was cancelled.
+	if cutShort := requireCutShort(t, s, err, url, context.Canceled); cutShort > 2 {
+		t.Errorf("expected the errors of 2 requests at most, got %d: %v", cutShort, s.GetErrors())
 	}
-	mu.Lock()
-	mustEqual(t, "sitemaps requested", requested, 1)
-	mu.Unlock()
-	// One error is that of the request that was cancelled, the other that of the wait.
-	if count := s.GetErrorsCount(); count < 1 || count > 2 {
-		t.Errorf("expected 1 or 2 errors, got %d: %v", count, s.GetErrors())
+}
+
+// requireCutShort verifies what a call that was cut short reports. err, the
+// error the call returned, has to be a *ParseError that names url, the URL the
+// call was made for, and holds cause, the error of the context. The call has
+// to have recorded that very error, once, and nothing else but the
+// *NetworkError of every request that was cut short. requireCutShort returns
+// the number of those.
+func requireCutShort(t *testing.T, s *S, err error, url string, cause error) int {
+	t.Helper()
+
+	var parseErr *ParseError
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("expected a *ParseError to be returned, got %T: %v", err, err)
+	}
+	mustEqual(t, "URL of the error returned", parseErr.URL, url)
+	if parseErr.Err != cause {
+		t.Errorf("expected the error returned to hold %q, got %T: %v", cause, parseErr.Err, parseErr.Err)
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("expected the error returned to match %q, got %v", cause, err)
+	}
+
+	errs := s.GetErrors()
+	if len(errs) == 0 || errs[len(errs)-1] != err {
+		t.Fatalf("expected the error returned to be the last one recorded, got %v", errs)
+	}
+	for _, recorded := range errs[:len(errs)-1] {
+		var networkErr *NetworkError
+		if !errors.As(recorded, &networkErr) {
+			t.Errorf("expected the *NetworkError of a request, got %T: %v", recorded, recorded)
+			continue
+		}
+		if !errors.Is(recorded, cause) {
+			t.Errorf("expected the error of the request to match %q, got %v", cause, recorded)
+		}
+	}
+	mustEqual(t, "GetErrorsCount", s.GetErrorsCount(), int64(len(errs)))
+
+	return len(errs) - 1
+}
+
+// TestS_ParseContext_CutShort verifies that a call that is cut short reports
+// it the same way whether the sitemaps are fetched concurrently or one at a
+// time, and whether it was cancelled or ran out of time: with one error for
+// the call, and none for the sitemaps it did not get to.
+func TestS_ParseContext_CutShort(t *testing.T) {
+	const sitemaps, limit = 50, 4
+
+	for _, multiThread := range []bool{false, true} {
+		// A request that is under way is cut short and reported: one of them when the
+		// sitemaps are fetched one at a time, as many as there are slots otherwise, and
+		// one more if a sitemap got a slot just as the wait for it was cut short.
+		maxCutShort, maxRequested := 1, int64(1)
+		if multiThread {
+			maxCutShort, maxRequested = limit+1, limit
+		}
+
+		t.Run(fmt.Sprintf("cancelled, multiThread=%v", multiThread), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var requested atomic.Int64
+			server := sitemapIndexServer(t, sitemaps, 1, func() {
+				requested.Add(1)
+				cancel()
+			})
+			url := server.URL + "/index.xml"
+
+			s := New().SetMultiThread(multiThread).SetMaxConcurrency(limit)
+			_, err := s.ParseContext(ctx, url, nil)
+
+			if cutShort := requireCutShort(t, s, err, url, context.Canceled); cutShort > maxCutShort {
+				t.Errorf("expected the errors of %d requests at most, got %d: %v", maxCutShort, cutShort, s.GetErrors())
+			}
+			if got := requested.Load(); got < 1 || got > maxRequested {
+				t.Errorf("expected 1 to %d sitemaps to be requested, got %d", maxRequested, got)
+			}
+		})
+
+		t.Run(fmt.Sprintf("out of time, multiThread=%v", multiThread), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+
+			// No sitemap is served for as long as the call runs.
+			served := make(chan struct{})
+			defer close(served)
+			var requested atomic.Int64
+			server := sitemapIndexServer(t, sitemaps, 1, func() {
+				requested.Add(1)
+				<-served
+			})
+			url := server.URL + "/index.xml"
+
+			s := New().SetMultiThread(multiThread).SetMaxConcurrency(limit).SetFetchTimeout(30)
+			_, err := s.ParseContext(ctx, url, nil)
+
+			cutShort := requireCutShort(t, s, err, url, context.DeadlineExceeded)
+			if cutShort < 1 || cutShort > maxCutShort {
+				t.Errorf("expected the errors of 1 to %d requests, got %d: %v", maxCutShort, cutShort, s.GetErrors())
+			}
+			if got := requested.Load(); got < 1 || got > maxRequested {
+				t.Errorf("expected 1 to %d sitemaps to be requested, got %d", maxRequested, got)
+			}
+			mustEqual(t, "GetURLCount", s.GetURLCount(), 0)
+		})
+
+		t.Run(fmt.Sprintf("cancelled beforehand, multiThread=%v", multiThread), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			var requested atomic.Int64
+			server := sitemapIndexServer(t, sitemaps, 1, func() { requested.Add(1) })
+
+			documents := map[string]string{
+				"/index.xml":  fmt.Sprintf(`<sitemapindex><sitemap><loc>%[1]s/sitemap-0.xml</loc></sitemap><sitemap><loc>%[1]s/sitemap-1.xml</loc></sitemap></sitemapindex>`, server.URL),
+				"/robots.txt": fmt.Sprintf("Sitemap: %[1]s/sitemap-0.xml\nSitemap: %[1]s/sitemap-1.xml\n", server.URL),
+				// The document lists no sitemap. It is parsed, and what it lists is kept, yet
+				// the call was not to be carried out any more.
+				"/sitemap.xml": fmt.Sprintf(`<urlset><url><loc>%s/page</loc></url></urlset>`, server.URL),
+			}
+			for path, content := range documents {
+				url := server.URL + path
+
+				s := New().SetMultiThread(multiThread).SetMaxConcurrency(limit)
+				_, err := s.ParseContext(ctx, url, &content)
+
+				if cutShort := requireCutShort(t, s, err, url, context.Canceled); cutShort != 0 {
+					t.Errorf("%s: expected no other error, got %v", path, s.GetErrors())
+				}
+				wantURLs := int64(0)
+				if path == "/sitemap.xml" {
+					wantURLs = 1
+				}
+				mustEqual(t, path+": GetURLCount", s.GetURLCount(), wantURLs)
+			}
+			mustEqual(t, "sitemaps requested", requested.Load(), 0)
+		})
+
+		// When it is the request for the URL the call was made for that is cut short, there
+		// is nothing to tell apart: the error of the request is the error of the call.
+		t.Run(fmt.Sprintf("cancelled beforehand, document to be fetched, multiThread=%v", multiThread), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			server := sitemapIndexServer(t, sitemaps, 1, nil)
+			url := server.URL + "/index.xml"
+
+			s := New().SetMultiThread(multiThread)
+			_, err := s.ParseContext(ctx, url, nil)
+
+			var networkErr *NetworkError
+			if !errors.As(err, &networkErr) {
+				t.Fatalf("expected a *NetworkError to be returned, got %T: %v", err, err)
+			}
+			mustEqual(t, "URL of the error returned", networkErr.URL, url)
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("expected the error returned to match %q, got %v", context.Canceled, err)
+			}
+			if errs := s.GetErrors(); len(errs) != 1 || errs[0] != err {
+				t.Errorf("expected the error returned to be the only one recorded, got %v", errs)
+			}
+		})
+	}
+}
+
+// TestS_ParseContext_CutShort_Redirect verifies that the error of a call that
+// was cut short names the URL the call was made for, also when the document
+// was served from another one.
+func TestS_ParseContext_CutShort_Redirect(t *testing.T) {
+	for _, multiThread := range []bool{false, true} {
+		t.Run(fmt.Sprintf("multiThread=%v", multiThread), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			movedURL, _ := movedAndTarget(t, func(_, targetURL string) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/index.xml" {
+						_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%s/sitemap.xml</loc></sitemap></sitemapindex>`, targetURL)
+						return
+					}
+					cancel()
+					_, _ = fmt.Fprintf(w, `<urlset><url><loc>%s/page</loc></url></urlset>`, targetURL)
+				}
+			})
+			url := movedURL + "/index.xml"
+
+			s := New().SetMultiThread(multiThread)
+			_, err := s.ParseContext(ctx, url, nil)
+
+			requireCutShort(t, s, err, url, context.Canceled)
+		})
+	}
+}
+
+// unparsableDocuments are documents that cannot be parsed, by the path they
+// are served at, and unparsableErrors the error each of them is reported with.
+// The gzip content that cannot be unzipped is not recognised as a sitemap
+// either, which is reported second.
+var (
+	unparsableDocuments = map[string]string{
+		"/page.html":            `<html><body>Not a sitemap</body></html>`,
+		"/empty.xml":            ``,
+		"/truncated.xml":        `<urlset><url><loc>https://example.com/page</loc></url>`,
+		"/truncated-index.xml":  `<sitemapindex><sitemap><loc>https://example.com/sitemap.xml</loc>`,
+		"/truncated-rss.xml":    `<rss><channel><item><link>https://example.com/page</link>`,
+		"/truncated-atom.xml":   `<feed><entry><link href="https://example.com/page"/>`,
+		"/corrupt.xml.gz":       "\x1f\x8b\x08 not gzip",
+		"/text-without-url.txt": "# Nothing to see here\nexample.com/page\n",
+	}
+	unparsableErrors = map[string][]string{
+		"/page.html":            {`unrecognized sitemap format (root element: "html")`},
+		"/empty.xml":            {`sitemap content is empty`},
+		"/truncated.xml":        {`XML syntax error on line 1: unexpected EOF`},
+		"/truncated-index.xml":  {`XML syntax error on line 1: unexpected EOF`},
+		"/truncated-rss.xml":    {`XML syntax error on line 1: unexpected EOF`},
+		"/truncated-atom.xml":   {`XML syntax error on line 1: unexpected EOF`},
+		"/corrupt.xml.gz":       {`gzip decompression failed: unexpected EOF`, `unrecognized sitemap format (root element: "")`},
+		"/text-without-url.txt": {`unrecognized sitemap format (root element: "")`},
+	}
+)
+
+// unparsableServer starts a server that serves unparsableDocuments, and next
+// to them:
+//
+//   - /pages.xml, a sitemap that lists one page;
+//   - /index.xml and /robots.txt, each of which lists every document that
+//     cannot be parsed, /pages.xml, and /missing.xml, which is not found;
+//   - /no-loc.xml, a sitemap of two entries, one of which is not valid.
+func unparsableServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	listed := []string{"/pages.xml", "/missing.xml"}
+	for path := range unparsableDocuments {
+		listed = append(listed, path)
+	}
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if content, ok := unparsableDocuments[r.URL.Path]; ok {
+			_, _ = w.Write([]byte(content))
+			return
+		}
+		switch r.URL.Path {
+		case "/pages.xml":
+			_, _ = fmt.Fprintf(w, `<urlset><url><loc>%s/page</loc></url></urlset>`, server.URL)
+		case "/no-loc.xml":
+			_, _ = fmt.Fprintf(w, `<urlset><url><loc>%s/page</loc></url><url><lastmod>2024-01-15</lastmod></url></urlset>`, server.URL)
+		case "/index.xml":
+			_, _ = fmt.Fprint(w, `<sitemapindex>`)
+			for _, path := range listed {
+				_, _ = fmt.Fprintf(w, `<sitemap><loc>%s%s</loc></sitemap>`, server.URL, path)
+			}
+			_, _ = fmt.Fprint(w, `</sitemapindex>`)
+		case "/robots.txt":
+			for _, path := range listed {
+				_, _ = fmt.Fprintf(w, "Sitemap: %s%s\n", server.URL, path)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	return server
+}
+
+// TestS_Parse_DocumentError verifies that a call fails if the document it is
+// made for cannot be parsed, whether the document is fetched or passed in, and
+// that the error it returns is the one it records about the document.
+func TestS_Parse_DocumentError(t *testing.T) {
+	server := unparsableServer(t)
+
+	for path, content := range unparsableDocuments {
+		url := server.URL + path
+
+		var wantErrs []string
+		for _, message := range unparsableErrors[path] {
+			wantErrs = append(wantErrs, fmt.Sprintf("parse %q: %s", url, message))
+		}
+
+		for _, multiThread := range []bool{false, true} {
+			for name, urlContent := range map[string]*string{"fetched": nil, "passed in": &content} {
+				t.Run(fmt.Sprintf("%s, %s, multiThread=%v", path, name, multiThread), func(t *testing.T) {
+					s := New().SetMultiThread(multiThread)
+					_, err := s.Parse(url, urlContent)
+
+					var parseErr *ParseError
+					if !errors.As(err, &parseErr) {
+						t.Fatalf("expected a *ParseError to be returned, got %T: %v", err, err)
+					}
+					mustEqual(t, "URL of the error returned", parseErr.URL, url)
+
+					errs := s.GetErrors()
+					var gotErrs []string
+					for _, recorded := range errs {
+						gotErrs = append(gotErrs, recorded.Error())
+					}
+					assertStringSlice(t, "errors", gotErrs, wantErrs)
+					// Not an error that reads the same, but the one that is recorded: of
+					// several, the one that tells why the document could not be parsed.
+					if len(errs) == 0 || errs[0] != err {
+						t.Errorf("expected the error returned to be the first one recorded, got %v", err)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestS_Parse_DocumentError_ListedSitemap verifies that it is the document a
+// call is made for alone that fails the call. A sitemap it lists that cannot
+// be parsed, or cannot be fetched, is reported in the error list, and so is an
+// entry that is not valid; the call succeeds.
+func TestS_Parse_DocumentError_ListedSitemap(t *testing.T) {
+	server := unparsableServer(t)
+
+	var wantListed []string
+	for path, messages := range unparsableErrors {
+		for _, message := range messages {
+			wantListed = append(wantListed, fmt.Sprintf("parse %q: %s", server.URL+path, message))
+		}
+	}
+	wantListed = append(wantListed, fmt.Sprintf("fetch %q: received HTTP status 404", server.URL+"/missing.xml"))
+
+	tests := []struct {
+		path     string
+		wantErrs []string
+	}{
+		{"/index.xml", wantListed},
+		{"/robots.txt", wantListed},
+		{"/no-loc.xml", []string{fmt.Sprintf("validate %q: <loc> of an entry is empty or missing", server.URL+"/no-loc.xml")}},
+	}
+
+	for _, tt := range tests {
+		for _, multiThread := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, multiThread=%v", tt.path, multiThread), func(t *testing.T) {
+				s := New().SetMultiThread(multiThread)
+				requireParse(t, s, server.URL+tt.path, nil)
+
+				var gotErrs []string
+				for _, err := range s.GetErrors() {
+					gotErrs = append(gotErrs, err.Error())
+				}
+				assertStringSlice(t, "errors", sortedCopy(gotErrs), sortedCopy(tt.wantErrs))
+
+				var gotURLs []string
+				for _, u := range s.GetURLs() {
+					gotURLs = append(gotURLs, u.Loc)
+				}
+				assertStringSlice(t, "URLs", gotURLs, []string{server.URL + "/page"})
+			})
+		}
+	}
+}
+
+// TestS_Parse_MaxDepth_NamesDocument verifies that the error of the depth
+// limit names the sitemap index whose sitemaps are not followed, by the URL it
+// was served from, and that there is one for every such sitemap index.
+func TestS_Parse_MaxDepth_NamesDocument(t *testing.T) {
+	// index.xml -> pages.xml (one URL)
+	//           -> nested.xml, which has moved -> deep.xml (one URL)
+	//           -> other.xml -> deeper.xml -> deepest.xml (one URL)
+	movedURL, targetURL := movedAndTarget(t, func(movedURL, targetURL string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/index.xml":
+				_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%[1]s/pages.xml</loc></sitemap><sitemap><loc>%[2]s/nested.xml</loc></sitemap><sitemap><loc>%[1]s/other.xml</loc></sitemap></sitemapindex>`, targetURL, movedURL)
+			case "/nested.xml":
+				_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%s/deep.xml</loc></sitemap></sitemapindex>`, targetURL)
+			case "/other.xml":
+				_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%s/deeper.xml</loc></sitemap></sitemapindex>`, targetURL)
+			case "/deeper.xml":
+				_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%s/deepest.xml</loc></sitemap></sitemapindex>`, targetURL)
+			default:
+				_, _ = fmt.Fprintf(w, `<urlset><url><loc>%s%s/page</loc></url></urlset>`, targetURL, r.URL.Path)
+			}
+		}
+	})
+
+	tests := []struct {
+		maxDepth    int
+		wantURLs    int64
+		notFollowed []string
+	}{
+		{1, 1, []string{targetURL + "/nested.xml", targetURL + "/other.xml"}},
+		{2, 2, []string{targetURL + "/deeper.xml"}},
+		{3, 3, nil},
+	}
+
+	for _, tt := range tests {
+		for _, multiThread := range []bool{false, true} {
+			t.Run(fmt.Sprintf("maxDepth=%d, multiThread=%v", tt.maxDepth, multiThread), func(t *testing.T) {
+				s := New().SetMaxDepth(tt.maxDepth).SetMultiThread(multiThread)
+				// Reaching the limit does not fail the call.
+				requireParse(t, s, movedURL+"/index.xml", nil)
+
+				mustEqual(t, "GetURLCount", s.GetURLCount(), tt.wantURLs)
+				requireDepthLimitErrors(t, s.GetErrors(), tt.maxDepth, tt.notFollowed...)
+			})
+		}
 	}
 }
 

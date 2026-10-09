@@ -611,30 +611,29 @@ func (s *S) GetStrict() bool {
 // URL, and the errors about the document name it.
 //
 // It sets the mainURL field to the given URL. The content is the given URL
-// content or, if that is nil, what the URL serves. It returns an error if the
-// content could not be fetched.
+// content or, if that is nil, what the URL serves.
 // If the URL ends with "/robots.txt", it parses the robots.txt file and
 // fetches URLs from the sitemap files mentioned in the robots.txt.
 // If the URL does not end with "/robots.txt", the content is checked
 // and unzipped if necessary, then parsed and fetched.
 // The content of a document is not kept once the document is parsed.
-// It returns the S structure and nil error if the method was able to complete
-// successfully.
+//
+// It returns the S structure, and a nil error if the document at the given
+// URL was fetched and parsed. Otherwise the error tells why it was not:
+//
+//   - a configuration error is outstanding, see above;
+//   - the URL is not valid: a *ValidationError;
+//   - the document could not be fetched: a *NetworkError;
+//   - the document could not be parsed: a *ParseError.
+//
+// Except for the first, the error returned is the one GetErrors() holds about
+// it. What goes wrong further on is in GetErrors() only and does not fail the
+// call: a sitemap the document lists that cannot be fetched or parsed, a limit
+// that is reached, an entry that is not valid.
 func (s *S) Parse(url string, urlContent *string) (*S, error) {
 	return s.ParseContext(context.Background(), url, urlContent)
 }
 
-// ParseContext parses the given URL and its content, honoring the supplied
-// context for cancellation and deadlines.
-//
-// The context is propagated through every HTTP request issued by the parser
-// (both the initial fetch and the recursive sitemap-index/urlset fetches),
-// so cancelling ctx aborts in-flight downloads and prevents new ones from
-// starting. Already-parsed URLs accumulated in s.urls before cancellation
-// remain available via GetURLs(); the cancellation cause is recorded in the
-// error list and is also returned by ParseContext.
-//
-// All other semantics match Parse.
 // validateInputURL parses url and verifies it uses http or https and has a host.
 func (s *S) validateInputURL(url string) error {
 	parsedURL, parseErr := neturl.Parse(url)
@@ -650,6 +649,29 @@ func (s *S) validateInputURL(url string) error {
 	return nil
 }
 
+// ParseContext parses the given URL and its content, honoring the supplied
+// context for cancellation and deadlines.
+//
+// The context is propagated through every HTTP request issued by the parser
+// (both the initial fetch and the recursive sitemap-index/urlset fetches),
+// so cancelling ctx aborts in-flight downloads and prevents new ones from
+// starting. Already-parsed URLs accumulated in s.urls before cancellation
+// remain available via GetURLs().
+//
+// If ctx is done by the time the call ends, ParseContext returns a *ParseError
+// that names the given URL and wraps the error of ctx, so errors.Is matches
+// context.Canceled and context.DeadlineExceeded. The same error is recorded in
+// the error list, once for the call: whether the sitemaps are fetched
+// concurrently or one at a time, and however many of them were not fetched. A
+// request that was cut short is recorded as the *NetworkError of that sitemap
+// in addition.
+//
+// A call that fails for the given URL itself, as described at Parse, returns
+// and records that error alone. This is the case when it is the request for
+// the given URL that is cut short: the error is the *NetworkError of that
+// request, which wraps the error of ctx as well.
+//
+// All other semantics match Parse.
 func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*S, error) {
 	s.parseMu.Lock()
 	defer s.parseMu.Unlock()
@@ -714,15 +736,26 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 
 		// The sitemaps a robots.txt lists are fetched the way those of a sitemap index are,
 		// so that every setting governing the fetches applies to them as well.
-		parseAndFetchUrls(ctx, locations, robotsTXTDepth)
+		parseAndFetchUrls(ctx, servedFrom, locations, robotsTXTDepth)
 	} else {
-		locations := s.parseDocument(servedFrom, content)
+		locations, err := s.parseDocument(servedFrom, content)
+		if err != nil {
+			// The document the call is about cannot be parsed, which fails the call the way
+			// its fetch failing does. The error is in the error list already.
+			return s, err
+		}
 
-		parseAndFetchUrls(ctx, locations, 0)
+		parseAndFetchUrls(ctx, servedFrom, locations, 0)
 	}
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return s, ctxErr
+		// The cancellation is recorded here, and nowhere else: once for the call, whichever
+		// way the sitemaps are fetched and wherever the cancellation caught them.
+		err := &ParseError{URL: url, Err: ctxErr}
+		s.mu.Lock()
+		s.errs = append(s.errs, err)
+		s.mu.Unlock()
+		return s, err
 	}
 
 	return s, nil
@@ -1057,19 +1090,22 @@ func (s *S) markFetched(url string) bool {
 
 // withinMaxDepth reports whether the sitemaps found at the given depth may still be fetched.
 // If the limit set with SetMaxDepth is reached, it records the error and returns false.
+// The error names url, the document that lists the sitemaps: it is that document whose sitemaps
+// are not followed.
 // The limit is read with the lock held, like every other setting: a setter may be called
 // while Parse is running.
-func (s *S) withinMaxDepth(depth int) bool {
+func (s *S) withinMaxDepth(url string, depth int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if depth < s.cfg.maxDepth {
 		return true
 	}
-	s.errs = append(s.errs, &ParseError{URL: "", Err: fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth)})
+	s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth)})
 	return false
 }
 
 // parseAndFetchUrlsMultiThread concurrently parses and fetches the URLs specified in the "locations" parameter.
+// url is the document that lists them, as it was served.
 // It uses a sync.WaitGroup to wait for all fetch operations to complete.
 // For each location, it starts a goroutine that fetches and parses the document with fetchAndParse.
 // A goroutine holds a concurrency slot while it does so, which makes the limit set with
@@ -1079,12 +1115,12 @@ func (s *S) withinMaxDepth(depth int) bool {
 // The slot is taken before the goroutine is started, not by the goroutine. A sitemap that has
 // to wait for a slot therefore costs no goroutine: the ones that exist are those working on a
 // sitemap, and those waiting to go on with the sitemaps a sitemap index of theirs lists.
-// If the context is cancelled while a slot is waited for, the error is recorded and the
-// remaining locations are left alone.
+// If the context is done, also while a slot is waited for, the remaining locations are left
+// alone. Nothing is recorded for them: that the call was cut short is recorded by ParseContext.
 // If there is an error during the fetch operation, the error is appended to the "errs" field of the S structure.
 // This method does not return any value.
-func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string, depth int) {
-	if !s.withinMaxDepth(depth) {
+func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, url string, locations []string, depth int) {
+	if !s.withinMaxDepth(url, depth) {
 		return
 	}
 	var wg sync.WaitGroup
@@ -1100,10 +1136,7 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 		s.mu.Unlock()
 		// acquireSlot also honours ctx cancellation, so a single check
 		// here covers both the unlimited-concurrency and bounded paths.
-		if err := s.acquireSlot(ctx); err != nil {
-			s.mu.Lock()
-			s.errs = append(s.errs, err)
-			s.mu.Unlock()
+		if s.acquireSlot(ctx) != nil {
 			break
 		}
 		wg.Add(1)
@@ -1111,7 +1144,7 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 		loc := location
 		go func() {
 			defer wg.Done()
-			parsedLocations, err := s.fetchAndParse(ctx, loc)
+			servedFrom, parsedLocations, err := s.fetchAndParse(ctx, loc)
 			s.releaseSlot()
 			if err != nil {
 				s.mu.Lock()
@@ -1120,7 +1153,7 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 				return
 			}
 			if len(parsedLocations) > 0 {
-				s.parseAndFetchUrlsMultiThread(ctx, parsedLocations, depth+1)
+				s.parseAndFetchUrlsMultiThread(ctx, servedFrom, parsedLocations, depth+1)
 			}
 		}()
 	}
@@ -1128,11 +1161,14 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 }
 
 // parseAndFetchUrlsSequential sequentially parses and fetches the URLs specified in the "locations" parameter.
+// url is the document that lists them, as it was served.
 // For each location, it fetches and parses the document with fetchAndParse.
+// If the context is done, the remaining locations are left alone. Nothing is recorded for
+// them: that the call was cut short is recorded by ParseContext.
 // If there is an error during the fetch operation, the error is appended to the "errs" field of the S structure.
 // This method does not return any value.
-func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string, depth int) {
-	if !s.withinMaxDepth(depth) {
+func (s *S) parseAndFetchUrlsSequential(ctx context.Context, url string, locations []string, depth int) {
+	if !s.withinMaxDepth(url, depth) {
 		return
 	}
 	for _, location := range locations {
@@ -1145,7 +1181,7 @@ func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string,
 			continue
 		}
 		s.mu.Unlock()
-		parsedLocations, err := s.fetchAndParse(ctx, location)
+		servedFrom, parsedLocations, err := s.fetchAndParse(ctx, location)
 		if err != nil {
 			s.mu.Lock()
 			s.errs = append(s.errs, err)
@@ -1153,24 +1189,29 @@ func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string,
 			continue
 		}
 		if len(parsedLocations) > 0 {
-			s.parseAndFetchUrlsSequential(ctx, parsedLocations, depth+1)
+			s.parseAndFetchUrlsSequential(ctx, servedFrom, parsedLocations, depth+1)
 		}
 	}
 }
 
 // fetchAndParse fetches the sitemap at url and parses it.
-// It returns the sitemaps the document lists, or the error of the fetch.
-func (s *S) fetchAndParse(ctx context.Context, url string) ([]string, error) {
+// It returns the URL the sitemap was served from and the sitemaps it lists, or the error of the
+// fetch. A sitemap that cannot be parsed lists none, and what is wrong with it is in the error
+// list: of the sitemaps a document lists, one that cannot be parsed costs only itself.
+func (s *S) fetchAndParse(ctx context.Context, url string) (string, []string, error) {
 	content, servedFrom, err := s.fetch(ctx, url)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
+	locations, _ := s.parseDocument(servedFrom, content)
 
-	return s.parseDocument(servedFrom, content), nil
+	return servedFrom, locations, nil
 }
 
 // parseDocument unzips the content served from url if it is gzip content, and parses it.
-// It returns the sitemaps the document lists.
+// It returns the sitemaps the document lists, and the error that tells the document could not
+// be parsed if it could not. Like everything else that is wrong with the document, that error
+// is added to the error list too.
 //
 // The work is done without holding s.mu. Unzipping and decoding a large document takes long, and
 // with the lock held for it the documents would be processed one at a time however many were
@@ -1181,7 +1222,7 @@ func (s *S) fetchAndParse(ctx context.Context, url string) ([]string, error) {
 // keeps the URLs of a document together and in the order the document lists them.
 //
 // Must be called without s.mu held.
-func (s *S) parseDocument(url string, content string) []string {
+func (s *S) parseDocument(url string, content string) ([]string, error) {
 	s.mu.Lock()
 	document := &S{cfg: s.cfg}
 	s.mu.Unlock()
@@ -1201,7 +1242,22 @@ func (s *S) parseDocument(url string, content string) []string {
 	s.errs = append(s.errs, document.errs...)
 	s.mu.Unlock()
 
-	return locations
+	return locations, documentError(document.errs)
+}
+
+// documentError returns the error that tells a document could not be parsed, out of errs, the
+// errors the document yielded. It returns nil if the document was parsed.
+// A document that cannot be parsed is reported as a *ParseError, what is wrong with one of its
+// entries as a *ValidationError. Of several, the first is returned: content that cannot be
+// unzipped is not recognised as a sitemap either, and it is the former that tells why.
+func documentError(errs []error) error {
+	for _, err := range errs {
+		var parseErr *ParseError
+		if errors.As(err, &parseErr) {
+			return parseErr
+		}
+	}
+	return nil
 }
 
 // newXMLDecoder returns a decoder for content that honours the encoding named in its XML

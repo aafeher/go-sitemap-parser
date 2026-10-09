@@ -15,7 +15,8 @@ import (
 // UTF-8. This applies to sitemap indexes, urlsets, RSS and Atom feeds alike.
 //
 // A document that declares an encoding the parser cannot transcode is not
-// parsed; a *ParseError naming the encoding is reported via GetErrors().
+// parsed; a *ParseError naming the encoding is reported via GetErrors(), and
+// returned by Parse() when it is the document Parse() was called for.
 //
 // The sitemap content is passed in directly, so the example runs without
 // network access.
@@ -62,7 +63,9 @@ func main() {
 	s = sitemap.New()
 	sm, err = s.Parse("https://example.com/sitemap.xml", &unsupportedContent)
 	if err != nil {
-		log.Fatalf("parse error: %v", err)
+		// The document could not be parsed, so the call fails. The error is the
+		// one in GetErrors().
+		fmt.Printf("Parse failed: %v\n", err)
 	}
 
 	fmt.Printf("%d URLs, %d errors\n", sm.GetURLCount(), sm.GetErrorsCount())
