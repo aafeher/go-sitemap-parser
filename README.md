@@ -36,7 +36,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Plain text `.txt`
 - Gzip compressed files (e.g., `.xml.gz`, `.txt.gz`)
 
-XML documents do not have to be UTF-8 encoded, see [Character encoding](#character-encoding).
+XML documents do not have to be UTF-8 encoded, and a document may begin with a UTF-8 byte order mark, see [Character encoding](#character-encoding).
 
 ## Requirements
 
@@ -587,6 +587,8 @@ s, err := sitemap.New().Parse("https://example.com/sitemap.xml", &content)
 ```
 
 This applies to every XML format (sitemap index, urlset, RSS and Atom), in tolerant and in strict mode alike. The encodings of the [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/#names-and-labels) are supported, among them the `ISO-8859` and `windows-125x` families, `US-ASCII`, `KOI8-R`, `Shift_JIS`, `EUC-JP`, `EUC-KR`, `GBK`, `gb18030` and `Big5`.
+
+A UTF-8 byte order mark (BOM, the bytes `EF BB BF`) at the beginning of a document is ignored in every format, `robots.txt` files and plain text sitemaps included, in both modes: it tells the encoding and is no part of the first line. This goes for a gzip compressed document as well. Only the very beginning of a document counts. Anywhere else the character (`U+FEFF`) is taken as it stands, so a line of a text sitemap or a `robots.txt` that begins with it is not recognised.
 
 Limitations:
 - A document that declares any other encoding is not parsed; a `*ParseError` naming the encoding is reported via `GetErrors()`, and returned by `Parse()` when it is the document `Parse()` was called for.

@@ -3671,6 +3671,11 @@ func TestS_parseRobotsTXT(t *testing.T) {
 			output: 1,
 		},
 		{
+			name:   "robots.txt with UTF-8 BOM on the second line",
+			input:  "Sitemap: https://example.com/first\n\ufeffSitemap: https://example.com/second",
+			output: 1,
+		},
+		{
 			name:   "robots.txt with leading whitespace before directive",
 			input:  "   Sitemap: https://example.com/indented",
 			output: 1,
@@ -4378,6 +4383,143 @@ func TestS_Parse_DeclaredEncoding(t *testing.T) {
 			}
 			mustEqual(t, "image title", u.Images[0].Title, title)
 		})
+	}
+}
+
+// TestS_Parse_ByteOrderMark verifies that the UTF-8 byte order mark a document
+// begins with is no part of its content, whatever the format of the document
+// and whether it is compressed or not: every URL it lists is collected, the
+// first one included.
+func TestS_Parse_ByteOrderMark(t *testing.T) {
+	pages := []string{"https://example.com/page-1", "https://example.com/page-2", "https://example.com/page-3"}
+
+	for path, document := range documentsListing(pages) {
+		for _, compressed := range []bool{false, true} {
+			for _, strict := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s, compressed=%v, strict=%v", path, compressed, strict), func(t *testing.T) {
+					content := "\ufeff" + document
+					if compressed {
+						content = string(gzipByte(content))
+					}
+
+					s := New().SetStrict(strict)
+					requireParse(t, s, "https://example.com"+path, &content)
+
+					assertStringSlice(t, "URLs", locsOf(s), pages)
+					if errs := s.GetErrors(); len(errs) != 0 {
+						t.Errorf("unexpected errors: %v", errs)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestS_Parse_ByteOrderMark_Text verifies how a text sitemap that begins with
+// a UTF-8 byte order mark is read: the mark is taken off, and the first line
+// is read like any other line.
+func TestS_Parse_ByteOrderMark_Text(t *testing.T) {
+	const (
+		bom        = "\ufeff"
+		sitemapURL = "https://example.com/sitemap.txt"
+		first      = "https://example.com/first"
+		second     = "https://example.com/second"
+		unknown    = `unrecognized sitemap format (root element: "")`
+	)
+
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+		// wantErr tells what is wrong with a document that lists no URL, which
+		// fails the call. It is empty for a document that is a sitemap.
+		wantErr string
+	}{
+		{"single URL", bom + first + "\n", []string{first}, ""},
+		{"single URL without line end", bom + first, []string{first}, ""},
+		{"several URLs", bom + first + "\n" + second + "\n", []string{first, second}, ""},
+		{"CRLF line ends", bom + first + "\r\n" + second + "\r\n", []string{first, second}, ""},
+		{"whitespace before the first URL", bom + " \t" + first + "\n" + second + "\n", []string{first, second}, ""},
+		{"comment on the first line", bom + "# pages\n" + first + "\n" + second + "\n", []string{first, second}, ""},
+		{"empty first line", bom + "\n" + first + "\n" + second + "\n", []string{first, second}, ""},
+		// The mark is not content: a document of nothing else is empty.
+		{"nothing but the mark", bom, []string{}, "sitemap content is empty"},
+		{"empty line only", bom + "\n", []string{}, unknown},
+		{"no URL", bom + "no URL here\n", []string{}, unknown},
+		// Only what the document begins with is a byte order mark, and only once.
+		// Anywhere else it is a character like any other one, and a line that
+		// begins with it is no URL.
+		{"mark on the second line", first + "\n" + bom + second + "\n", []string{first}, ""},
+		{"mark after whitespace", " " + bom + first + "\n" + second + "\n", []string{second}, ""},
+		{"second mark", bom + bom + first + "\n" + second + "\n", []string{second}, ""},
+	}
+
+	for _, test := range tests {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", test.name, strict), func(t *testing.T) {
+				content := test.content
+				s := New().SetStrict(strict)
+				_, err := s.Parse(sitemapURL, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), test.want)
+				errs := s.GetErrors()
+				if test.wantErr == "" {
+					if err != nil || len(errs) != 0 {
+						t.Fatalf("unexpected errors: %v, %v", err, errs)
+					}
+					return
+				}
+
+				if len(errs) != 1 {
+					t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+				}
+				var parseErr *ParseError
+				if !errors.As(errs[0], &parseErr) {
+					t.Fatalf("expected *ParseError, got %T: %v", errs[0], errs[0])
+				}
+				mustEqual(t, "error", parseErr.Error(), fmt.Sprintf("parse %q: %s", sitemapURL, test.wantErr))
+				if err != errs[0] {
+					t.Errorf("Parse returned %v, expected the error recorded: %v", err, errs[0])
+				}
+			})
+		}
+	}
+}
+
+// TestS_Parse_ByteOrderMark_Fetched verifies the whole path for fetched
+// documents that begin with a UTF-8 byte order mark: a robots.txt lists a
+// sitemap index, which lists two text sitemaps, one of them compressed.
+func TestS_Parse_ByteOrderMark_Fetched(t *testing.T) {
+	const bom = "\ufeff"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		site := "http://" + r.Host
+		switch r.URL.Path {
+		case "/robots.txt":
+			_, _ = fmt.Fprintf(w, bom+"Sitemap: %s/sitemap-index.xml\n", site)
+		case "/sitemap-index.xml":
+			_, _ = fmt.Fprintf(w, bom+`<sitemapindex><sitemap><loc>%[1]s/pages.txt</loc></sitemap><sitemap><loc>%[1]s/posts.txt.gz</loc></sitemap></sitemapindex>`, site)
+		case "/pages.txt":
+			_, _ = fmt.Fprintf(w, bom+"%[1]s/page-1\n%[1]s/page-2\n", site)
+		case "/posts.txt.gz":
+			_, _ = w.Write(gzipByte(fmt.Sprintf(bom+"%[1]s/post-1\n%[1]s/post-2\n", site)))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	s := New()
+	requireParse(t, s, server.URL+"/robots.txt", nil)
+
+	assertStringSlice(t, "URLs", sortedCopy(locsOf(s)), []string{
+		server.URL + "/page-1",
+		server.URL + "/page-2",
+		server.URL + "/post-1",
+		server.URL + "/post-2",
+	})
+	if errs := s.GetErrors(); len(errs) != 0 {
+		t.Errorf("unexpected errors: %v", errs)
 	}
 }
 

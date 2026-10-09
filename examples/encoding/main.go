@@ -14,6 +14,11 @@ import (
 // transcodes the document while reading it, so every string it returns is
 // UTF-8. This applies to sitemap indexes, urlsets, RSS and Atom feeds alike.
 //
+// A document may begin with a UTF-8 byte order mark (BOM). The mark tells the
+// encoding and is no part of the content, so it is ignored, whatever the
+// format of the document. The example shows it with a text sitemap, where the
+// mark stands right before the first URL.
+//
 // A document that declares an encoding the parser cannot transcode is not
 // parsed; a *ParseError naming the encoding is reported via GetErrors(), and
 // returned by Parse() when it is the document Parse() was called for.
@@ -50,6 +55,24 @@ func main() {
 			fmt.Printf("  Image: %s\n", img.Loc)
 			fmt.Printf("    Title: %s\n", img.Title)
 		}
+	}
+
+	// A text sitemap that begins with a UTF-8 byte order mark ("\ufeff", the bytes
+	// EF BB BF), as some editors save it. The first line is read as the URL it
+	// holds, without the mark.
+	bomContent := "\ufeff" +
+		"https://example.com/first\n" +
+		"https://example.com/second\n"
+
+	fmt.Println("\n=== UTF-8 with a byte order mark ===")
+	s = sitemap.New()
+	sm, err = s.Parse("https://example.com/sitemap.txt", &bomContent)
+	if err != nil {
+		log.Fatalf("parse error: %v", err)
+	}
+
+	for _, u := range sm.GetURLs() {
+		fmt.Printf("Page: %s\n", u.Loc)
 	}
 
 	// IBM437 is not among the supported encodings. The document is recognised

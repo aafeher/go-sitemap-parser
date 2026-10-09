@@ -152,9 +152,10 @@ func assertURLLimit(t *testing.T, mode string, strict bool, content string) {
 // FuzzParse exercises the full format-dispatch path — sitemap index, urlset,
 // RSS, Atom and plain text — with untrusted content. Every location the parser
 // hands back must satisfy the documented URL invariants in both tolerant and
-// strict mode, parsing must be deterministic, the call must fail exactly when
-// the document cannot be parsed, and a limit on the URLs must leave the first
-// ones as they are.
+// strict mode, parsing must be deterministic, a byte order mark put before the
+// document must change nothing, the call must fail exactly when the document
+// cannot be parsed, and a limit on the URLs must leave the first ones as they
+// are.
 func FuzzParse(f *testing.F) {
 	seeds := []string{
 		`<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://example.com/sitemap-1.xml</loc><lastmod>2024-01-01</lastmod></sitemap></sitemapindex>`,
@@ -167,6 +168,7 @@ func FuzzParse(f *testing.F) {
 		`<urlset><url><loc>javascript:alert(1)</loc></url></urlset>`,
 		`<urlset><url><loc>   https://example.com/padded   </loc></url></urlset>`,
 		"\ufeff<urlset><url><loc>https://example.com/bom</loc></url></urlset>",
+		"\ufeffhttps://example.com/bom-one\nhttps://example.com/bom-two\n",
 		"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><urlset><url><loc>https://example.com/caf\xe9</loc></url></urlset>",
 		"<?xml version=\"1.0\" encoding=\"windows-1250\"?><rss><channel><item><link>https://example.com/t\xfbr\xf5</link></item></channel></rss>",
 		`<?xml version="1.0" encoding="IBM437"?><sitemapindex><sitemap><loc>https://example.com/sitemap-1.xml</loc></sitemap></sitemapindex>`,
@@ -201,6 +203,15 @@ func FuzzParse(f *testing.F) {
 			// Parsing the same bytes twice must produce the same result.
 			if again := collectLocs(strict, content); !slicesEqual(locs, again) {
 				t.Fatalf("%s mode: parse is not deterministic: %q vs %q", mode, locs, again)
+			}
+
+			// A byte order mark the document begins with is no part of it. A
+			// document that begins with one already is left as it is: the second
+			// mark would not be one.
+			if !strings.HasPrefix(content, utf8BOM) {
+				if marked := collectLocs(strict, utf8BOM+content); !slicesEqual(locs, marked) {
+					t.Fatalf("%s mode: a leading byte order mark changes the result: %q vs %q", mode, locs, marked)
+				}
 			}
 
 			assertReturnedError(t, mode, strict, content)

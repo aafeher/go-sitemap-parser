@@ -981,7 +981,7 @@ func (s *S) setContent(ctx context.Context, urlContent *string) (string, string,
 // The method does not return any values, but it updates the robotsTxtSitemapURLs field of the S struct.
 func (s *S) parseRobotsTXT(robotsTXTContent string) {
 	// Strip UTF-8 BOM if present at the very beginning of the file.
-	robotsTXTContent = strings.TrimPrefix(robotsTXTContent, "\ufeff")
+	robotsTXTContent = strings.TrimPrefix(robotsTXTContent, utf8BOM)
 
 	for line := range strings.SplitSeq(robotsTXTContent, "\n") {
 		line = strings.TrimRight(line, "\r")
@@ -1669,7 +1669,19 @@ func (s *S) parseFeedContent(url, content string) {
 	}
 }
 
+// parseTextContent reads content as a text sitemap, which lists one URL on a line. A line is
+// an entry when it begins with "http://" or "https://". Whitespace around a line is ignored,
+// and so is the UTF-8 byte order mark the content may begin with. Empty lines, comment lines
+// (the ones beginning with "#") and every other line are skipped.
+// It is the parser of every content that is in none of the XML formats, hence content without
+// a single entry is not taken for a text sitemap: a *ParseError is added for it, which tells
+// that the content is empty, or that its format is not known, with the root element that was
+// found in it.
 func (s *S) parseTextContent(url, rootElement, content string) {
+	// The byte order mark is no part of the first line. Left there, it would keep that line
+	// from being taken for an entry, and the first URL of the sitemap would be lost unnoticed.
+	content = strings.TrimPrefix(content, utf8BOM)
+
 	found := false
 	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -1961,6 +1973,11 @@ const defaultMaxURLs = 10000000
 // robots.txt stands where the main URL of a call does when that is a sitemap itself, and
 // fetching the main URL does not count towards the limit set with SetMaxDepth either.
 const robotsTXTDepth = -1
+
+// utf8BOM is the byte order mark a UTF-8 document may begin with. It tells the encoding of the
+// document and is no part of its text. The XML decoder reads past it by itself; the parsers of
+// the formats that are read line by line take it off the first line.
+const utf8BOM = "\ufeff"
 
 // validatePriority validates the <priority> value of a URL entry.
 // In strict mode, the value must be between 0.0 and 1.0 inclusive per the sitemaps.org specification.
