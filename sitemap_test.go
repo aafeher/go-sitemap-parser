@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -3074,6 +3075,125 @@ func TestS_Parse_ConcurrentSafety(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestS_Parse_SettersDuringParse verifies that the configuration may be set
+// and read while Parse is running. Every setter writes the value already in
+// effect, so the outcome of the calls stays predictable; what the test is
+// after is the race detector, which reports a setting that is read without
+// the lock.
+func TestS_Parse_SettersDuringParse(t *testing.T) {
+	// robots.txt lists three sitemap indexes of two sitemaps each, every
+	// sitemap holding one URL.
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/robots.txt":
+			for i := 0; i < 3; i++ {
+				_, _ = fmt.Fprintf(w, "Sitemap: %s/index-%d.xml\n", srv.URL, i)
+			}
+		case strings.HasPrefix(r.URL.Path, "/index-"):
+			name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/index-"), ".xml")
+			_, _ = fmt.Fprint(w, `<sitemapindex>`)
+			for _, part := range []string{"a", "b"} {
+				_, _ = fmt.Fprintf(w, `<sitemap><loc>%s/sitemap-%s-%s.xml</loc></sitemap>`, srv.URL, name, part)
+			}
+			_, _ = fmt.Fprint(w, `</sitemapindex>`)
+		default:
+			_, _ = fmt.Fprintf(w, `<urlset><url><loc>%s%s/page</loc></url></urlset>`, srv.URL, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	client := srv.Client()
+	urlset := fmt.Sprintf(`<urlset><url><loc>%s/page</loc></url></urlset>`, srv.URL)
+
+	tests := []struct {
+		name        string
+		multiThread bool
+		path        string
+		// content is handed to Parse, nil has it fetched. A call that fetches
+		// nothing is cheap, so it is repeated far more often.
+		content  *string
+		calls    int
+		wantURLs int64
+	}{
+		{"robots.txt, multi-thread", true, "/robots.txt", nil, 10, 6},
+		{"robots.txt, sequential", false, "/robots.txt", nil, 10, 6},
+		{"sitemap index, multi-thread", true, "/index-0.xml", nil, 10, 2},
+		{"sitemap index, sequential", false, "/index-0.xml", nil, 10, 2},
+		{"passed content, multi-thread", true, "/sitemap.xml", &urlset, 500, 1},
+		{"passed content, sequential", false, "/sitemap.xml", &urlset, 500, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New().SetMultiThread(tt.multiThread).SetHTTPClient(client)
+
+			stop := make(chan struct{})
+			var wg sync.WaitGroup
+			defer func() {
+				close(stop)
+				wg.Wait()
+			}()
+
+			// The two settings that Parse reads while it is fetching get a
+			// goroutine of their own, so that they are written as often as
+			// possible. Both goroutines yield after every round: spinning
+			// freely they would starve Parse where only one CPU is available.
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						s.SetMultiThread(tt.multiThread).SetMaxDepth(10)
+						runtime.Gosched()
+					}
+				}
+			}()
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						s.SetUserAgent("test-agent").
+							SetFetchTimeout(3).
+							SetMaxResponseSize(defaultMaxResponseSize).
+							SetMaxConcurrency(defaultMaxConcurrency).
+							SetFollow([]string{`\.xml$`}).
+							SetRules([]string{`/page$`}).
+							SetHTTPClient(client).
+							SetStrict(false)
+						_ = s.GetUserAgent()
+						_ = s.GetFetchTimeout()
+						_ = s.GetMultiThread()
+						_ = s.GetMaxResponseSize()
+						_ = s.GetMaxDepth()
+						_ = s.GetMaxConcurrency()
+						_ = s.GetFollow()
+						_ = s.GetRules()
+						_ = s.GetHTTPClient()
+						_ = s.GetStrict()
+						_ = s.GetURLs()
+						_ = s.GetURLCount()
+						_ = s.GetRandomURLs(1)
+						_ = s.GetErrors()
+						_ = s.GetErrorsCount()
+						runtime.Gosched()
+					}
+				}
+			}()
+
+			for i := 0; i < tt.calls; i++ {
+				requireParse(t, s, srv.URL+tt.path, tt.content)
+				assertCounts(t, s, tt.wantURLs, 0)
+			}
+		})
+	}
 }
 
 func TestS_GetErrorsCount(t *testing.T) {

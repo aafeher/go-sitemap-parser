@@ -687,6 +687,13 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	} else {
 		s.sem = nil
 	}
+	// Whether the sitemaps are fetched concurrently is decided here, with the lock held and
+	// once for the whole call: a SetMultiThread call made while this one runs applies to the
+	// next one.
+	parseAndFetchUrls := s.parseAndFetchUrlsSequential
+	if s.cfg.multiThread {
+		parseAndFetchUrls = s.parseAndFetchUrlsMultiThread
+	}
 	s.mu.Unlock()
 
 	s.mainURL = url
@@ -734,11 +741,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 				locations := s.parse(rTXTsmURL, string(robotsTXTSitemapContent))
 				s.mu.Unlock()
 
-				if s.cfg.multiThread {
-					s.parseAndFetchUrlsMultiThread(ctx, locations, 0)
-				} else {
-					s.parseAndFetchUrlsSequential(ctx, locations, 0)
-				}
+				parseAndFetchUrls(ctx, locations, 0)
 			}()
 		}
 		s.mu.Unlock()
@@ -749,11 +752,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 		locations := s.parse(s.mainURL, s.mainURLContent)
 		s.mu.Unlock()
 
-		if s.cfg.multiThread {
-			s.parseAndFetchUrlsMultiThread(ctx, locations, 0)
-		} else {
-			s.parseAndFetchUrlsSequential(ctx, locations, 0)
-		}
+		parseAndFetchUrls(ctx, locations, 0)
 	}
 
 	wg.Wait()
@@ -1023,6 +1022,20 @@ func (s *S) markFetched(url string) bool {
 	return true
 }
 
+// withinMaxDepth reports whether the sitemaps found at the given depth may still be fetched.
+// If the limit set with SetMaxDepth is reached, it records the error and returns false.
+// The limit is read with the lock held, like every other setting: a setter may be called
+// while Parse is running.
+func (s *S) withinMaxDepth(depth int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if depth < s.cfg.maxDepth {
+		return true
+	}
+	s.errs = append(s.errs, &ParseError{URL: "", Err: fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth)})
+	return false
+}
+
 // parseAndFetchUrlsMultiThread concurrently parses and fetches the URLs specified in the "locations" parameter.
 // It uses a sync.WaitGroup to wait for all fetch operations to complete.
 // For each location, it starts a goroutine that fetches the content using the fetch method of the S structure.
@@ -1031,10 +1044,7 @@ func (s *S) markFetched(url string) bool {
 // Finally, the uncompressed content is passed to the parse method of the S structure.
 // This method does not return any value.
 func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string, depth int) {
-	if depth >= s.cfg.maxDepth {
-		s.mu.Lock()
-		s.errs = append(s.errs, &ParseError{URL: "", Err: fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth)})
-		s.mu.Unlock()
+	if !s.withinMaxDepth(depth) {
 		return
 	}
 	var wg sync.WaitGroup
@@ -1088,10 +1098,7 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 // Finally, the uncompressed content is passed to the parse method of the S structure.
 // This method does not return any value.
 func (s *S) parseAndFetchUrlsSequential(ctx context.Context, locations []string, depth int) {
-	if depth >= s.cfg.maxDepth {
-		s.mu.Lock()
-		s.errs = append(s.errs, &ParseError{URL: "", Err: fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth)})
-		s.mu.Unlock()
+	if !s.withinMaxDepth(depth) {
 		return
 	}
 	for _, location := range locations {
