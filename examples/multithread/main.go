@@ -68,6 +68,7 @@ func parse(s *sitemap.S) {
 		inFlight--
 		mu.Unlock()
 
+		w.Header().Set("Content-Type", "application/xml")
 		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>%s%s/page</loc></url>

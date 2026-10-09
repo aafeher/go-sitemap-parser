@@ -64,6 +64,7 @@ func parse(s *sitemap.S) {
 		case "/robots.txt":
 			fmt.Fprintf(w, "Sitemap: %[1]s/sitemap-index.xml\nSitemap: %[1]s/sitemap-blog.xml\nSitemap: %[1]s/sitemap-drafts.xml\n", server.URL)
 		case "/sitemap-index.xml":
+			w.Header().Set("Content-Type", "application/xml")
 			fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <sitemap><loc>%[1]s/sitemap-products-1.xml</loc></sitemap>
@@ -71,6 +72,7 @@ func parse(s *sitemap.S) {
   <sitemap><loc>%[1]s/sitemap-archive.xml</loc></sitemap>
 </sitemapindex>`, server.URL)
 		default:
+			w.Header().Set("Content-Type", "application/xml")
 			fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>%s%s/page</loc></url>

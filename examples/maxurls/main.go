@@ -61,6 +61,7 @@ func parse(s *sitemap.S) {
 
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
 		path := strings.TrimSuffix(r.URL.Path, ".xml")
 		if path == "/index" {
 			fmt.Fprint(w, `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`)

@@ -58,6 +58,7 @@ func parse(s *sitemap.S) {
 
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
 		path := strings.TrimSuffix(r.URL.Path, ".xml")
 		switch {
 		case path == "/index":
