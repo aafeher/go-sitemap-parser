@@ -809,11 +809,12 @@ func (s *S) GetURLCount() int64 {
 }
 
 // GetRandomURLs returns a slice of randomly selected URLs from the S object's URL list. The number of URLs to select is specified by the parameter n.
-// If the S object is nil, an empty slice is returned.
+// If n exceeds the number of URLs in the list, all of them are returned, in random order.
+// If n is zero or negative, or the S object is nil, an empty slice is returned.
 // The function creates a copy of the original URLs list and randomly selects n URLs from it, removing them to avoid duplicates.
 // The selected URLs are returned as a new slice.
 func (s *S) GetRandomURLs(n int) []URL {
-	if s == nil {
+	if s == nil || n <= 0 {
 		return []URL{}
 	}
 
@@ -822,13 +823,12 @@ func (s *S) GetRandomURLs(n int) []URL {
 	copy(originalURLs, s.urls)
 	s.mu.Unlock()
 
+	// No more URLs can be selected than there are. Without this cap the result would be
+	// allocated for n elements, however large n is.
+	n = min(n, len(originalURLs))
 	randURLs := make([]URL, 0, n)
 
 	for i := 0; i < n; i++ {
-		if len(originalURLs) == 0 {
-			break
-		}
-
 		index := rand.IntN(len(originalURLs))
 		randURLs = append(randURLs, originalURLs[index])
 

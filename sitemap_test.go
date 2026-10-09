@@ -3406,6 +3406,68 @@ func TestS_GetRandomURLs(t *testing.T) {
 			n:       2,
 			wantLen: 2,
 		},
+		{
+			name: "non-empty URL list, n equals len(urls)",
+			s: &S{
+				urls: []URL{{}, {}, {}},
+			},
+			n:       3,
+			wantLen: 3,
+		},
+		{
+			name: "non-empty URL list, n is zero",
+			s: &S{
+				urls: []URL{{}, {}, {}},
+			},
+			n:       0,
+			wantLen: 0,
+		},
+		{
+			name: "non-empty URL list, n is negative",
+			s: &S{
+				urls: []URL{{}, {}, {}},
+			},
+			n:       -1,
+			wantLen: 0,
+		},
+		{
+			name: "non-empty URL list, n is the smallest int",
+			s: &S{
+				urls: []URL{{}, {}, {}},
+			},
+			n:       math.MinInt,
+			wantLen: 0,
+		},
+		{
+			name: "non-empty URL list, n is far greater than len(urls)",
+			s: &S{
+				urls: []URL{{}, {}, {}},
+			},
+			n:       1_000_000,
+			wantLen: 3,
+		},
+		{
+			name: "non-empty URL list, n is the largest int",
+			s: &S{
+				urls: []URL{{}, {}, {}},
+			},
+			n:       math.MaxInt,
+			wantLen: 3,
+		},
+		{
+			name: "empty URL list, n is the largest int",
+			s: &S{
+				urls: []URL{},
+			},
+			n:       math.MaxInt,
+			wantLen: 0,
+		},
+		{
+			name:    "nil receiver, n is negative",
+			s:       nil,
+			n:       -1,
+			wantLen: 0,
+		},
 	}
 
 	for _, test := range tests {
@@ -3415,8 +3477,42 @@ func TestS_GetRandomURLs(t *testing.T) {
 			if len(got) != test.wantLen {
 				t.Errorf("GetRandomURLs() = %v, wantLen %v", len(got), test.wantLen)
 			}
+			if got == nil {
+				t.Error("GetRandomURLs() = nil, want a non-nil slice")
+			}
+			// The result must be sized by the URLs available, not by n.
+			if cap(got) > test.wantLen {
+				t.Errorf("GetRandomURLs() capacity = %d, want at most %d", cap(got), test.wantLen)
+			}
 		})
 	}
+
+	t.Run("selects distinct URLs of the list", func(t *testing.T) {
+		const count = 20
+		urls := make([]URL, count)
+		listed := make(map[string]bool, count)
+		for i := range urls {
+			urls[i].Loc = fmt.Sprintf("http://example.com/%d", i)
+			listed[urls[i].Loc] = true
+		}
+		s := &S{urls: urls}
+
+		for _, n := range []int{1, count / 2, count, count + 1, math.MaxInt} {
+			got := s.GetRandomURLs(n)
+
+			mustEqual(t, fmt.Sprintf("n=%d: length", n), len(got), min(n, count))
+			selected := make(map[string]bool, len(got))
+			for _, u := range got {
+				if !listed[u.Loc] {
+					t.Errorf("n=%d: %q is not a URL of the list", n, u.Loc)
+				}
+				if selected[u.Loc] {
+					t.Errorf("n=%d: %q was selected more than once", n, u.Loc)
+				}
+				selected[u.Loc] = true
+			}
+		}
+	})
 
 	t.Run("does not modify original urls", func(t *testing.T) {
 		urls := []URL{

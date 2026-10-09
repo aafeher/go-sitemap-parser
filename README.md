@@ -500,7 +500,7 @@ count := s.GetURLCount()
 
 #### GetRandomURLs
 
-Returns a slice of `n` randomly selected URLs without duplicates.
+Returns a slice of `n` randomly selected URLs without duplicates. If `n` exceeds the number of parsed URLs, all of them are returned, in random order. If `n` is zero or negative, the result is an empty slice.
 
 ```go
 randomURLs := s.GetRandomURLs(5)
