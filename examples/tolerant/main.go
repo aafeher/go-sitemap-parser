@@ -18,6 +18,11 @@ import (
 // An empty <lastmod> is no such value: it is read as if the element were not
 // there, so LastMod is nil and nothing is reported, in both modes.
 //
+// Whitespace around a value is no part of it in either mode. A <changefreq>
+// of the protocol that is written in another letter case is read as the value
+// itself in tolerant mode, so that it equals its constant. Strict mode keeps
+// it as the document gives it.
+//
 // An entry without a location names no page. It is skipped and reported in
 // both modes; the error names the sitemap, the entry having no URL of its own.
 //
@@ -30,9 +35,11 @@ import (
 // The sitemap content is passed in directly, so the example runs without
 // network access.
 func main() {
-	// Two of the five entries hold a value that cannot be parsed: a <lastmod>
+	// Two of the six entries hold a value that cannot be parsed: a <lastmod>
 	// without the "T" separator and a time zone, and a <priority> written with
-	// a decimal comma. The <lastmod> of the last entry is empty.
+	// a decimal comma. The <lastmod> of the fifth entry is empty. The
+	// <changefreq> of the last one stands on a line of its own and begins with
+	// a capital letter.
 	invalidValues := `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
@@ -56,6 +63,12 @@ func main() {
   <url>
     <loc>https://example.com/shop</loc>
     <lastmod></lastmod>
+  </url>
+  <url>
+    <loc>https://example.com/news</loc>
+    <changefreq>
+      Daily
+    </changefreq>
   </url>
 </urlset>`
 
@@ -115,6 +128,13 @@ func parse(s *sitemap.S, content string) {
 		}
 		if u.Priority != nil {
 			fmt.Printf("    Priority: %.1f\n", *u.Priority)
+		}
+		// ChangeFreq is nil when the element is absent or empty. A value that
+		// is set has no whitespace around it; whether it equals a constant
+		// such as sitemap.ChangeFreqDaily when it is written as "Daily" is up
+		// to the mode.
+		if u.ChangeFreq != nil {
+			fmt.Printf("    ChangeFreq: %s (equals ChangeFreqDaily: %t)\n", *u.ChangeFreq, *u.ChangeFreq == sitemap.ChangeFreqDaily)
 		}
 	}
 	for _, e := range sm.GetErrors() {

@@ -149,13 +149,45 @@ func assertURLLimit(t *testing.T, mode string, strict bool, content string) {
 	}
 }
 
+// assertTextValues checks the text values of the URLs collected from content:
+// none of them has whitespace around it, a change frequency that is set names
+// one, and tolerant mode holds a change frequency of the protocol the way its
+// constant spells it.
+// The location is left out. It is a URL that has been resolved, and whether
+// that may hold whitespace is not what is checked here.
+func assertTextValues(t *testing.T, mode string, strict bool, content string) {
+	t.Helper()
+
+	s := New().SetStrict(strict)
+	s.parse(fuzzBaseURL, content)
+	for _, u := range s.urls {
+		for path, value := range textValues(u) {
+			if path == "Loc" {
+				continue
+			}
+			if value != strings.TrimSpace(value) {
+				t.Fatalf("%s mode: %s of %q has whitespace around it: %q", mode, path, u.Loc, value)
+			}
+		}
+		if u.ChangeFreq == nil {
+			continue
+		}
+		if *u.ChangeFreq == "" {
+			t.Fatalf("%s mode: the change frequency of %q is set, but empty", mode, u.Loc)
+		}
+		if canonical := canonicalChangeFreq(*u.ChangeFreq); !strict && canonical != *u.ChangeFreq {
+			t.Fatalf("%s mode: the change frequency of %q is %q, not %q", mode, u.Loc, *u.ChangeFreq, canonical)
+		}
+	}
+}
+
 // FuzzParse exercises the full format-dispatch path — sitemap index, urlset,
 // RSS, Atom and plain text — with untrusted content. Every location the parser
 // hands back must satisfy the documented URL invariants in both tolerant and
 // strict mode, parsing must be deterministic, a byte order mark put before the
-// document must change nothing, the call must fail exactly when the document
-// cannot be parsed, and a limit on the URLs must leave the first ones as they
-// are.
+// document must change nothing, no text value may have whitespace around it,
+// the call must fail exactly when the document cannot be parsed, and a limit
+// on the URLs must leave the first ones as they are.
 func FuzzParse(f *testing.F) {
 	seeds := []string{
 		`<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://example.com/sitemap-1.xml</loc><lastmod>2024-01-01</lastmod></sitemap></sitemapindex>`,
@@ -167,6 +199,9 @@ func FuzzParse(f *testing.F) {
 		`<urlset><url><loc>` + strings.Repeat("a", maxLocLength+100) + `</loc></url></urlset>`,
 		`<urlset><url><loc>javascript:alert(1)</loc></url></urlset>`,
 		`<urlset><url><loc>   https://example.com/padded   </loc></url></urlset>`,
+		`<urlset><url><loc>https://example.com/a</loc><changefreq> Daily </changefreq></url><url><loc>https://example.com/b</loc><changefreq> </changefreq></url></urlset>`,
+		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://example.com/p</loc><image:image><image:loc> https://example.com/i.jpg </image:loc><image:title> t </image:title></image:image><news:news><news:publication><news:name> n </news:name><news:language> en </news:language></news:publication><news:title> t </news:title></news:news><video:video><video:thumbnail_loc> https://example.com/t.jpg </video:thumbnail_loc><video:title> t </video:title><video:restriction relationship=" allow "> IE GB </video:restriction><video:uploader info=" https://example.com/u "> u </video:uploader><video:tag> one </video:tag></video:video><xhtml:link rel=" alternate " hreflang=" de " href=" https://example.com/de "/></url></urlset>`,
+		`<feed><entry><link rel=" alternate " href=" https://example.com/atom-padded "/></entry></feed>`,
 		"\ufeff<urlset><url><loc>https://example.com/bom</loc></url></urlset>",
 		"\ufeffhttps://example.com/bom-one\nhttps://example.com/bom-two\n",
 		"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><urlset><url><loc>https://example.com/caf\xe9</loc></url></urlset>",
@@ -214,6 +249,7 @@ func FuzzParse(f *testing.F) {
 				}
 			}
 
+			assertTextValues(t, mode, strict, content)
 			assertReturnedError(t, mode, strict, content)
 			assertURLLimit(t, mode, strict, content)
 		}

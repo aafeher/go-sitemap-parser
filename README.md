@@ -350,6 +350,7 @@ In **tolerant mode** (the default):
 - `<loc>` URLs exceeding 2,048 characters after resolution are rejected
 - `<priority>` values outside `[0.0, 1.0]` are accepted as-is
 - A `<lastmod>` or `<priority>` that cannot be parsed is left unset (`nil`) and reported, the entry itself is kept
+- A `<changefreq>` value of the protocol that is written in another letter case (`Daily`, `WEEKLY`) is read as the value itself (`daily`, `weekly`), so that it equals its constant; strict mode keeps it as the document gives it
 - XML mistakes that can be read past are accepted: an unescaped `&`, an unknown entity such as `&nbsp;`, a missing end tag
 
 Entries that fail validation are skipped and reported via `GetErrors()`.
@@ -375,6 +376,8 @@ validate "https://example.com/page": invalid <lastmod> value "2024-01-15 10:30:0
 ```
 
 An empty date is no such value. A `<lastmod>`, `<news:publication_date>`, `<video:expiration_date>` or `<video:publication_date>` that is empty or holds only whitespace is read as if the element were not there: the field is `nil`, not the zero time, and nothing is reported in either mode. The exception is the publication date of a news entry, which strict mode requires, see [GetURLs](#geturls). An empty number (`<priority>`, `<video:duration>`, `<video:rating>`, `<video:view_count>`) reads as `0`.
+
+Whitespace around a value is no part of it, in both modes. The content of an element may be indented or stand on a line of its own, and an attribute may be padded: every text value of an entry is returned without the whitespace that surrounds it, those of the extensions included. A value that holds nothing but whitespace is therefore an empty one. A `<changefreq>` like that is read as if the element were not there, and a value an extension requires is missing then, see [GetURLs](#geturls).
 
 See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location among them.
 
@@ -613,12 +616,14 @@ urls := s.GetURLs()
 Each `URL` struct contains the following fields:
 - `Loc` (`string`) — the URL location; never empty, an entry without a `<loc>` is skipped
 - `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`; also `nil` when the element is empty or the value cannot be parsed, see [Strict mode](#strict-mode)
-- `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`
+- `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`; also `nil` when the element is empty. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`. A value that is none of them is kept as the document gives it; tolerant mode reads one of them in whatever letter case it is written, see [Strict mode](#strict-mode)
 - `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`; also `nil` when the value cannot be parsed
 - `Images` (`[]Image`) — images associated with this URL via the Google Image Sitemap extension, may be `nil`
 - `News` (`*News`) — news metadata associated with this URL via the Google News Sitemap extension, may be `nil`
 - `Videos` (`[]Video`) — videos associated with this URL via the Google Video Sitemap extension, may be `nil`
 - `Hreflangs` (`[]AlternateLink`) — alternate language/region versions of this URL via the XHTML extension, may be `nil`
+
+No text value of a `URL` has whitespace around it, see [Strict mode](#strict-mode). This goes for the fields of the extensions below as well: an `Image.Loc` or a `Video.Title` that stands on a line of its own in the document is returned without the line breaks and the indentation.
 
 Each `Image` struct contains the following fields (all `string`):
 - `Loc` — image URL (required by the spec; images with an empty `Loc` are silently dropped in tolerant mode, or produce an error in strict mode)

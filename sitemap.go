@@ -237,7 +237,11 @@ type (
 		Href     string `xml:"href,attr"`
 	}
 
-	// URL is a structure of <url> in <urlset>
+	// URL is a structure of <url> in <urlset>.
+	//
+	// In the URLs that Parse and ParseContext collect, no text value has whitespace around it:
+	// the whitespace that surrounds the content of an element or the value of an attribute is
+	// not taken for a part of it. This goes for the fields of the extensions as well.
 	URL struct {
 		Loc        string          `xml:"loc"`
 		LastMod    *LastModTime    `xml:"lastmod"`
@@ -261,6 +265,12 @@ type (
 
 	// URLChangeFreq represents the frequency at which a URL should be crawled and indexed.
 	// Possible values are: "always", "hourly", "daily", "weekly", "monthly", "yearly", and "never".
+	//
+	// In the URLs that Parse and ParseContext collect, a field of this type is nil when the
+	// <changefreq> element is absent or empty. In tolerant mode one of the values above that is
+	// written in another letter case, such as "Daily", is replaced by the value itself, so that
+	// it equals its constant. Any other value is kept as the document gives it, and so is every
+	// value in strict mode.
 	URLChangeFreq string
 )
 
@@ -286,6 +296,17 @@ const (
 	// ChangeFreqNever represents the "never" value for URLChangeFreq.
 	ChangeFreqNever URLChangeFreq = "never"
 )
+
+// changeFreqs are the values a <changefreq> may hold according to the sitemaps.org protocol.
+var changeFreqs = [...]URLChangeFreq{
+	ChangeFreqAlways,
+	ChangeFreqHourly,
+	ChangeFreqDaily,
+	ChangeFreqWeekly,
+	ChangeFreqMonthly,
+	ChangeFreqYearly,
+	ChangeFreqNever,
+}
 
 // New creates a new instance of the S structure.
 // It initializes the structure with default configuration values
@@ -1609,6 +1630,11 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 		return
 	}
 	u.Loc = resolvedLoc
+	// Tolerant mode puts up with a change frequency that is written in another letter case.
+	// Strict mode leaves the value as the document gives it.
+	if !s.cfg.strict && u.ChangeFreq != nil {
+		*u.ChangeFreq = canonicalChangeFreq(*u.ChangeFreq)
+	}
 	// A value that cannot be parsed is left out and reported. Strict mode also skips the
 	// entry when the value is one of its own, as it does for a priority out of range; a
 	// value of an extension costs the entry nothing more in either mode.
@@ -1660,7 +1686,8 @@ func (s *S) parseFeedContent(url, content string) {
 	for _, entry := range atomFeed.Entry {
 		var loc string
 		for _, l := range entry.Link {
-			if l.Rel == "" || l.Rel == "alternate" {
+			// The whitespace around the value of the attribute is no part of the relation.
+			if rel := strings.TrimSpace(l.Rel); rel == "" || rel == "alternate" {
 				loc = l.Href
 				break
 			}
@@ -1819,19 +1846,31 @@ func (s *S) parseURLSet(data string, handle func(entry *urlEntry)) error {
 
 // convert parses the elements that were read as text into the typed fields of the embedded
 // URL. An element whose content is invalid leaves its field unset and is added to e.invalid.
+//
+// It also drops the whitespace around the text values of the entry, those of its extensions
+// included: the content of an element may be indented or stand on a line of its own, and what
+// surrounds it is no more a part of the value than it is of a number or of a date. The location
+// of the entry is left to addURLEntry, which resolves it.
 func (e *urlEntry) convert() {
 	e.LastMod = parseDate(&e.invalid, "<lastmod>", e.LastModText)
+	e.ChangeFreq = trimChangeFreq(e.ChangeFreq)
 	e.Priority = parseElement(&e.invalid, "<priority>", e.PriorityText, parseFloat32)
 	e.invalidOwn = len(e.invalid) > 0
 
+	for i := range e.Images {
+		e.Images[i].trimSpace()
+	}
+
 	if e.NewsEntry != nil {
 		news := e.NewsEntry.News
+		news.trimSpace()
 		news.PublicationDate = parseDate(&e.invalid, "news <publication_date>", e.NewsEntry.PublicationDateText)
 		e.News = &news
 	}
 
 	for _, entry := range e.VideoEntries {
 		video := entry.Video
+		video.trimSpace()
 		video.Duration = parseElement(&e.invalid, "video <duration>", entry.DurationText, parseInt)
 		video.ExpirationDate = parseDate(&e.invalid, "video <expiration_date>", entry.ExpirationDateText)
 		video.Rating = parseElement(&e.invalid, "video <rating>", entry.RatingText, parseFloat32)
@@ -1839,6 +1878,77 @@ func (e *urlEntry) convert() {
 		video.PublicationDate = parseDate(&e.invalid, "video <publication_date>", entry.PublicationDateText)
 		e.Videos = append(e.Videos, video)
 	}
+
+	for i := range e.Hreflangs {
+		e.Hreflangs[i].trimSpace()
+	}
+}
+
+// trimSpaces drops the whitespace around each of the given text values.
+func trimSpaces(values ...*string) {
+	for _, value := range values {
+		*value = strings.TrimSpace(*value)
+	}
+}
+
+// trimSpace drops the whitespace around the text values of the image.
+func (i *Image) trimSpace() {
+	trimSpaces(&i.Loc, &i.Title, &i.Caption, &i.GeoLocation, &i.License)
+}
+
+// trimSpace drops the whitespace around the text values of the news entry.
+func (n *News) trimSpace() {
+	trimSpaces(&n.Publication.Name, &n.Publication.Language, &n.Title)
+}
+
+// trimSpace drops the whitespace around the text values of the video, the attributes of its
+// elements and its tags included.
+func (v *Video) trimSpace() {
+	trimSpaces(&v.ThumbnailLoc, &v.Title, &v.Description, &v.ContentLoc, &v.PlayerLoc,
+		&v.FamilyFriendly, &v.RequiresSubscription, &v.Live)
+	if v.Restriction != nil {
+		trimSpaces(&v.Restriction.Relationship, &v.Restriction.Value)
+	}
+	if v.Platform != nil {
+		trimSpaces(&v.Platform.Relationship, &v.Platform.Value)
+	}
+	if v.Uploader != nil {
+		trimSpaces(&v.Uploader.Info, &v.Uploader.Value)
+	}
+	for i := range v.Tags {
+		v.Tags[i] = strings.TrimSpace(v.Tags[i])
+	}
+}
+
+// trimSpace drops the whitespace around the values of the attributes of the link.
+func (l *AlternateLink) trimSpace() {
+	trimSpaces(&l.Rel, &l.Hreflang, &l.Href)
+}
+
+// trimChangeFreq drops the whitespace around the content of a <changefreq> element. It returns
+// nil for an element that is empty: such an element names no frequency, so it is read as an
+// absent one, the way an empty date is.
+func trimChangeFreq(changeFreq *URLChangeFreq) *URLChangeFreq {
+	if changeFreq == nil {
+		return nil
+	}
+	*changeFreq = URLChangeFreq(strings.TrimSpace(string(*changeFreq)))
+	if *changeFreq == "" {
+		return nil
+	}
+	return changeFreq
+}
+
+// canonicalChangeFreq returns the value of the sitemaps.org protocol that changeFreq is when
+// letter case is disregarded, "daily" for "Daily". A value that is none of them is returned
+// as it is.
+func canonicalChangeFreq(changeFreq URLChangeFreq) URLChangeFreq {
+	for _, known := range changeFreqs {
+		if strings.EqualFold(string(changeFreq), string(known)) {
+			return known
+		}
+	}
+	return changeFreq
 }
 
 // newsDateText returns the content of the publication date element of the news of the entry

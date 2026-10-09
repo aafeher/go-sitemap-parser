@@ -5216,6 +5216,585 @@ func TestEmptyElement(t *testing.T) {
 	}
 }
 
+// textValues returns the text values v holds: every string in it, whether it is a field of
+// a structure, an element of a slice or behind a pointer, by the path that leads to it.
+// Dates are no text values.
+func textValues(v any) map[string]string {
+	values := map[string]string{}
+
+	var walk func(path string, value reflect.Value)
+	walk = func(path string, value reflect.Value) {
+		switch value.Kind() {
+		case reflect.String:
+			values[path] = value.String()
+		case reflect.Pointer:
+			if !value.IsNil() {
+				walk(path, value.Elem())
+			}
+		case reflect.Slice:
+			for i := 0; i < value.Len(); i++ {
+				walk(fmt.Sprintf("%s[%d]", path, i), value.Index(i))
+			}
+		case reflect.Struct:
+			if value.Type() == reflect.TypeOf(LastModTime{}) {
+				return
+			}
+			for i := 0; i < value.NumField(); i++ {
+				walk(strings.TrimPrefix(path+"."+value.Type().Field(i).Name, "."), value.Field(i))
+			}
+		}
+	}
+	walk("", reflect.ValueOf(v))
+
+	return values
+}
+
+// TestS_Parse_SurroundingWhitespace verifies that the whitespace around the content of an
+// element or the value of an attribute is no part of the value, for every text value an
+// entry can hold and in both modes: whichever way the values of a document are padded, the
+// entry is the one that the document gives without padding.
+func TestS_Parse_SurroundingWhitespace(t *testing.T) {
+	const sitemapURL = "https://example.com/sitemap.xml"
+
+	// document returns a urlset of one entry, which holds every text value an entry can
+	// hold and satisfies strict mode. Each of the values is padded by pad.
+	document := func(pad func(string) string) string {
+		return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>` + pad("https://example.com/page") + `</loc>
+    <changefreq>` + pad("weekly") + `</changefreq>
+    <image:image>
+      <image:loc>` + pad("https://cdn.example.com/image.jpg") + `</image:loc>
+      <image:title>` + pad("Image title") + `</image:title>
+      <image:caption>` + pad("Image caption") + `</image:caption>
+      <image:geo_location>` + pad("Budapest, Hungary") + `</image:geo_location>
+      <image:license>` + pad("https://example.com/license") + `</image:license>
+    </image:image>
+    <news:news>
+      <news:publication>
+        <news:name>` + pad("Example News") + `</news:name>
+        <news:language>` + pad("en") + `</news:language>
+      </news:publication>
+      <news:publication_date>2024-01-15</news:publication_date>
+      <news:title>` + pad("News title") + `</news:title>
+    </news:news>
+    <video:video>
+      <video:thumbnail_loc>` + pad("https://example.com/thumb.jpg") + `</video:thumbnail_loc>
+      <video:title>` + pad("Video title") + `</video:title>
+      <video:description>` + pad("Video description") + `</video:description>
+      <video:content_loc>` + pad("https://example.com/video.mp4") + `</video:content_loc>
+      <video:player_loc>` + pad("https://example.com/player") + `</video:player_loc>
+      <video:family_friendly>` + pad("yes") + `</video:family_friendly>
+      <video:restriction relationship="` + pad("allow") + `">` + pad("IE GB US") + `</video:restriction>
+      <video:platform relationship="` + pad("deny") + `">` + pad("web tv") + `</video:platform>
+      <video:requires_subscription>` + pad("no") + `</video:requires_subscription>
+      <video:uploader info="` + pad("https://example.com/uploader") + `">` + pad("Uploader name") + `</video:uploader>
+      <video:live>` + pad("no") + `</video:live>
+      <video:tag>` + pad("first tag") + `</video:tag>
+      <video:tag>` + pad("second tag") + `</video:tag>
+    </video:video>
+    <xhtml:link rel="` + pad("alternate") + `" hreflang="` + pad("de") + `" href="` + pad("https://example.com/de/page") + `"/>
+  </url>
+</urlset>`
+	}
+	want := map[string]string{
+		"Loc":                                "https://example.com/page",
+		"ChangeFreq":                         "weekly",
+		"Images[0].Loc":                      "https://cdn.example.com/image.jpg",
+		"Images[0].Title":                    "Image title",
+		"Images[0].Caption":                  "Image caption",
+		"Images[0].GeoLocation":              "Budapest, Hungary",
+		"Images[0].License":                  "https://example.com/license",
+		"News.Publication.Name":              "Example News",
+		"News.Publication.Language":          "en",
+		"News.Title":                         "News title",
+		"Videos[0].ThumbnailLoc":             "https://example.com/thumb.jpg",
+		"Videos[0].Title":                    "Video title",
+		"Videos[0].Description":              "Video description",
+		"Videos[0].ContentLoc":               "https://example.com/video.mp4",
+		"Videos[0].PlayerLoc":                "https://example.com/player",
+		"Videos[0].FamilyFriendly":           "yes",
+		"Videos[0].Restriction.Relationship": "allow",
+		"Videos[0].Restriction.Value":        "IE GB US",
+		"Videos[0].Platform.Relationship":    "deny",
+		"Videos[0].Platform.Value":           "web tv",
+		"Videos[0].RequiresSubscription":     "no",
+		"Videos[0].Uploader.Info":            "https://example.com/uploader",
+		"Videos[0].Uploader.Value":           "Uploader name",
+		"Videos[0].Live":                     "no",
+		"Videos[0].Tags[0]":                  "first tag",
+		"Videos[0].Tags[1]":                  "second tag",
+		"Hreflangs[0].Rel":                   "alternate",
+		"Hreflangs[0].Hreflang":              "de",
+		"Hreflangs[0].Href":                  "https://example.com/de/page",
+	}
+
+	paddings := map[string]string{
+		"none":               "%s",
+		"spaces":             "  %s  ",
+		"tabs":               "\t%s\t",
+		"lines of their own": "\n        %s\n      ",
+		"CRLF line ends":     "\r\n        %s\r\n      ",
+		"leading only":       " \n%s",
+		"trailing only":      "%s\n ",
+		"every kind at once": " \t\r\n%s\n\r\t ",
+	}
+	for name, padding := range paddings {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", name, strict), func(t *testing.T) {
+				content := document(func(value string) string { return fmt.Sprintf(padding, value) })
+				s := New().SetStrict(strict)
+				requireParse(t, s, sitemapURL, &content)
+
+				if errs := s.GetErrors(); len(errs) != 0 {
+					t.Errorf("unexpected errors: %v", errs)
+				}
+				urls := s.GetURLs()
+				if len(urls) != 1 {
+					t.Fatalf("expected 1 URL, got %d", len(urls))
+				}
+				got := textValues(urls[0])
+				if !reflect.DeepEqual(got, want) {
+					for path, value := range got {
+						if expected, ok := want[path]; !ok || value != expected {
+							t.Errorf("%s: got %q, want %q", path, value, expected)
+						}
+					}
+					for path := range want {
+						if _, ok := got[path]; !ok {
+							t.Errorf("%s is missing", path)
+						}
+					}
+				}
+			})
+		}
+	}
+
+	// The document has to hold every text value of an entry for the above to cover them
+	// all: a text field that is added to one of the types has to be added to it as well.
+	t.Run("every text value is covered", func(t *testing.T) {
+		content := document(func(value string) string { return value })
+		s := New()
+		requireParse(t, s, sitemapURL, &content)
+		for path, value := range textValues(s.GetURLs()[0]) {
+			if value == "" {
+				t.Errorf("%s is not set by the document", path)
+			}
+		}
+	})
+}
+
+// TestS_Parse_SurroundingWhitespace_EveryEntry verifies that the whitespace around a value
+// is dropped for every entry of a document and for every entry of an extension, not only
+// for the first one.
+func TestS_Parse_SurroundingWhitespace_EveryEntry(t *testing.T) {
+	// padded returns the value the way the document holds it.
+	padded := func(value string) string { return "\n      " + value + "\n    " }
+	// page returns the entry of the page of the given name, which has two images, two
+	// videos and two alternate links.
+	page := func(name string) string {
+		entry := `<url><loc>https://example.com/` + name + `</loc><changefreq>` + padded("monthly") + `</changefreq>`
+		for _, n := range []string{"1", "2"} {
+			entry += `<image:image><image:loc>` + padded("https://example.com/"+name+"-"+n+".jpg") + `</image:loc></image:image>` +
+				`<video:video><video:thumbnail_loc>` + padded("https://example.com/"+name+"-"+n+".png") + `</video:thumbnail_loc>` +
+				`<video:title>` + padded("Video "+n) + `</video:title><video:description>` + padded("Description "+n) + `</video:description>` +
+				`<video:content_loc>` + padded("https://example.com/"+name+"-"+n+".mp4") + `</video:content_loc>` +
+				`<video:tag>` + padded("tag "+n) + `</video:tag></video:video>` +
+				`<xhtml:link rel="` + padded("alternate") + `" hreflang="` + padded("l"+n) + `" href="` + padded("https://example.com/l"+n+"/"+name) + `"/>`
+		}
+		return entry + `</url>`
+	}
+	content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">` + page("first") + page("second") + `</urlset>`
+
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			s := New().SetStrict(strict)
+			requireParse(t, s, "https://example.com/sitemap.xml", &content)
+
+			if errs := s.GetErrors(); len(errs) != 0 {
+				t.Errorf("unexpected errors: %v", errs)
+			}
+			urls := s.GetURLs()
+			if len(urls) != 2 {
+				t.Fatalf("expected 2 URLs, got %d", len(urls))
+			}
+			for i, name := range []string{"first", "second"} {
+				u := urls[i]
+				if len(u.Images) != 2 || len(u.Videos) != 2 || len(u.Hreflangs) != 2 {
+					t.Fatalf("%s: expected 2 images, videos and alternate links, got %d, %d and %d", name, len(u.Images), len(u.Videos), len(u.Hreflangs))
+				}
+				for path, value := range textValues(u) {
+					if value != strings.TrimSpace(value) {
+						t.Errorf("%s: %s has whitespace around it: %q", name, path, value)
+					}
+				}
+				mustEqual(t, name+": second image", u.Images[1].Loc, "https://example.com/"+name+"-2.jpg")
+				mustEqual(t, name+": second video", u.Videos[1].ThumbnailLoc, "https://example.com/"+name+"-2.png")
+				mustEqual(t, name+": tag of the second video", u.Videos[1].Tags[0], "tag 2")
+				mustEqual(t, name+": second alternate link", u.Hreflangs[1], AlternateLink{Rel: "alternate", Hreflang: "l2", Href: "https://example.com/l2/" + name})
+			}
+		})
+	}
+}
+
+// TestS_Parse_ChangeFreq verifies how the content of a <changefreq> is read. Whitespace
+// around it is no part of the value, and an element that holds nothing else names no
+// frequency: the field is nil then, as it is without the element. A value of the protocol
+// that is written in another letter case is read as that value in tolerant mode and is left
+// as it is in strict mode. No form of the element costs the entry or is reported.
+func TestS_Parse_ChangeFreq(t *testing.T) {
+	const sitemapURL = "https://example.com/sitemap.xml"
+
+	type test struct {
+		element string
+		// tolerant and strict are the value of the field in the two modes, nil for a
+		// field that is nil.
+		tolerant *URLChangeFreq
+		strict   *URLChangeFreq
+	}
+	freq := func(value URLChangeFreq) *URLChangeFreq { return &value }
+	tests := []test{
+		{`<changefreq>daily</changefreq>`, freq(ChangeFreqDaily), freq(ChangeFreqDaily)},
+		{`<changefreq> daily </changefreq>`, freq(ChangeFreqDaily), freq(ChangeFreqDaily)},
+		{"<changefreq>\n      daily\n    </changefreq>", freq(ChangeFreqDaily), freq(ChangeFreqDaily)},
+		{"<changefreq>\tdaily\r\n</changefreq>", freq(ChangeFreqDaily), freq(ChangeFreqDaily)},
+		{`<changefreq><![CDATA[ daily ]]></changefreq>`, freq(ChangeFreqDaily), freq(ChangeFreqDaily)},
+		{`<changefreq>Daily</changefreq>`, freq(ChangeFreqDaily), freq("Daily")},
+		{`<changefreq> Daily </changefreq>`, freq(ChangeFreqDaily), freq("Daily")},
+		{`<changefreq>dAiLy</changefreq>`, freq(ChangeFreqDaily), freq("dAiLy")},
+		// A value the protocol does not know is kept as the document gives it.
+		{`<changefreq>sometimes</changefreq>`, freq("sometimes"), freq("sometimes")},
+		{`<changefreq> Some Times </changefreq>`, freq("Some Times"), freq("Some Times")},
+		{`<changefreq>dailyish</changefreq>`, freq("dailyish"), freq("dailyish")},
+		{`<changefreq>Biweekly</changefreq>`, freq("Biweekly"), freq("Biweekly")},
+		{`<changefreq>DAILY!</changefreq>`, freq("DAILY!"), freq("DAILY!")},
+		{`<changefreq></changefreq>`, nil, nil},
+		{`<changefreq/>`, nil, nil},
+		{`<changefreq> </changefreq>`, nil, nil},
+		{"<changefreq>\n\t \r\n</changefreq>", nil, nil},
+		{`<changefreq><![CDATA[ ]]></changefreq>`, nil, nil},
+		{`<changefreq><!-- daily --></changefreq>`, nil, nil},
+		{``, nil, nil},
+	}
+	for _, known := range changeFreqs {
+		upper := strings.ToUpper(string(known))
+		title := upper[:1] + string(known)[1:]
+		tests = append(tests,
+			test{`<changefreq>` + string(known) + `</changefreq>`, freq(known), freq(known)},
+			test{`<changefreq>` + upper + `</changefreq>`, freq(known), freq(URLChangeFreq(upper))},
+			test{"<changefreq>\n  " + title + "\n</changefreq>", freq(known), freq(URLChangeFreq(title))},
+		)
+	}
+
+	for _, test := range tests {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%q, strict=%v", test.element, strict), func(t *testing.T) {
+				content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com/page</loc>` + test.element + `<priority>0.5</priority></url></urlset>`
+				s := New().SetStrict(strict)
+				requireParse(t, s, sitemapURL, &content)
+
+				if errs := s.GetErrors(); len(errs) != 0 {
+					t.Errorf("unexpected errors: %v", errs)
+				}
+				urls := s.GetURLs()
+				if len(urls) != 1 {
+					t.Fatalf("expected 1 URL, got %d", len(urls))
+				}
+				assertPtrFloat32(t, "Priority", urls[0].Priority, 0.5)
+
+				want := test.tolerant
+				if strict {
+					want = test.strict
+				}
+				got := urls[0].ChangeFreq
+				switch {
+				case want == nil && got != nil:
+					t.Errorf("ChangeFreq: got %q, want nil", *got)
+				case want != nil && got == nil:
+					t.Errorf("ChangeFreq: got nil, want %q", *want)
+				case want != nil && *got != *want:
+					t.Errorf("ChangeFreq: got %q, want %q", *got, *want)
+				}
+			})
+		}
+	}
+}
+
+// TestS_Parse_BlankRequiredValues verifies that a value an extension requires is missing
+// when its element or attribute holds nothing but whitespace, the same as when it is empty.
+// Tolerant mode leaves out an image, a video and an alternate link without a location;
+// strict mode reports every value that is missing.
+func TestS_Parse_BlankRequiredValues(t *testing.T) {
+	const (
+		sitemapURL = "https://example.com/sitemap.xml"
+		pageURL    = "https://example.com/page"
+		thumbnail  = "https://example.com/thumb.jpg"
+		german     = "https://example.com/de/page"
+	)
+
+	for _, blank := range []string{"", " ", "\n      ", "\t\r\n "} {
+		content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>` + pageURL + `</loc>
+    <image:image><image:loc>` + blank + `</image:loc><image:title>Image title</image:title></image:image>
+    <news:news>
+      <news:publication><news:name>` + blank + `</news:name><news:language>` + blank + `</news:language></news:publication>
+      <news:publication_date>2024-01-15</news:publication_date>
+      <news:title>` + blank + `</news:title>
+    </news:news>
+    <video:video><video:thumbnail_loc>` + blank + `</video:thumbnail_loc><video:title>Video title</video:title></video:video>
+    <video:video>
+      <video:thumbnail_loc>` + thumbnail + `</video:thumbnail_loc>
+      <video:title>` + blank + `</video:title>
+      <video:description>` + blank + `</video:description>
+      <video:content_loc>` + blank + `</video:content_loc>
+      <video:player_loc>` + blank + `</video:player_loc>
+    </video:video>
+    <xhtml:link rel="alternate" hreflang="de" href="` + blank + `"/>
+    <xhtml:link rel="alternate" hreflang="` + blank + `" href="` + german + `"/>
+  </url>
+</urlset>`
+
+		t.Run(fmt.Sprintf("%q, tolerant mode", blank), func(t *testing.T) {
+			s := New()
+			requireParse(t, s, sitemapURL, &content)
+
+			if errs := s.GetErrors(); len(errs) != 0 {
+				t.Errorf("unexpected errors: %v", errs)
+			}
+			urls := s.GetURLs()
+			if len(urls) != 1 {
+				t.Fatalf("expected 1 URL, got %d", len(urls))
+			}
+			u := urls[0]
+			if len(u.Images) != 0 {
+				t.Errorf("expected no image, got %+v", u.Images)
+			}
+			if len(u.Videos) != 1 || u.Videos[0].ThumbnailLoc != thumbnail {
+				t.Errorf("expected the video that has a thumbnail, got %+v", u.Videos)
+			}
+			if len(u.Hreflangs) != 1 || u.Hreflangs[0] != (AlternateLink{Rel: "alternate", Href: german}) {
+				t.Errorf("expected the alternate link that has a location, got %+v", u.Hreflangs)
+			}
+			if u.News == nil || *u.News != (News{PublicationDate: u.News.PublicationDate}) || u.News.PublicationDate == nil {
+				t.Errorf("expected news of a publication date only, got %+v", u.News)
+			}
+		})
+
+		t.Run(fmt.Sprintf("%q, strict mode", blank), func(t *testing.T) {
+			s := New().SetStrict(true)
+			requireParse(t, s, sitemapURL, &content)
+
+			var got []string
+			for _, err := range s.GetErrors() {
+				got = append(got, err.Error())
+			}
+			assertStringSlice(t, "errors", got, []string{
+				`validate "": strict mode: image <loc> is empty`,
+				`validate "` + pageURL + `": strict mode: news <title> is empty`,
+				`validate "` + pageURL + `": strict mode: news <publication><name> is empty`,
+				`validate "` + pageURL + `": strict mode: news <publication><language> is empty`,
+				`validate "": strict mode: video <thumbnail_loc> is empty`,
+				`validate "` + thumbnail + `": strict mode: video <title> is empty`,
+				`validate "` + thumbnail + `": strict mode: video <description> is empty`,
+				`validate "` + thumbnail + `": strict mode: video must have at least one of <content_loc> or <player_loc>`,
+				`validate "": strict mode: alternate link <href> is empty`,
+				`validate "` + german + `": strict mode: alternate link <hreflang> is empty`,
+			})
+
+			urls := s.GetURLs()
+			if len(urls) != 1 {
+				t.Fatalf("expected 1 URL, got %d", len(urls))
+			}
+			u := urls[0]
+			if len(u.Images) != 0 || len(u.Videos) != 1 || len(u.Hreflangs) != 0 || u.News == nil {
+				t.Errorf("expected the news and the video that has a thumbnail, got %+v", u)
+			}
+		})
+	}
+}
+
+// TestS_Parse_PaddedLocationLength verifies that the limit on the length of a URL applies
+// to the URL, not to the whitespace around it: a location of an extension that is as long
+// as the limit allows is accepted however it is padded, in both modes.
+func TestS_Parse_PaddedLocationLength(t *testing.T) {
+	const (
+		sitemapURL = "https://example.com/sitemap.xml"
+		prefix     = "https://example.com/"
+	)
+	// entry returns the extension entry of each kind that is located at loc.
+	entries := map[string]func(loc string) string{
+		"image": func(loc string) string { return `<image:image><image:loc>` + loc + `</image:loc></image:image>` },
+		"video": func(loc string) string {
+			return `<video:video><video:thumbnail_loc>` + loc + `</video:thumbnail_loc><video:title>Video title</video:title><video:description>Video description</video:description><video:player_loc>https://example.com/player</video:player_loc></video:video>`
+		},
+		"alternate link": func(loc string) string { return `<xhtml:link rel="alternate" hreflang="de" href="` + loc + `"/>` },
+	}
+	count := func(u URL) int { return len(u.Images) + len(u.Videos) + len(u.Hreflangs) }
+
+	for kind, entry := range entries {
+		for _, strict := range []bool{false, true} {
+			for _, over := range []int{0, 1} {
+				t.Run(fmt.Sprintf("%s, strict=%v, %d over the limit", kind, strict, over), func(t *testing.T) {
+					loc := prefix + strings.Repeat("a", maxLocLength-len(prefix)+over)
+					content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url><loc>https://example.com/page</loc>` + entry("\n      "+loc+"\n    ") + `</url>
+</urlset>`
+					s := New().SetStrict(strict)
+					requireParse(t, s, sitemapURL, &content)
+
+					urls := s.GetURLs()
+					if len(urls) != 1 {
+						t.Fatalf("expected 1 URL, got %d", len(urls))
+					}
+					errs := s.GetErrors()
+					if over == 0 {
+						if len(errs) != 0 || count(urls[0]) != 1 {
+							t.Fatalf("expected the entry and no error, got %d entries, errors: %v", count(urls[0]), errs)
+						}
+						return
+					}
+
+					if count(urls[0]) != 0 {
+						t.Errorf("expected the entry to be left out, got %d entries", count(urls[0]))
+					}
+					if len(errs) != 1 {
+						t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+					}
+					var validationErr *ValidationError
+					if !errors.As(errs[0], &validationErr) {
+						t.Fatalf("expected a *ValidationError, got %T: %v", errs[0], errs[0])
+					}
+					mustEqual(t, "URL of the error", validationErr.URL, loc)
+					mustEqual(t, "error", validationErr.Err.Error(), fmt.Sprintf("URL exceeds maximum length of %d characters (%d)", maxLocLength, maxLocLength+1))
+				})
+			}
+		}
+	}
+}
+
+// TestS_Parse_Atom_PaddedRel verifies that the whitespace around the relation of an Atom
+// link is no part of it: the link of an entry is the one whose relation is "alternate" or
+// that names none, however the value of the attribute is padded.
+func TestS_Parse_Atom_PaddedRel(t *testing.T) {
+	tests := []struct {
+		name  string
+		links string
+		want  []string
+	}{
+		{"alternate", `<link rel="alternate" href="https://example.com/a"/>`, []string{"https://example.com/a"}},
+		{"padded alternate", `<link rel=" alternate " href="https://example.com/a"/>`, []string{"https://example.com/a"}},
+		{"alternate on a line of its own", "<link rel=\"\n  alternate\n\" href=\"https://example.com/a\"/>", []string{"https://example.com/a"}},
+		{"padded alternate after another relation", `<link rel="self" href="https://example.com/self"/><link rel="	alternate	" href="https://example.com/a"/>`, []string{"https://example.com/a"}},
+		{"blank relation", `<link rel=" " href="https://example.com/a"/>`, []string{"https://example.com/a"}},
+		{"padded other relation", `<link rel=" self " href="https://example.com/self"/>`, []string{}},
+	}
+
+	for _, test := range tests {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", test.name, strict), func(t *testing.T) {
+				content := `<feed xmlns="http://www.w3.org/2005/Atom"><entry>` + test.links + `</entry></feed>`
+				s := New().SetStrict(strict)
+				requireParse(t, s, "https://example.com/atom.xml", &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), test.want)
+				if errs := s.GetErrors(); len(errs) != 0 {
+					t.Errorf("unexpected errors: %v", errs)
+				}
+			})
+		}
+	}
+}
+
+func TestTrimChangeFreq(t *testing.T) {
+	tests := []struct {
+		changeFreq *string
+		want       *string
+	}{
+		{nil, nil},
+		{pointerOfString(""), nil},
+		{pointerOfString(" "), nil},
+		{pointerOfString(" \t\r\n"), nil},
+		{pointerOfString("daily"), pointerOfString("daily")},
+		{pointerOfString(" daily "), pointerOfString("daily")},
+		{pointerOfString("\n\tDaily\r\n"), pointerOfString("Daily")},
+		{pointerOfString(" some times "), pointerOfString("some times")},
+	}
+
+	for _, test := range tests {
+		name := "absent"
+		if test.changeFreq != nil {
+			name = fmt.Sprintf("%q", *test.changeFreq)
+		}
+		t.Run(name, func(t *testing.T) {
+			var changeFreq *URLChangeFreq
+			if test.changeFreq != nil {
+				value := URLChangeFreq(*test.changeFreq)
+				changeFreq = &value
+			}
+
+			got := trimChangeFreq(changeFreq)
+			switch {
+			case test.want == nil && got != nil:
+				t.Errorf("got %q, want nil", *got)
+			case test.want != nil && got == nil:
+				t.Errorf("got nil, want %q", *test.want)
+			case test.want != nil && string(*got) != *test.want:
+				t.Errorf("got %q, want %q", *got, *test.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalChangeFreq(t *testing.T) {
+	tests := map[URLChangeFreq]URLChangeFreq{
+		"daily":     ChangeFreqDaily,
+		"Daily":     ChangeFreqDaily,
+		"DAILY":     ChangeFreqDaily,
+		"dAILy":     ChangeFreqDaily,
+		"ALWAYS":    ChangeFreqAlways,
+		"Hourly":    ChangeFreqHourly,
+		"WeeKly":    ChangeFreqWeekly,
+		"MONTHLY":   ChangeFreqMonthly,
+		"yearlY":    ChangeFreqYearly,
+		"Never":     ChangeFreqNever,
+		"":          "",
+		"sometimes": "sometimes",
+		"Sometimes": "Sometimes",
+		"dail":      "dail",
+		"biweekly":  "biweekly",
+		"Bi-Weekly": "Bi-Weekly",
+		"DAILYS":    "DAILYS",
+		// The whitespace is dropped before a value gets here.
+		" Daily ": " Daily ",
+	}
+	for _, known := range changeFreqs {
+		tests[known] = known
+	}
+
+	for changeFreq, want := range tests {
+		t.Run(fmt.Sprintf("%q", string(changeFreq)), func(t *testing.T) {
+			mustEqual(t, "canonicalChangeFreq", canonicalChangeFreq(changeFreq), want)
+		})
+	}
+	mustEqual(t, "values of the protocol", len(changeFreqs), 7)
+}
+
 func TestParseFloat32(t *testing.T) {
 	tests := []struct {
 		text    string
