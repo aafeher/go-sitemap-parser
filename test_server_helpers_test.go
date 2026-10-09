@@ -43,12 +43,12 @@ func testServer() *httptest.Server {
 
 		strRes := string(res)
 		if strings.Contains(strRes, "\x1f\x8b\x08") {
-			resUncompressed, err := unzip(res, defaultMaxResponseSize)
+			resUncompressed, err := unzip(strRes, defaultMaxResponseSize)
 			if err != nil {
 				_, _ = fmt.Fprintf(w, "error: %v\n", err)
 				return
 			}
-			strRes = strings.ReplaceAll(string(resUncompressed), "HOST", r.Host)
+			strRes = strings.ReplaceAll(resUncompressed, "HOST", r.Host)
 
 			resCompressed, err := zipFunc([]byte(strRes), nil)
 			if err != nil {

@@ -131,13 +131,15 @@ See [`examples/maxdepth`](examples/maxdepth/main.go) for a runnable example.
 
 #### Max concurrency
 
-When multi-threaded parsing is enabled, the parser spawns one goroutine per sitemap location and per `robots.txt` sitemap directive. For very large sitemap indexes this can lead to a large number of concurrent goroutines and HTTP connections. To bound the number of sitemaps that are worked on at the same time across the whole `Parse()` / `ParseContext()` call, use the `SetMaxConcurrency()` function.
+When multi-threaded parsing is enabled, the sitemaps a sitemap index or a `robots.txt` lists are fetched and parsed concurrently. For very large sitemap indexes this can mean a large number of goroutines, HTTP connections and documents in memory at once. To bound the number of sitemaps that are worked on at the same time across the whole `Parse()` / `ParseContext()` call, use the `SetMaxConcurrency()` function.
 
 The value is an `int`:
 - `0`: unlimited concurrency.
 - a positive value: at most that many sitemaps are being fetched or parsed at any time. The default is `16`.
 
 A sitemap counts from the moment its request is sent until its content is parsed, so the limit bounds the connections that are open, the CPU cores that are busy and the documents that are held in memory at once. Parsing a sitemap takes several times the memory of the document itself; a lower limit trades speed for a smaller footprint.
+
+A sitemap that waits for its turn takes up none of these, and no goroutine either: a goroutine is started for a sitemap only when there is a slot for it. However many sitemaps an index lists, the goroutines of the parser are those of the sitemaps being worked on, plus one for every sitemap index whose sitemaps are not finished yet. With `SetMaxConcurrency(0)` a goroutine is started, and a request sent, for every sitemap listed at once.
 
 Negative values are rejected and an error is recorded in `GetErrors()`.
 
@@ -150,7 +152,7 @@ s = s.SetMaxConcurrency(8)
 s := sitemap.New().SetMaxConcurrency(8)
 ```
 
-Cancelling the supplied `context.Context` while goroutines are queued for a slot causes them to return immediately with the context error, just like an in-flight fetch.
+Cancelling the supplied `context.Context` while sitemaps wait for a slot ends the wait at once. The sitemaps that were still waiting are not fetched, and the cancellation is recorded in `GetErrors()` once for the sitemap index or `robots.txt` that lists them, next to the errors of the requests that were cut short.
 
 #### Multi-threading
 
@@ -341,7 +343,7 @@ However, two important constraints apply:
 - **Concurrent `Parse()` / `ParseContext()` calls on the same instance are serialised.** A second call blocks until the first completes. If you need to parse multiple sitemaps concurrently, create a separate `*S` instance per goroutine with `New()`.
 - **Configure before parsing.** Calling a `Set*` method while `Parse()` is running on the same instance is safe (the write is mutex-protected), but the outcome is non-deterministic — the new value may or may not be picked up mid-parse. Set all options before calling `Parse()`.
 
-**Deadlock note:** a goroutine gives its `SetMaxConcurrency` slot back as soon as its sitemap is fetched and parsed, before the sitemaps that one lists are followed. This prevents goroutines from holding a slot while waiting for the goroutines of the child sitemaps to get one, which would otherwise deadlock when a `robots.txt` or a sitemap index leads to further sitemap indexes.
+**Deadlock note:** a goroutine gives its `SetMaxConcurrency` slot back as soon as its sitemap is fetched and parsed, before the sitemaps that one lists are followed. This prevents a goroutine from holding a slot while it waits for the slots of the child sitemaps, which would otherwise deadlock when a `robots.txt` or a sitemap index leads to further sitemap indexes.
 
 ### Parse
 

@@ -179,7 +179,7 @@ func FuzzUnzip(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Arbitrary input: unzip must fail cleanly rather than panic, and must
 		// never hand back more than the limit allows.
-		if out, err := unzip(data, fuzzUnzipLimit); err == nil && len(out) > fuzzUnzipLimit {
+		if out, err := unzip(string(data), fuzzUnzipLimit); err == nil && len(out) > fuzzUnzipLimit {
 			t.Fatalf("unzip returned %d bytes, limit is %d", len(out), fuzzUnzipLimit)
 		}
 
@@ -193,28 +193,28 @@ func FuzzUnzip(f *testing.F) {
 			t.Fatalf("closing gzip writer: %v", err)
 		}
 
-		out, err := unzip(buf.Bytes(), defaultMaxResponseSize)
+		out, err := unzip(buf.String(), defaultMaxResponseSize)
 		if err != nil {
 			t.Fatalf("unzip rejected data this package compressed: %v", err)
 		}
-		if !bytes.Equal(out, data) {
+		if out != string(data) {
 			t.Fatalf("gzip round trip altered the payload: got %d bytes, want %d", len(out), len(data))
 		}
 
 		// Size limit: a payload that fits must come back intact, and one that
 		// does not must be rejected without returning any data.
-		limited, err := unzip(buf.Bytes(), fuzzUnzipLimit)
+		limited, err := unzip(buf.String(), fuzzUnzipLimit)
 		if len(data) <= fuzzUnzipLimit {
-			if err != nil || !bytes.Equal(limited, data) {
+			if err != nil || limited != string(data) {
 				t.Fatalf("unzip rejected or altered a %d-byte payload within the %d-byte limit: %v", len(data), fuzzUnzipLimit, err)
 			}
-		} else if err == nil || limited != nil {
+		} else if err == nil || limited != "" {
 			t.Fatalf("unzip accepted a %d-byte payload over the %d-byte limit (returned %d bytes, err %v)", len(data), fuzzUnzipLimit, len(limited), err)
 		}
 
 		// checkAndUnzipContent must agree with unzip on well-formed input.
 		s := New()
-		if got := s.checkAndUnzipContent(fuzzBaseURL, buf.Bytes()); !bytes.Equal(got, data) {
+		if got := s.checkAndUnzipContent(fuzzBaseURL, buf.String()); got != string(data) {
 			t.Fatalf("checkAndUnzipContent returned %d bytes, want %d", len(got), len(data))
 		}
 	})

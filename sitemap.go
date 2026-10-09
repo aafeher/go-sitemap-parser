@@ -1,7 +1,6 @@
 package sitemap
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/xml"
@@ -26,7 +25,6 @@ type (
 	// S is a structure that holds various data related to processing URLs.
 	// It contains a cfg field of type `config`, which stores configuration settings.
 	// The mainURL field of type string represents the main URL being processed.
-	// The mainURLContent field of type string stores the content of the main URL.
 	// The robotsTxtSitemapURLs field is a slice of strings that contains the URLs present in the robots.txt file's sitemap directive.
 	// The sitemapLocations field is a slice of strings that represents the locations of the sitemap files.
 	// The urls field is a slice of URL structs that stores the URLs to be processed.
@@ -36,7 +34,6 @@ type (
 		mu                   sync.Mutex
 		cfg                  config
 		mainURL              string
-		mainURLContent       string
 		robotsTxtSitemapURLs []string
 		sitemapLocations     []string
 		// fetchedURLs tracks sitemap URLs already fetched in the current Parse
@@ -83,12 +80,6 @@ type (
 			Loc     string  `xml:"loc"`
 			LastMod *string `xml:"lastmod"`
 		} `xml:"sitemap"`
-	}
-
-	// urlSet is a structure of <urlset>
-	urlSet struct {
-		XMLName xml.Name   `xml:"urlset"`
-		URL     []urlEntry `xml:"url"`
 	}
 
 	// urlEntry is the form in which a <url> element is decoded: a URL whose elements holding a
@@ -619,13 +610,14 @@ func (s *S) GetStrict() bool {
 // resolved against that URL, strict mode compares the URLs it lists with that
 // URL, and the errors about the document name it.
 //
-// It sets the mainURL field to the given URL and the mainURLContent field to
-// the given URL content. It returns an error if there was an error setting
-// the content.
+// It sets the mainURL field to the given URL. The content is the given URL
+// content or, if that is nil, what the URL serves. It returns an error if the
+// content could not be fetched.
 // If the URL ends with "/robots.txt", it parses the robots.txt file and
 // fetches URLs from the sitemap files mentioned in the robots.txt.
-// If the URL does not end with "/robots.txt", the mainURLContent is checked
+// If the URL does not end with "/robots.txt", the content is checked
 // and unzipped if necessary, then parsed and fetched.
+// The content of a document is not kept once the document is parsed.
 // It returns the S structure and nil error if the method was able to complete
 // successfully.
 func (s *S) Parse(url string, urlContent *string) (*S, error) {
@@ -666,15 +658,12 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 		ctx = context.Background()
 	}
 
-	var err error
-
 	s.mu.Lock()
 	// Every call starts from a clean state, so nothing collected by a previous call carries
 	// over into this one, whichever way this call ends. Configuration errors are the
 	// exception: they belong to the instance rather than to a call, and keep blocking
 	// parsing until the offending setting is corrected.
 	s.mainURL = ""
-	s.mainURLContent = ""
 	s.robotsTxtSitemapURLs = nil
 	s.sitemapLocations = nil
 	s.fetchedURLs = make(map[string]struct{})
@@ -709,8 +698,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	s.mu.Unlock()
 
 	s.mainURL = url
-	var servedFrom string
-	s.mainURLContent, servedFrom, err = s.setContent(ctx, urlContent)
+	content, servedFrom, err := s.setContent(ctx, urlContent)
 	if err != nil {
 		s.mu.Lock()
 		s.errs = append(s.errs, err)
@@ -720,7 +708,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 
 	if strings.HasSuffix(s.mainURL, "/robots.txt") {
 		s.mu.Lock()
-		s.parseRobotsTXT(s.mainURLContent)
+		s.parseRobotsTXT(content)
 		locations := s.robotsTXTSitemapLocations(servedFrom)
 		s.mu.Unlock()
 
@@ -728,8 +716,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 		// so that every setting governing the fetches applies to them as well.
 		parseAndFetchUrls(ctx, locations, robotsTXTDepth)
 	} else {
-		var locations []string
-		s.mainURLContent, locations = s.parseDocument(servedFrom, []byte(s.mainURLContent))
+		locations := s.parseDocument(servedFrom, content)
 
 		parseAndFetchUrls(ctx, locations, 0)
 	}
@@ -826,12 +813,8 @@ func (s *S) setContent(ctx context.Context, urlContent *string) (string, string,
 	if urlContent != nil {
 		return *urlContent, s.mainURL, nil
 	}
-	mainURLContent, servedFrom, err := s.fetch(ctx, s.mainURL)
 
-	if err != nil {
-		return "", "", err
-	}
-	return string(mainURLContent), servedFrom, nil
+	return s.fetch(ctx, s.mainURL)
 }
 
 // parseRobotsTXT retrieves the sitemap URLs from the provided robots.txt content.
@@ -864,7 +847,9 @@ func (s *S) parseRobotsTXT(robotsTXTContent string) {
 		}
 		url := strings.TrimSpace(value)
 		if url != "" {
-			s.robotsTxtSitemapURLs = append(s.robotsTxtSitemapURLs, url)
+			// The value is copied: as a part of the content it would keep the whole file in
+			// memory for as long as it is kept itself.
+			s.robotsTxtSitemapURLs = append(s.robotsTxtSitemapURLs, strings.Clone(url))
 		}
 	}
 }
@@ -923,7 +908,7 @@ func (s *S) releaseSlot() {
 }
 
 // fetch retrieves the content of the specified URL using an HTTP GET request.
-// It returns the content as a []byte, the URL the content was served from and an error if
+// It returns the content, the URL the content was served from and an error if
 // there was a problem fetching the URL.
 // The URL the content was served from is url itself, unless the request was redirected: then
 // it is the URL the last redirect led to.
@@ -931,9 +916,7 @@ func (s *S) releaseSlot() {
 // The response body is automatically closed after reading using a defer statement.
 // The supplied context is attached to the HTTP request, so cancelling it aborts
 // the in-flight transfer.
-func (s *S) fetch(ctx context.Context, url string) ([]byte, string, error) {
-	var body bytes.Buffer
-
+func (s *S) fetch(ctx context.Context, url string) (string, string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -956,33 +939,56 @@ func (s *S) fetch(ctx context.Context, url string) ([]byte, string, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, "", &NetworkError{URL: url, Err: err}
+		return "", "", &NetworkError{URL: url, Err: err}
 	}
 
 	req.Header.Set("User-Agent", userAgent)
 
 	response, err := client.Do(req)
 	if err != nil {
-		return nil, "", &NetworkError{URL: url, Err: err}
+		return "", "", &NetworkError{URL: url, Err: err}
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(response.Body)
 
 	if response.StatusCode != http.StatusOK {
-		return nil, "", &NetworkError{URL: url, Err: fmt.Errorf("received HTTP status %d", response.StatusCode)}
+		return "", "", &NetworkError{URL: url, Err: fmt.Errorf("received HTTP status %d", response.StatusCode)}
 	}
 
-	_, err = io.Copy(&body, io.LimitReader(response.Body, maxResponseSize+1))
+	body, err := readString(io.LimitReader(response.Body, maxResponseSize+1))
 	if err != nil {
-		return nil, "", &NetworkError{URL: url, Err: err}
+		return "", "", &NetworkError{URL: url, Err: err}
 	}
 
-	if int64(body.Len()) > maxResponseSize {
-		return nil, "", &NetworkError{URL: url, Err: fmt.Errorf("response size exceeds limit of %d bytes", maxResponseSize)}
+	if int64(len(body)) > maxResponseSize {
+		return "", "", &NetworkError{URL: url, Err: fmt.Errorf("response size exceeds limit of %d bytes", maxResponseSize)}
 	}
 
-	return body.Bytes(), finalURL(url, req, response), nil
+	return body, finalURL(url, req, response), nil
+}
+
+// readBuffers holds the buffers readString reads through. A read needs one for as long as it
+// lasts. Allocated for every read, the buffers of a call that fetches many small sitemaps would
+// take up more memory than the sitemaps themselves.
+var readBuffers = sync.Pool{
+	New: func() any {
+		buffer := make([]byte, 32*1024)
+		return &buffer
+	},
+}
+
+// readString reads r to its end and returns what it read.
+// The content is read into the string that is returned, so that it does not have to be copied
+// to become one, and is not copied again on its way through the parser.
+// If reading fails, what was read until then is returned together with the error.
+func readString(r io.Reader) (string, error) {
+	buffer := readBuffers.Get().(*[]byte)
+	defer readBuffers.Put(buffer)
+
+	var content strings.Builder
+	_, err := io.CopyBuffer(&content, r, *buffer)
+	return content.String(), err
 }
 
 // finalURL returns the URL the response to req was served from: url, the URL req was made for,
@@ -1013,10 +1019,10 @@ func finalURL(url string, req *http.Request, response *http.Response) string {
 //
 // Param url: The URL the content was fetched from (used for error context)
 // Param content: The content to be checked and possibly unzipped
-// Return []byte: The checked and possibly uncompressed content
-func (s *S) checkAndUnzipContent(url string, content []byte) []byte {
-	gzipPrefix := []byte("\x1f\x8b\x08")
-	if bytes.HasPrefix(content, gzipPrefix) {
+// Return string: The checked and possibly uncompressed content
+func (s *S) checkAndUnzipContent(url string, content string) string {
+	const gzipPrefix = "\x1f\x8b\x08"
+	if strings.HasPrefix(content, gzipPrefix) {
 		maxSize := s.cfg.maxResponseSize
 		if maxSize <= 0 {
 			// A zero-value S (one not created via New) has no configured limit.
@@ -1070,6 +1076,11 @@ func (s *S) withinMaxDepth(depth int) bool {
 // SetMaxConcurrency the number of documents that are being fetched or parsed at any time. It gives
 // the slot back before it follows the sitemaps the document lists: the goroutines started for
 // those need slots themselves, and would wait for this one forever if it kept its slot.
+// The slot is taken before the goroutine is started, not by the goroutine. A sitemap that has
+// to wait for a slot therefore costs no goroutine: the ones that exist are those working on a
+// sitemap, and those waiting to go on with the sitemaps a sitemap index of theirs lists.
+// If the context is cancelled while a slot is waited for, the error is recorded and the
+// remaining locations are left alone.
 // If there is an error during the fetch operation, the error is appended to the "errs" field of the S structure.
 // This method does not return any value.
 func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string, depth int) {
@@ -1087,19 +1098,19 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, locations []string
 			continue
 		}
 		s.mu.Unlock()
+		// acquireSlot also honours ctx cancellation, so a single check
+		// here covers both the unlimited-concurrency and bounded paths.
+		if err := s.acquireSlot(ctx); err != nil {
+			s.mu.Lock()
+			s.errs = append(s.errs, err)
+			s.mu.Unlock()
+			break
+		}
 		wg.Add(1)
 
 		loc := location
 		go func() {
 			defer wg.Done()
-			// acquireSlot also honours ctx cancellation, so a single check
-			// here covers both the unlimited-concurrency and bounded paths.
-			if err := s.acquireSlot(ctx); err != nil {
-				s.mu.Lock()
-				s.errs = append(s.errs, err)
-				s.mu.Unlock()
-				return
-			}
 			parsedLocations, err := s.fetchAndParse(ctx, loc)
 			s.releaseSlot()
 			if err != nil {
@@ -1154,13 +1165,12 @@ func (s *S) fetchAndParse(ctx context.Context, url string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, locations := s.parseDocument(servedFrom, content)
 
-	return locations, nil
+	return s.parseDocument(servedFrom, content), nil
 }
 
 // parseDocument unzips the content served from url if it is gzip content, and parses it.
-// It returns the content as it was parsed and the sitemaps the document lists.
+// It returns the sitemaps the document lists.
 //
 // The work is done without holding s.mu. Unzipping and decoding a large document takes long, and
 // with the lock held for it the documents would be processed one at a time however many were
@@ -1171,21 +1181,27 @@ func (s *S) fetchAndParse(ctx context.Context, url string) ([]string, error) {
 // keeps the URLs of a document together and in the order the document lists them.
 //
 // Must be called without s.mu held.
-func (s *S) parseDocument(url string, content []byte) (string, []string) {
+func (s *S) parseDocument(url string, content string) []string {
 	s.mu.Lock()
 	document := &S{cfg: s.cfg}
 	s.mu.Unlock()
 
-	parsedContent := string(document.checkAndUnzipContent(url, content))
-	locations := document.parse(url, parsedContent)
+	locations := document.parse(url, document.checkAndUnzipContent(url, content))
 
 	s.mu.Lock()
 	s.sitemapLocations = append(s.sitemapLocations, document.sitemapLocations...)
-	s.urls = append(s.urls, document.urls...)
+	if s.urls == nil {
+		// Nothing is collected yet, so the URLs of the document are taken over as they are
+		// rather than copied: a call that parses a single sitemap is spared a second copy of
+		// all of its URLs.
+		s.urls = document.urls
+	} else {
+		s.urls = append(s.urls, document.urls...)
+	}
 	s.errs = append(s.errs, document.errs...)
 	s.mu.Unlock()
 
-	return parsedContent, locations
+	return locations
 }
 
 // newXMLDecoder returns a decoder for content that honours the encoding named in its XML
@@ -1229,13 +1245,23 @@ func detectRootElement(content string) string {
 	// Detection is as lenient as the most lenient parser, for the same reason: what is wrong
 	// with a document is for the parser of its type to report.
 	decoder.Strict = false
+	root, err := rootElement(decoder)
+	if err != nil {
+		return ""
+	}
+	return root.Name.Local
+}
+
+// rootElement reads decoder up to the first start element, which is the root element of the
+// document when nothing has been read from decoder yet, and returns it.
+func rootElement(decoder *xml.Decoder) (xml.StartElement, error) {
 	for {
 		token, err := decoder.Token()
 		if err != nil {
-			return ""
+			return xml.StartElement{}, err
 		}
-		if se, ok := token.(xml.StartElement); ok {
-			return se.Name.Local
+		if element, ok := token.(xml.StartElement); ok {
+			return element, nil
 		}
 	}
 }
@@ -1292,50 +1318,59 @@ func (s *S) parseSitemapIndexContent(url, content string) []string {
 }
 
 func (s *S) parseURLSetContent(url, content string) {
-	us, err := s.parseURLSet(content)
+	// The entries are dealt with one by one while the document is read, yet a document that
+	// cannot be read to its end yields nothing but the error: what its entries added until
+	// then is dropped again.
+	urls, errs := s.urls, s.errs
+	err := s.parseURLSet(content, func(entry *urlEntry) {
+		s.addURLEntry(entry, url)
+	})
 	if err != nil {
+		s.urls, s.errs = urls, errs
 		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+	}
+}
+
+// addURLEntry resolves, validates and filters an entry of the <urlset> served from baseURL,
+// and appends the URL it stands for to s.urls. What is wrong with the entry is added to s.errs.
+func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
+	u := entry.URL
+	u.Loc = strings.TrimSpace(u.Loc)
+	resolvedLoc, err := s.resolveAndValidateLoc(u.Loc, baseURL)
+	if err != nil {
+		s.errs = append(s.errs, err)
 		return
 	}
-	for _, entry := range us.URL {
-		u := entry.URL
-		u.Loc = strings.TrimSpace(u.Loc)
-		resolvedLoc, err := s.resolveAndValidateLoc(u.Loc, url)
-		if err != nil {
-			s.errs = append(s.errs, err)
-			continue
-		}
-		u.Loc = resolvedLoc
-		// A value that cannot be parsed is left out and reported. Strict mode also skips the
-		// entry when the value is one of its own, as it does for a priority out of range; a
-		// value of an extension costs the entry nothing more in either mode.
-		for _, invalid := range entry.invalid {
-			s.errs = append(s.errs, &ValidationError{URL: u.Loc, Err: invalid.err()})
-		}
-		if s.cfg.strict && entry.invalidOwn {
-			continue
-		}
-		if err := s.validatePriority(u.Loc, u.Priority); err != nil {
-			s.errs = append(s.errs, err)
-			continue
-		}
-		validImages, imageErrs := s.validateAndFilterImages(u.Images)
-		u.Images = validImages
-		s.errs = append(s.errs, imageErrs...)
-		validNews, newsErrs := s.validateNews(u.Loc, u.News, entry.newsDateInvalid())
-		u.News = validNews
-		s.errs = append(s.errs, newsErrs...)
-		validVideos, videoErrs := s.validateAndFilterVideos(u.Videos)
-		u.Videos = validVideos
-		s.errs = append(s.errs, videoErrs...)
-		validHreflangs, hreflangErrs := s.validateAndFilterHreflangs(u.Hreflangs)
-		u.Hreflangs = validHreflangs
-		s.errs = append(s.errs, hreflangErrs...)
-		if !s.matchesRulesFilter(u.Loc) {
-			continue
-		}
-		s.urls = append(s.urls, u)
+	u.Loc = resolvedLoc
+	// A value that cannot be parsed is left out and reported. Strict mode also skips the
+	// entry when the value is one of its own, as it does for a priority out of range; a
+	// value of an extension costs the entry nothing more in either mode.
+	for _, invalid := range entry.invalid {
+		s.errs = append(s.errs, &ValidationError{URL: u.Loc, Err: invalid.err()})
 	}
+	if s.cfg.strict && entry.invalidOwn {
+		return
+	}
+	if err := s.validatePriority(u.Loc, u.Priority); err != nil {
+		s.errs = append(s.errs, err)
+		return
+	}
+	validImages, imageErrs := s.validateAndFilterImages(u.Images)
+	u.Images = validImages
+	s.errs = append(s.errs, imageErrs...)
+	validNews, newsErrs := s.validateNews(u.Loc, u.News, entry.newsDateInvalid())
+	u.News = validNews
+	s.errs = append(s.errs, newsErrs...)
+	validVideos, videoErrs := s.validateAndFilterVideos(u.Videos)
+	u.Videos = validVideos
+	s.errs = append(s.errs, videoErrs...)
+	validHreflangs, hreflangErrs := s.validateAndFilterHreflangs(u.Hreflangs)
+	u.Hreflangs = validHreflangs
+	s.errs = append(s.errs, hreflangErrs...)
+	if !s.matchesRulesFilter(u.Loc) {
+		return
+	}
+	s.urls = append(s.urls, u)
 }
 
 func (s *S) parseRSSContent(url, content string) {
@@ -1368,21 +1403,20 @@ func (s *S) parseFeedContent(url, content string) {
 }
 
 func (s *S) parseTextContent(url, rootElement, content string) {
-	lines := strings.Split(content, "\n")
-	var textURLs []string
-	for _, line := range lines {
+	found := false
+	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
-			textURLs = append(textURLs, line)
+			found = true
+			// The line is copied: as a part of the content it would keep the whole document
+			// in memory for as long as the URL or an error about it is kept.
+			s.addURL(strings.Clone(line), url)
 		}
 	}
-	if len(textURLs) > 0 {
-		for _, textURL := range textURLs {
-			s.addURL(textURL, url)
-		}
+	if found {
 		return
 	}
 	if len(content) == 0 {
@@ -1452,24 +1486,55 @@ func (s *S) parseSitemapIndex(data string) (sitemapIndex, error) {
 
 }
 
-// parseURLSet takes a string of XML data representing a sitemap and parses it into a urlSet.
+// parseURLSet takes a string of XML data representing a sitemap and hands its <url> entries
+// to handle, one at a time and in the order they stand in the document.
 // If the data is empty, it returns an error with the message "sitemap is empty".
-// It uses an xml.Decoder with charset support to decode the XML data into the urlSet struct.
-// If there is an error during decoding, it returns the empty urlSet and the decode error.
-// Otherwise, it returns the parsed urlSet and nil error.
-func (s *S) parseURLSet(data string) (urlSet, error) {
-	var us urlSet
+// It uses an xml.Decoder with charset support to decode the XML data.
+// If there is an error during decoding, it returns the decode error. The entries that precede
+// the place of the error have been handed to handle by then.
+//
+// The entries are not collected. Decoded into a slice first, the entries of a large sitemap
+// take up several times the memory of the URLs they end up as, for as long as the document is
+// being read. The <urlset> is therefore read element by element, the way encoding/xml reads
+// it into a structure that has a field for <url>: an element of that name is decoded,
+// whatever its namespace, any other element is skipped together with what it contains, and
+// what follows the end of the <urlset> is not read.
+func (s *S) parseURLSet(data string, handle func(entry *urlEntry)) error {
 	if len(data) == 0 {
-		return us, fmt.Errorf("sitemap is empty")
+		return fmt.Errorf("sitemap is empty")
 	}
 
-	if err := s.newDecoder(data).Decode(&us); err != nil {
-		return us, err
+	decoder := s.newDecoder(data)
+	root, err := rootElement(decoder)
+	if err != nil {
+		return err
 	}
-	for i := range us.URL {
-		us.URL[i].convert()
+	if root.Name.Local != "urlset" {
+		return xml.UnmarshalError("expected element type <urlset> but have <" + root.Name.Local + ">")
 	}
-	return us, nil
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		switch element := token.(type) {
+		case xml.StartElement:
+			if element.Name.Local != "url" {
+				if err := decoder.Skip(); err != nil {
+					return err
+				}
+				continue
+			}
+			var entry urlEntry
+			if err := decoder.DecodeElement(&entry, &element); err != nil {
+				return err
+			}
+			entry.convert()
+			handle(&entry)
+		case xml.EndElement:
+			return nil
+		}
+	}
 }
 
 // convert parses the elements that were read as text into the typed fields of the embedded
@@ -1891,10 +1956,10 @@ func (s *S) resolveAndValidate(loc string, baseURL string, sameHost bool) (strin
 // (decompression bomb).
 // If the gzip header is invalid, the original content is returned together with the error.
 // If decompression fails mid-stream (e.g. truncated/corrupted gzip data), the partially
-// decompressed bytes are returned together with the error so the caller can decide how to react.
+// decompressed content is returned together with the error so the caller can decide how to react.
 // In all error cases a non-nil error is returned; callers must not silently use the data.
-func unzip(content []byte, maxSize int64) ([]byte, error) {
-	reader, err := gzip.NewReader(bytes.NewReader(content))
+func unzip(content string, maxSize int64) (string, error) {
+	reader, err := gzip.NewReader(strings.NewReader(content))
 	if err != nil {
 		return content, err
 	}
@@ -1916,13 +1981,13 @@ func unzip(content []byte, maxSize int64) ([]byte, error) {
 		readLimit++
 	}
 
-	uncompressed, err := io.ReadAll(io.LimitReader(reader, readLimit))
+	uncompressed, err := readString(io.LimitReader(reader, readLimit))
 	if err != nil {
 		return uncompressed, fmt.Errorf("gzip decompression failed: %w", err)
 	}
 
 	if int64(len(uncompressed)) > maxSize {
-		return nil, fmt.Errorf("decompressed size exceeds limit of %d bytes", maxSize)
+		return "", fmt.Errorf("decompressed size exceeds limit of %d bytes", maxSize)
 	}
 
 	return uncompressed, nil

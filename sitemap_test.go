@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -976,7 +978,7 @@ func TestNews_parseURLSet_WithNews(t *testing.T) {
     </url>
 </urlset>`
 		s := New()
-		urlSet, err := s.parseURLSet(data)
+		urlSet, err := decodeURLSet(s, data)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1004,7 +1006,7 @@ func TestNews_parseURLSet_WithNews(t *testing.T) {
     <url><loc>https://example.com/page</loc></url>
 </urlset>`
 		s := New()
-		urlSet, err := s.parseURLSet(data)
+		urlSet, err := decodeURLSet(s, data)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1022,7 +1024,7 @@ func TestNews_parseURLSet_WithNews(t *testing.T) {
     </url>
 </urlset>`
 		s := New()
-		urlSet, err := s.parseURLSet(data)
+		urlSet, err := decodeURLSet(s, data)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1048,7 +1050,7 @@ func TestNews_parseURLSet_WithNews(t *testing.T) {
     </url>
 </urlset>`
 		s := New()
-		urlSet, err := s.parseURLSet(data)
+		urlSet, err := decodeURLSet(s, data)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1218,10 +1220,25 @@ func assertCounts(t *testing.T, s *S, wantURLs int64, wantErrs int64) {
 	}
 }
 
+// decodedURLSet holds the entries of a <urlset> for the tests that look into
+// them; parseURLSet itself hands the entries on without keeping them.
+type decodedURLSet struct {
+	URL []urlEntry
+}
+
+// decodeURLSet collects the entries parseURLSet yields for data.
+func decodeURLSet(s *S, data string) (decodedURLSet, error) {
+	var us decodedURLSet
+	err := s.parseURLSet(data, func(entry *urlEntry) {
+		us.URL = append(us.URL, *entry)
+	})
+	return us, err
+}
+
 // requireURLSetParse calls parseURLSet and fatals on error.
-func requireURLSetParse(t *testing.T, s *S, data string) urlSet {
+func requireURLSetParse(t *testing.T, s *S, data string) decodedURLSet {
 	t.Helper()
-	result, err := s.parseURLSet(data)
+	result, err := decodeURLSet(s, data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2037,7 +2054,6 @@ func TestS_Parse(t *testing.T) {
 		rules                []string
 		content              *string
 		err                  *string
-		mainURLContent       *string
 		robotsTxtSitemapURLs []string
 		sitemapLocations     []string
 		urls                 []URL
@@ -2051,7 +2067,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			err:                  pointerOfString("validate \"%%\": parse \"%%\": invalid URL escape \"%%\""),
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2066,7 +2081,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			err:                  pointerOfString("validate \"invalid_url\": invalid URL scheme \"\": only http and https are supported"),
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2081,7 +2095,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			err:                  pointerOfString("validate \"\": invalid URL scheme \"\": only http and https are supported"),
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2096,7 +2109,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			err:                  pointerOfString("validate \"/just/a/path\": invalid URL scheme \"\": only http and https are supported"),
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2111,7 +2123,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			err:                  pointerOfString("validate \"http://\": missing host"),
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2126,7 +2137,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			err:                  pointerOfString("validate \"ftp://example.com/sitemap.xml\": invalid URL scheme \"ftp\": only http and https are supported"),
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2141,7 +2151,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			err:                  pointerOfString(fmt.Sprintf("fetch %q: received HTTP status 404", server.URL)),
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2154,7 +2163,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			err:                  pointerOfString(fmt.Sprintf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/404", server.URL))),
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2168,7 +2176,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          false,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2180,7 +2187,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			content:              pointerOfString(""),
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2191,7 +2197,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          false,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString("User-agent: *\nDisallow: /\n\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2202,7 +2207,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString(fmt.Sprintf("User-agent: *\nDisallow: /\n\nSitemap: %s/sitemapindex-1.xml\n\n", server.URL)),
 			robotsTxtSitemapURLs: []string{fmt.Sprintf("%s/sitemapindex-1.xml", server.URL)},
 			sitemapLocations: []string{
 				fmt.Sprintf("%s/sitemapindex-1.xml", server.URL),
@@ -2250,12 +2254,11 @@ func TestS_Parse(t *testing.T) {
 			},
 		},
 		{
-			name:           "robots.txt with two sitemapindex",
-			url:            fmt.Sprintf("%s/robots-with-sitemapindex-2/robots.txt", server.URL),
-			multiThread:    false,
-			follow:         []string{},
-			rules:          []string{},
-			mainURLContent: pointerOfString(fmt.Sprintf("User-agent: *\nDisallow: /\n\nSitemap: %s/sitemapindex-1.xml\nSitemap: %s/sitemapindex-2.xml\n\n", server.URL, server.URL)),
+			name:        "robots.txt with two sitemapindex",
+			url:         fmt.Sprintf("%s/robots-with-sitemapindex-2/robots.txt", server.URL),
+			multiThread: false,
+			follow:      []string{},
+			rules:       []string{},
 			robotsTxtSitemapURLs: []string{
 				fmt.Sprintf("%s/sitemapindex-1.xml", server.URL),
 				fmt.Sprintf("%s/sitemapindex-2.xml", server.URL),
@@ -2351,7 +2354,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString(fmt.Sprintf("User-agent: *\nDisallow: /\n\nSitemap: %s/invalid.xml\n\n", server.URL)),
 			robotsTxtSitemapURLs: []string{fmt.Sprintf("%s/invalid.xml", server.URL)},
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2363,7 +2365,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          false,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString(fmt.Sprintf("User-agent: *\nDisallow: /\n\nSitemap: %s/sitemapindex-1.xml.gz\n\n", server.URL)),
 			robotsTxtSitemapURLs: []string{fmt.Sprintf("%s/sitemapindex-1.xml.gz", server.URL)},
 			sitemapLocations: []string{
 				fmt.Sprintf("%s/sitemapindex-1.xml.gz", server.URL),
@@ -2418,7 +2419,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString("error: gzip decompression failed: gzip: invalid checksum\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2430,7 +2430,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          false,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2442,7 +2441,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <sitemap>\n        <loc>%s/sitemap-01.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n    <sitemap>\n        <loc>%s/sitemap-02.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n    <sitemap>\n        <loc>%s/sitemap-03.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n</sitemapindex>", server.URL, server.URL, server.URL)),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations: []string{
 				fmt.Sprintf("%s/sitemapindex-1.xml.gz", server.URL),
@@ -2497,7 +2495,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          false,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2509,7 +2506,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          true,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <url>\n        <loc>%s/page-02</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n        <changefreq>hourly</changefreq>\n        <priority>0.5</priority>\n    </url>\n    <url>\n        <loc>%s/page-03</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n        <changefreq>daily</changefreq>\n        <priority>0.5</priority>\n    </url>\n</urlset>\n", server.URL, server.URL)),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls: []URL{
@@ -2535,7 +2531,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          false,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2548,7 +2543,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			content:              pointerOfString("\n"),
-			mainURLContent:       pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2560,7 +2554,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          false,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <sitemap>\n        <loc>%s/sitemap-01.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n    <sitemap>\n        <loc>%s/sitemap-02.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n    <sitemap>\n        <loc>%s/sitemap-03.xml.gz</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n</sitemapindex>", server.URL, server.URL, server.URL)),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations: []string{
 				fmt.Sprintf("%s/sitemapindex-1.xml.gz", server.URL),
@@ -2614,7 +2607,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			content:              nil,
-			mainURLContent:       pointerOfString(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <sitemap>\n        <loc>%s/invalid.xml</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n</sitemapindex>\n", server.URL)),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations: []string{
 				fmt.Sprintf("%s/sitemapindex-with-invalid-sitemap.xml", server.URL),
@@ -2629,7 +2621,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          false,
 			follow:               []string{`alpha`},
 			rules:                []string{`page`},
-			mainURLContent:       pointerOfString(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <sitemap>\n        <loc>%s/sitemap-follow-alpha-01.xml</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n    <sitemap>\n        <loc>%s/sitemap-follow-alpha-02.xml</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n    <sitemap>\n        <loc>%s/sitemap-follow-beta-01.xml</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n    </sitemap>\n</sitemapindex>\n", server.URL, server.URL, server.URL)),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations: []string{
 				fmt.Sprintf("%s/sitemapindex-follow-1.xml", server.URL),
@@ -2658,7 +2649,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{`*a`},
 			err:                  pointerOfString("errors occurred before parsing, see GetErrors() for details"),
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2673,7 +2663,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{`(`},
 			rules:                []string{},
 			err:                  pointerOfString("errors occurred before parsing, see GetErrors() for details"),
-			mainURLContent:       pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2689,7 +2678,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          false,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2700,17 +2688,6 @@ func TestS_Parse(t *testing.T) {
 			url:         "http://www.example.com/rss.xml",
 			multiThread: true,
 			content: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <item>
-      <link>http://www.example.com/rss-item-1</link>
-    </item>
-    <item>
-      <link>http://www.example.com/rss-item-2</link>
-    </item>
-  </channel>
-</rss>`),
-			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>
     <item>
@@ -2739,26 +2716,16 @@ func TestS_Parse(t *testing.T) {
     <link rel="alternate" href="http://www.example.com/atom-entry-2"/>
   </entry>
 </feed>`),
-			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <entry>
-    <link href="http://www.example.com/atom-entry-1"/>
-  </entry>
-  <entry>
-    <link rel="alternate" href="http://www.example.com/atom-entry-2"/>
-  </entry>
-</feed>`),
 			urls: []URL{
 				{Loc: "http://www.example.com/atom-entry-1"},
 				{Loc: "http://www.example.com/atom-entry-2"},
 			},
 		},
 		{
-			name:           "Plain Text sitemap",
-			url:            "http://www.example.com/sitemap.txt",
-			multiThread:    true,
-			content:        pointerOfString("http://www.example.com/text-url-1\n# comment\n  \nhttps://www.example.com/text-url-2"),
-			mainURLContent: pointerOfString("http://www.example.com/text-url-1\n# comment\n  \nhttps://www.example.com/text-url-2"),
+			name:        "Plain Text sitemap",
+			url:         "http://www.example.com/sitemap.txt",
+			multiThread: true,
+			content:     pointerOfString("http://www.example.com/text-url-1\n# comment\n  \nhttps://www.example.com/text-url-2"),
 			urls: []URL{
 				{Loc: "http://www.example.com/text-url-1"},
 				{Loc: "https://www.example.com/text-url-2"},
@@ -2770,14 +2737,6 @@ func TestS_Parse(t *testing.T) {
 			rules:       []string{"valid"},
 			multiThread: true,
 			content: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <item><link>http://www.example.com/valid-1</link></item>
-    <item><link>http://www.example.com/wrong-1</link></item>
-    <item><link>  </link></item>
-  </channel>
-</rss>`),
-			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>
     <item><link>http://www.example.com/valid-1</link></item>
@@ -2797,45 +2756,35 @@ func TestS_Parse(t *testing.T) {
     <link rel="self" href="http://www.example.com/self"/>
   </entry>
 </feed>`),
-			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <entry>
-    <link rel="self" href="http://www.example.com/self"/>
-  </entry>
-</feed>`),
 			urls: nil,
 		},
 		{
-			name:           "RSS empty",
-			url:            "http://www.example.com/rss-empty.xml",
-			multiThread:    true,
-			content:        pointerOfString(""),
-			mainURLContent: pointerOfString(""),
-			errs:           []error{fmt.Errorf("parse \"http://www.example.com/rss-empty.xml\": sitemap content is empty")},
+			name:        "RSS empty",
+			url:         "http://www.example.com/rss-empty.xml",
+			multiThread: true,
+			content:     pointerOfString(""),
+			errs:        []error{fmt.Errorf("parse \"http://www.example.com/rss-empty.xml\": sitemap content is empty")},
 		},
 		{
-			name:           "Atom empty",
-			url:            "http://www.example.com/atom-empty.xml",
-			multiThread:    true,
-			content:        pointerOfString(""),
-			mainURLContent: pointerOfString(""),
-			errs:           []error{fmt.Errorf("parse \"http://www.example.com/atom-empty.xml\": sitemap content is empty")},
+			name:        "Atom empty",
+			url:         "http://www.example.com/atom-empty.xml",
+			multiThread: true,
+			content:     pointerOfString(""),
+			errs:        []error{fmt.Errorf("parse \"http://www.example.com/atom-empty.xml\": sitemap content is empty")},
 		},
 		{
-			name:           "RSS 2.0 malformed XML",
-			url:            "http://www.example.com/rss-malformed.xml",
-			multiThread:    true,
-			content:        pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item>`),
-			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item>`),
-			errs:           []error{fmt.Errorf("parse \"http://www.example.com/rss-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
+			name:        "RSS 2.0 malformed XML",
+			url:         "http://www.example.com/rss-malformed.xml",
+			multiThread: true,
+			content:     pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item>`),
+			errs:        []error{fmt.Errorf("parse \"http://www.example.com/rss-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
 		},
 		{
-			name:           "Atom 1.0 malformed XML",
-			url:            "http://www.example.com/atom-malformed.xml",
-			multiThread:    true,
-			content:        pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>`),
-			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>`),
-			errs:           []error{fmt.Errorf("parse \"http://www.example.com/atom-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
+			name:        "Atom 1.0 malformed XML",
+			url:         "http://www.example.com/atom-malformed.xml",
+			multiThread: true,
+			content:     pointerOfString(`<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>`),
+			errs:        []error{fmt.Errorf("parse \"http://www.example.com/atom-malformed.xml\": XML syntax error on line 1: unexpected EOF")},
 		},
 		{
 			name:        "RSS 2.0 with relative URL in strict mode",
@@ -2843,12 +2792,6 @@ func TestS_Parse(t *testing.T) {
 			strict:      true,
 			multiThread: true,
 			content: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <item><link>/relative</link></item>
-  </channel>
-</rss>`),
-			mainURLContent: pointerOfString(`<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>
     <item><link>/relative</link></item>
@@ -2863,7 +2806,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			content:              pointerOfString("\n"),
-			mainURLContent:       pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls:                 nil,
@@ -2875,7 +2817,6 @@ func TestS_Parse(t *testing.T) {
 			multiThread:          false,
 			follow:               []string{},
 			rules:                []string{},
-			mainURLContent:       pointerOfString(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n    <url>\n        <loc>%s/page-02</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n        <changefreq>hourly</changefreq>\n        <priority>0.5</priority>\n    </url>\n    <url>\n        <loc>%s/page-03</loc>\n        <lastmod>2024-02-12T12:34:56+01:00</lastmod>\n        <changefreq>daily</changefreq>\n        <priority>0.5</priority>\n    </url>\n</urlset>\n", server.URL, server.URL)),
 			robotsTxtSitemapURLs: nil,
 			sitemapLocations:     nil,
 			urls: []URL{
@@ -2915,9 +2856,6 @@ func TestS_Parse(t *testing.T) {
 				}
 			}
 
-			if !reflect.DeepEqual(sitemap.mainURLContent, *test.mainURLContent) {
-				t.Error("mainURLContent is not equal to expected value")
-			}
 			if !reflect.DeepEqual(sitemap.robotsTxtSitemapURLs, test.robotsTxtSitemapURLs) {
 				t.Error("robotsTxtSitemapURLs is not equal to expected value")
 			}
@@ -3845,27 +3783,27 @@ func TestS_checkAndUnzipContent(t *testing.T) {
 		return
 	}
 
-	gzippedContent := buffer.Bytes()
+	gzippedContent := buffer.String()
 
 	tests := []struct {
 		name    string
-		content []byte
-		want    []byte
+		content string
+		want    string
 	}{
 		{
 			name:    "Uncompressed data",
-			content: []byte("plain content"),
-			want:    []byte("plain content"),
+			content: "plain content",
+			want:    "plain content",
 		},
 		{
 			name:    "Gzipped data",
 			content: gzippedContent,
-			want:    []byte("test content"),
+			want:    "test content",
 		},
 		{
 			name:    "Invalid data",
-			content: []byte("\x1f\x8b\x08" + "invalid"), // gzip prefix + invalid content
-			want:    []byte("\x1f\x8b\x08" + "invalid"),
+			content: "\x1f\x8b\x08" + "invalid", // gzip prefix + invalid content
+			want:    "\x1f\x8b\x08" + "invalid",
 		},
 	}
 
@@ -3877,8 +3815,8 @@ func TestS_checkAndUnzipContent(t *testing.T) {
 
 			got := s.checkAndUnzipContent("", tt.content)
 
-			if !bytes.Equal(got, tt.want) {
-				t.Errorf("checkAndUnzipContent() got = %v, want %v", got, tt.want)
+			if got != tt.want {
+				t.Errorf("checkAndUnzipContent() got = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -3901,19 +3839,19 @@ func requireSizeLimitError(t *testing.T, errs []error, url string, limit int64) 
 func TestS_checkAndUnzipContent_SizeLimit(t *testing.T) {
 	const url = "https://example.com/sitemap.xml.gz"
 	payload := strings.Repeat("A", 64)
-	gzipped := gzipByte(payload)
+	gzipped := string(gzipByte(payload))
 
 	t.Run("within limit", func(t *testing.T) {
 		s := New().SetMaxResponseSize(64)
 		got := s.checkAndUnzipContent(url, gzipped)
-		mustEqual(t, "content", string(got), payload)
+		mustEqual(t, "content", got, payload)
 		mustEqual(t, "errors", len(s.errs), 0)
 	})
 
 	t.Run("exceeds limit", func(t *testing.T) {
 		s := New().SetMaxResponseSize(63)
 		got := s.checkAndUnzipContent(url, gzipped)
-		if !bytes.Equal(got, gzipped) {
+		if got != gzipped {
 			t.Errorf("expected the original content to be returned, got %d bytes", len(got))
 		}
 		mustEqual(t, "errors", len(s.errs), 1)
@@ -3923,7 +3861,7 @@ func TestS_checkAndUnzipContent_SizeLimit(t *testing.T) {
 	t.Run("zero-value S falls back to the default limit", func(t *testing.T) {
 		s := &S{}
 		got := s.checkAndUnzipContent(url, gzipped)
-		mustEqual(t, "content", string(got), payload)
+		mustEqual(t, "content", got, payload)
 		mustEqual(t, "errors", len(s.errs), 0)
 	})
 }
@@ -4974,7 +4912,7 @@ func TestS_parseURLSet(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			s := New()
-			_, err := s.parseURLSet(test.data)
+			_, err := decodeURLSet(s, test.data)
 
 			if test.err != nil {
 				if err == nil {
@@ -4987,6 +4925,141 @@ func TestS_parseURLSet(t *testing.T) {
 					t.Errorf("expected %v, got %v", test.err, err)
 				}
 			}
+		})
+	}
+}
+
+// TestS_parseURLSet_Entries verifies which elements of a <urlset> parseURLSet
+// hands on, and that the entries preceding an error have been handed on by the
+// time the error is returned.
+func TestS_parseURLSet_Entries(t *testing.T) {
+	const page = "https://example.com/"
+	entry := func(name string) string {
+		return "<url><loc>" + page + name + "</loc></url>"
+	}
+
+	tests := []struct {
+		name string
+		data string
+		want []string
+		err  string
+	}{
+		{
+			name: "entries in the order of the document",
+			data: "<urlset>" + entry("1") + entry("2") + entry("3") + "</urlset>",
+			want: []string{page + "1", page + "2", page + "3"},
+		},
+		{
+			name: "no entries",
+			data: "<urlset/>",
+		},
+		{
+			name: "another element is skipped together with the url in it",
+			data: "<urlset><other>" + entry("nested") + "</other>" + entry("1") + "</urlset>",
+			want: []string{page + "1"},
+		},
+		{
+			name: "url of another namespace",
+			data: `<urlset xmlns:x="urn:x"><x:url><loc>` + page + `1</loc></x:url></urlset>`,
+			want: []string{page + "1"},
+		},
+		{
+			name: "what is not an element is passed over",
+			data: "<?xml version=\"1.0\"?><!-- comment --><!DOCTYPE urlset>\n<urlset>text" + entry("1") + "<!-- comment --><?pi data?></urlset>",
+			want: []string{page + "1"},
+		},
+		{
+			name: "what follows the urlset is not read",
+			data: "<urlset>" + entry("1") + "</urlset>" + entry("after") + "<",
+			want: []string{page + "1"},
+		},
+		{
+			name: "no element",
+			data: "<!-- comment -->",
+			err:  "EOF",
+		},
+		{
+			name: "skipped element is not closed",
+			data: "<urlset>" + entry("1") + "<other><loc>",
+			want: []string{page + "1"},
+			err:  "XML syntax error on line 1: unexpected EOF",
+		},
+		{
+			name: "url is not closed",
+			data: "<urlset>" + entry("1") + "<url><loc>" + page + "2",
+			want: []string{page + "1"},
+			err:  "XML syntax error on line 1: unexpected EOF",
+		},
+		{
+			name: "urlset is not closed",
+			data: "<urlset>" + entry("1"),
+			want: []string{page + "1"},
+			err:  "XML syntax error on line 1: unexpected EOF",
+		},
+	}
+
+	for _, test := range tests {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s strict=%v", test.name, strict), func(t *testing.T) {
+				us, err := decodeURLSet(New().SetStrict(strict), test.data)
+
+				var got []string
+				for _, e := range us.URL {
+					got = append(got, e.Loc)
+				}
+				assertStringSlice(t, "entries", got, test.want)
+				if test.err == "" {
+					if err != nil {
+						t.Errorf("unexpected error: %v", err)
+					}
+				} else if err == nil || err.Error() != test.err {
+					t.Errorf("expected error %q, got %v", test.err, err)
+				}
+			})
+		}
+	}
+}
+
+// TestS_parseURLSetContent_AllOrNothing verifies that a <urlset> that cannot be
+// read to its end adds nothing but the error about that: neither the URLs of
+// the entries that precede the place of the error, nor the errors about them.
+// What was collected before the document is kept.
+func TestS_parseURLSetContent_AllOrNothing(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	// Two valid entries and one that is reported, then the document breaks off.
+	const content = `<urlset><url><loc>https://example.com/a</loc></url><url><loc>ftp://example.com/b</loc></url><url><loc>https://example.com/c</loc></url><url><loc>https://example.com/d`
+
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			earlier := errors.New("earlier error")
+			s := New().SetStrict(strict)
+			s.urls = []URL{{Loc: "https://example.com/earlier"}}
+			s.errs = []error{earlier}
+
+			s.parseURLSetContent(url, content)
+
+			mustEqual(t, "URLs", len(s.urls), 1)
+			mustEqual(t, "URL kept", s.urls[0].Loc, "https://example.com/earlier")
+			if len(s.errs) != 2 {
+				t.Fatalf("expected 2 errors, got %d: %v", len(s.errs), s.errs)
+			}
+			if s.errs[0] != earlier {
+				t.Errorf("expected the earlier error to be kept, got %v", s.errs[0])
+			}
+			var parseErr *ParseError
+			if !errors.As(s.errs[1], &parseErr) {
+				t.Fatalf("expected *ParseError, got %T: %v", s.errs[1], s.errs[1])
+			}
+			mustEqual(t, "error URL", parseErr.URL, url)
+			if !strings.Contains(parseErr.Error(), "unexpected EOF") {
+				t.Errorf("error does not report the unexpected EOF: %v", parseErr)
+			}
+
+			// The same content, complete, yields the entries and the error about one of them.
+			s = New().SetStrict(strict)
+			s.parseURLSetContent(url, content+`</loc></url></urlset>`)
+			mustEqual(t, "URLs of the complete document", len(s.urls), 3)
+			mustEqual(t, "errors of the complete document", len(s.errs), 1)
 		})
 	}
 }
@@ -5123,32 +5196,32 @@ func TestS_parseAtom(t *testing.T) {
 func TestUnzip(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    []byte
-		output   []byte
+		input    string
+		output   string
 		hasError bool
 	}{
 		{
 			name:     "Valid content",
-			input:    gzipByte("hello world"),
-			output:   []byte("hello world"),
+			input:    string(gzipByte("hello world")),
+			output:   "hello world",
 			hasError: false,
 		},
 		{
 			name:     "Invalid gzip content",
-			input:    []byte("\x1f\x8b\x08" + "invalid"),
-			output:   []byte("\x1f\x8b\x08" + "invalid"),
+			input:    "\x1f\x8b\x08" + "invalid",
+			output:   "\x1f\x8b\x08" + "invalid",
 			hasError: true,
 		},
 		{
 			name:     "Invalid content",
-			input:    []byte("invalid"),
-			output:   []byte("invalid"),
+			input:    "invalid",
+			output:   "invalid",
 			hasError: true,
 		},
 		{
 			name:     "Empty content",
-			input:    []byte(""),
-			output:   nil,
+			input:    "",
+			output:   "",
 			hasError: true,
 		},
 	}
@@ -5161,8 +5234,8 @@ func TestUnzip(t *testing.T) {
 				t.Errorf("expected %v, got %v", test.hasError, err)
 			}
 
-			if !bytes.Equal(uncompressed, test.output) {
-				t.Errorf("expected %v, got %v", test.output, uncompressed)
+			if uncompressed != test.output {
+				t.Errorf("expected %q, got %q", test.output, uncompressed)
 			}
 
 		})
@@ -5171,7 +5244,7 @@ func TestUnzip(t *testing.T) {
 
 func TestUnzip_SizeLimit(t *testing.T) {
 	payload := strings.Repeat("A", 1024)
-	gzipped := gzipByte(payload)
+	gzipped := string(gzipByte(payload))
 
 	tests := []struct {
 		name     string
@@ -5193,7 +5266,7 @@ func TestUnzip_SizeLimit(t *testing.T) {
 				if err != nil {
 					t.Fatalf("expected no error, got %v", err)
 				}
-				mustEqual(t, "content", string(uncompressed), payload)
+				mustEqual(t, "content", uncompressed, payload)
 				return
 			}
 
@@ -5204,11 +5277,59 @@ func TestUnzip_SizeLimit(t *testing.T) {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("expected error containing %q, got %v", want, err)
 			}
-			if uncompressed != nil {
+			if uncompressed != "" {
 				t.Errorf("expected no data alongside a size limit error, got %d bytes", len(uncompressed))
 			}
 		})
 	}
+}
+
+func TestReadString(t *testing.T) {
+	t.Run("content is returned as it was read", func(t *testing.T) {
+		// Sizes around that of the buffer the content is read through.
+		for _, size := range []int{0, 1, 32*1024 - 1, 32 * 1024, 32*1024 + 1, 200 * 1024} {
+			want := strings.Repeat("0123456789", size/10+1)[:size]
+
+			got, err := readString(strings.NewReader(want))
+
+			if err != nil {
+				t.Fatalf("%d bytes: unexpected error: %v", size, err)
+			}
+			if got != want {
+				t.Errorf("%d bytes: got %d bytes that differ from what was read", size, len(got))
+			}
+		}
+	})
+
+	t.Run("what was read is returned with the error", func(t *testing.T) {
+		failure := errors.New("read failed")
+
+		got, err := readString(io.MultiReader(strings.NewReader("read until then"), iotest.ErrReader(failure)))
+
+		if err != failure {
+			t.Errorf("expected %v, got %v", failure, err)
+		}
+		mustEqual(t, "content", got, "read until then")
+	})
+
+	t.Run("buffer is not allocated for every read", func(t *testing.T) {
+		const reads = 1000
+
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		for i := 0; i < reads; i++ {
+			if _, err := readString(strings.NewReader("small")); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		}
+		runtime.ReadMemStats(&after)
+
+		// A buffer is 32 KB. The race detector has a pool drop some of what is put back
+		// into it, so a read is not required to allocate nothing at all.
+		if perRead := (after.TotalAlloc - before.TotalAlloc) / reads; perRead > 16*1024 {
+			t.Errorf("%d bytes are allocated for a read of 5 bytes", perRead)
+		}
+	})
 }
 
 func TestLastModTime_UnmarshalXML(t *testing.T) {
@@ -5427,8 +5548,8 @@ func TestS_fetch_NilContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if string(body) != "ok" {
-		t.Errorf("unexpected body: %q", string(body))
+	if body != "ok" {
+		t.Errorf("unexpected body: %q", body)
 	}
 }
 
@@ -5479,11 +5600,11 @@ func TestS_parseAndFetchUrlsMultiThread_PreCancelled(t *testing.T) {
 }
 
 func TestS_parseAndFetchUrlsMultiThread_AcquireSlotCancel(t *testing.T) {
-	// Covers the acquireSlot ctx-cancel error branch inside the goroutine
-	// of parseAndFetchUrlsMultiThread. We pre-saturate the semaphore so the
-	// goroutine must block, then cancel the context. The loop-level
-	// ctx.Err() break is bypassed by using a context that becomes cancelled
-	// only after the goroutine has been spawned.
+	// Covers the acquireSlot ctx-cancel error branch of
+	// parseAndFetchUrlsMultiThread. We pre-saturate the semaphore so the slot
+	// of the first location has to be waited for, then cancel the context.
+	// The loop-level ctx.Err() break is bypassed by using a context that
+	// becomes cancelled only after the wait has begun.
 	s := New().SetMaxConcurrency(1)
 	s.sem = make(chan struct{}, 1)
 	s.sem <- struct{}{} // saturate
@@ -5494,11 +5615,20 @@ func TestS_parseAndFetchUrlsMultiThread_AcquireSlotCancel(t *testing.T) {
 		cancel()
 	}()
 
-	s.parseAndFetchUrlsMultiThread(ctx, []string{"http://127.0.0.1:1/a"}, 0)
+	s.parseAndFetchUrlsMultiThread(ctx, []string{"http://127.0.0.1:1/a", "http://127.0.0.1:1/b", "http://127.0.0.1:1/c"}, 0)
 
-	if len(s.errs) == 0 {
-		t.Error("expected at least one error from cancelled acquireSlot")
+	// The cancellation is recorded once, not once for every location that was
+	// still to come, and nothing is fetched without a slot: a fetch attempt
+	// would have left an error of its own.
+	if len(s.errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(s.errs), s.errs)
 	}
+	if !errors.Is(s.errs[0], context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", s.errs[0])
+	}
+	// The location the slot was waited for is the only one that was reached.
+	mustEqual(t, "locations reached", len(s.fetchedURLs), 1)
+	mustEqual(t, "slots taken", len(s.sem), 1)
 }
 
 func TestS_parseAndFetchUrlsSequential_PreCancelled(t *testing.T) {
@@ -5888,7 +6018,7 @@ func TestS_fetch_ServedFrom(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			mustEqual(t, "served from", servedFrom, tt.want)
-			mustEqual(t, "content", string(content), "/sitemap.xml")
+			mustEqual(t, "content", content, "/sitemap.xml")
 		})
 	}
 
@@ -6491,6 +6621,138 @@ func TestS_Parse_MultiThread_DocumentsStayTogether(t *testing.T) {
 		}
 	}
 	mustEqual(t, "sitemaps the blocks are of", len(seen), sitemaps)
+}
+
+// TestS_Parse_MaxConcurrency_BoundsGoroutines verifies that a sitemap waiting
+// for one of the slots set with SetMaxConcurrency does not take up a goroutine
+// while it waits: however many sitemaps an index lists, the goroutines there
+// are at any time are those of the few sitemaps being worked on.
+func TestS_Parse_MaxConcurrency_BoundsGoroutines(t *testing.T) {
+	const sitemaps = 400
+
+	var mu sync.Mutex
+	peak := 0
+	server := sitemapIndexServer(t, sitemaps, 1, func() {
+		goroutines := runtime.NumGoroutine()
+		mu.Lock()
+		defer mu.Unlock()
+		peak = max(peak, goroutines)
+	})
+
+	s := New().SetMaxConcurrency(2)
+	before := runtime.NumGoroutine()
+	requireParse(t, s, server.URL+"/index.xml", nil)
+
+	assertCounts(t, s, sitemaps, 0)
+	// A sitemap being worked on has a goroutine of the parser, and a handful of the HTTP
+	// client and the server. A goroutine for every sitemap listed would be hundreds of them.
+	if started := peak - before; started > sitemaps/4 {
+		t.Errorf("%d goroutines were started for %d sitemaps fetched 2 at a time", started, sitemaps)
+	}
+}
+
+// TestS_ParseContext_CancelledWhileWaitingForSlot verifies that a call that is
+// cancelled while sitemaps wait for a slot does not go on to fetch them, and
+// records the cancellation of the wait once rather than once for every sitemap
+// that was still to come.
+func TestS_ParseContext_CancelledWhileWaitingForSlot(t *testing.T) {
+	const sitemaps = 50
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	requested := 0
+	server := sitemapIndexServer(t, sitemaps, 1, func() {
+		mu.Lock()
+		requested++
+		mu.Unlock()
+		// The sitemap requested first has the only slot. The call is cancelled while it
+		// holds it, with all the other sitemaps yet to be fetched.
+		cancel()
+	})
+
+	s := New().SetMaxConcurrency(1)
+	_, err := s.ParseContext(ctx, server.URL+"/index.xml", nil)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	mu.Lock()
+	mustEqual(t, "sitemaps requested", requested, 1)
+	mu.Unlock()
+	// One error is that of the request that was cancelled, the other that of the wait.
+	if count := s.GetErrorsCount(); count < 1 || count > 2 {
+		t.Errorf("expected 1 or 2 errors, got %d: %v", count, s.GetErrors())
+	}
+}
+
+// heapInUse returns the number of bytes on the heap that are still in use
+// after a garbage collection.
+func heapInUse() int64 {
+	// Twice: what a sync.Pool holds is only given up by the second collection.
+	runtime.GC()
+	runtime.GC()
+
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	return int64(stats.HeapAlloc)
+}
+
+// TestS_Parse_ContentNotKept verifies that the content of a document is given
+// up once the document is parsed: neither the instance holds on to it, nor do
+// the URLs and the errors collected from it. The documents are almost nothing
+// but padding, so an instance that keeps much after a call keeps the content.
+func TestS_Parse_ContentNotKept(t *testing.T) {
+	const padding = 1 << 20
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A document is put together for every request, so that it is the parser alone
+		// that can keep it.
+		comments := strings.Repeat("#"+strings.Repeat("x", 1022)+"\n", padding/1024)
+		switch r.URL.Path {
+		case "/robots.txt":
+			_, _ = fmt.Fprintf(w, "%sSitemap: %s/sitemap.xml\n%s", comments, server.URL, comments)
+		case "/sitemap.txt":
+			// The line that is not a valid URL is kept in the error about it.
+			_, _ = fmt.Fprintf(w, "%s%s/page-1\n%s%s/page-2\nhttp://[::1/page-3\n", comments, server.URL, comments, server.URL)
+		default:
+			_, _ = fmt.Fprintf(w, "<urlset><url><loc>%s/page-1</loc></url><!-- %s --><url><loc>%s/page-2</loc></url></urlset>", server.URL, strings.Repeat("x", padding), server.URL)
+		}
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name     string
+		path     string
+		strict   bool
+		wantErrs int64
+	}{
+		{"urlset", "/sitemap.xml", false, 0},
+		{"text sitemap", "/sitemap.txt", false, 1},
+		// Strict mode takes a URL as it stands in the document.
+		{"text sitemap, strict", "/sitemap.txt", true, 1},
+		{"robots.txt", "/robots.txt", false, 0},
+		{"robots.txt, strict", "/robots.txt", true, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New().SetStrict(tt.strict)
+
+			before := heapInUse()
+			requireParse(t, s, server.URL+tt.path, nil)
+			kept := heapInUse() - before
+
+			assertCounts(t, s, 2, tt.wantErrs)
+			if kept > padding/4 {
+				t.Errorf("%d bytes are kept after parsing a document of some %d bytes", kept, padding)
+			}
+			// The instance is alive up to here, with everything it holds.
+			runtime.KeepAlive(s)
+		})
+	}
 }
 
 func configsEqual(c1, c2 config) bool {
