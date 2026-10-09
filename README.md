@@ -255,13 +255,21 @@ In **tolerant mode** (the default):
 
 Entries that fail validation are skipped and reported via `GetErrors()`.
 
+An entry without a location is one of them in both modes. A `<url>` or `<sitemap>` whose `<loc>` is missing, empty or holds only whitespace is skipped and reported as a `*ValidationError`. The entry has no URL of its own, so the error names the sitemap it stands in:
+
+```
+validate "https://example.com/sitemap.xml": <loc> of an entry is empty or missing
+```
+
+An RSS `<item>` without a `<link>` and an Atom `<entry>` without a link are skipped without an error, since a feed item is not required to have one.
+
 A value that cannot be parsed never costs more than its own entry. The numbers and dates of the extensions (`<video:duration>`, `<video:rating>`, `<video:view_count>`, `<video:expiration_date>`, `<video:publication_date>`, `<news:publication_date>`) are treated the same way in both modes: the field is left unset (`nil`) and the entry is kept. Every such value is reported via `GetErrors()` as a `*ValidationError` for the page it belongs to:
 
 ```
 validate "https://example.com/page": invalid <lastmod> value "2024-01-15 10:30:00"
 ```
 
-See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it.
+See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location among them.
 
 ```go
 s := sitemap.New()
@@ -423,7 +431,7 @@ urls := s.GetURLs()
 ```
 
 Each `URL` struct contains the following fields:
-- `Loc` (`string`) — the URL location
+- `Loc` (`string`) — the URL location; never empty, an entry without a `<loc>` is skipped
 - `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`; also `nil` when the value cannot be parsed, see [Strict mode](#strict-mode)
 - `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`
 - `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`; also `nil` when the value cannot be parsed
@@ -513,7 +521,7 @@ Errors are typed and can be inspected with `errors.As`:
 | `*ConfigError` | A `Set*` method received an invalid value | `Field` (setting name), `Err` (root cause) |
 | `*NetworkError` | An HTTP fetch failed | `URL` (requested URL), `Err` (root cause) |
 | `*ParseError` | XML or gzip parsing failed | `URL` (sitemap URL), `Err` (root cause) |
-| `*ValidationError` | A URL or field value failed validation | `URL` (value being validated), `Err` (root cause) |
+| `*ValidationError` | A URL or field value failed validation | `URL` (the rejected URL, or the page or sitemap the rejected value belongs to), `Err` (root cause) |
 
 All types implement `Unwrap()`, enabling `errors.Is` traversal to the root cause.
 

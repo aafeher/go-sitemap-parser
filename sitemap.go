@@ -1276,7 +1276,7 @@ func (s *S) parseRSSContent(url, content string) {
 		return
 	}
 	for _, item := range rssFeed.Channel.Item {
-		s.addURL(strings.TrimSpace(item.Link), url)
+		s.addURL(item.Link, url)
 	}
 }
 
@@ -1294,9 +1294,7 @@ func (s *S) parseFeedContent(url, content string) {
 				break
 			}
 		}
-		if loc != "" {
-			s.addURL(strings.TrimSpace(loc), url)
-		}
+		s.addURL(loc, url)
 	}
 }
 
@@ -1351,7 +1349,13 @@ func (s *S) matchesRulesFilter(loc string) bool {
 
 // addURL resolves, validates, filters, and appends a single location to s.urls.
 // Used by RSS, Atom, and Text parsers.
+// An empty location is skipped without an error: the link of a feed item is optional, so an
+// item without one is not a mistake, it merely names no page.
 func (s *S) addURL(loc string, baseURL string) {
+	loc = strings.TrimSpace(loc)
+	if loc == "" {
+		return
+	}
 	resolvedLoc, err := s.resolveAndValidateLoc(loc, baseURL)
 	if err != nil {
 		s.errs = append(s.errs, err)
@@ -1738,12 +1742,19 @@ func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, 
 }
 
 // resolveAndValidateLoc resolves and validates a <loc> URL found in a sitemap.
+// In both modes, an empty loc is rejected: it is a location that is missing, not a relative
+// URL, and resolved as one it would name the sitemap itself. The error names that sitemap,
+// there being no location to name.
 // In both modes, URLs must not exceed 2048 characters (sitemaps.org specification).
 // In tolerant mode (strict=false), relative URLs are resolved against baseURL before the length check.
 // In strict mode (strict=true), URLs must additionally be absolute HTTP(S), on the same host
 // and protocol as baseURL.
 // Returns the resolved URL string and an error if validation fails.
 func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
+	if loc == "" {
+		return loc, &ValidationError{URL: baseURL, Err: errors.New("<loc> of an entry is empty or missing")}
+	}
+
 	base, err := neturl.Parse(baseURL)
 	if err != nil {
 		return loc, &ValidationError{URL: baseURL, Err: err}

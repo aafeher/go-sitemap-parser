@@ -88,7 +88,9 @@ func (e *ParseError) Unwrap() error {
 //	    fmt.Println("invalid URL:", valErr.URL)
 //	}
 type ValidationError struct {
-	// URL is the URL value being validated.
+	// URL is the URL value being validated. When it is not a URL that was rejected, it is the
+	// URL the rejected value belongs to: the page for a value of a <url> entry, the sitemap
+	// for an entry without a location.
 	// May be empty for field-level errors where no specific URL is available.
 	URL string
 	// Err is the underlying validation error.

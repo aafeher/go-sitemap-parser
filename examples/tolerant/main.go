@@ -14,6 +14,9 @@ import (
 // keeps the entry; strict mode skips the entry. Either way the value is
 // reported via GetErrors() as a *ValidationError for the page it belongs to.
 //
+// An entry without a location names no page. It is skipped and reported in
+// both modes; the error names the sitemap, the entry having no URL of its own.
+//
 // Tolerant mode also reads past the XML mistakes that can be read past, such
 // as an unescaped "&" in a URL. Strict mode requires well-formed XML and
 // rejects such a document as a whole.
@@ -46,6 +49,14 @@ func main() {
   </url>
 </urlset>`
 
+	// The second entry has no <loc> at all, the third one an empty one.
+	missingLocation := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/</loc></url>
+  <url><lastmod>2024-01-15</lastmod></url>
+  <url><loc></loc></url>
+</urlset>`
+
 	// The "&" of the query string is not escaped as "&amp;", which makes the
 	// document malformed XML.
 	malformedXML := `<?xml version="1.0" encoding="UTF-8"?>
@@ -59,6 +70,12 @@ func main() {
 
 	fmt.Println("\n=== Invalid values, strict mode ===")
 	parse(sitemap.New().SetStrict(true), invalidValues)
+
+	fmt.Println("\n=== Missing location, tolerant mode ===")
+	parse(sitemap.New(), missingLocation)
+
+	fmt.Println("\n=== Missing location, strict mode ===")
+	parse(sitemap.New().SetStrict(true), missingLocation)
 
 	fmt.Println("\n=== Malformed XML, tolerant mode ===")
 	parse(sitemap.New(), malformedXML)

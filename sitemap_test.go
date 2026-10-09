@@ -1637,6 +1637,8 @@ func TestS_resolveAndValidateLoc(t *testing.T) {
 		{"tolerant rejects resolved URL exceeding 2048 chars", false, longURL2049, baseURL, true, ""},
 		{"tolerant accepts resolved URL at exactly 2048 chars", false, longURL2048, baseURL, false, ""},
 		{"tolerant rejects relative URL that resolves beyond 2048 chars", false, longRelPath, baseURL, true, ""},
+		{"tolerant rejects empty loc", false, "", baseURL, true, ""},
+		{"strict rejects empty loc", true, "", baseURL, true, ""},
 	}
 
 	for _, tt := range tests {
@@ -1657,6 +1659,90 @@ func TestS_resolveAndValidateLoc(t *testing.T) {
 				if tt.wantResolved != "" && resolved != tt.wantResolved {
 					t.Errorf("expected %q, got %q", tt.wantResolved, resolved)
 				}
+			}
+		})
+	}
+}
+
+// TestS_resolveAndValidateLoc_EmptyLoc verifies that an empty location is
+// rejected rather than resolved: as a relative URL it resolves to the base, the
+// URL of the sitemap it was read from.
+func TestS_resolveAndValidateLoc_EmptyLoc(t *testing.T) {
+	const baseURL = "https://example.com/sitemaps/index.xml"
+
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			s := New().SetStrict(strict)
+
+			resolved, err := s.resolveAndValidateLoc("", baseURL)
+
+			mustEqual(t, "resolved", resolved, "")
+			var valErr *ValidationError
+			if !errors.As(err, &valErr) {
+				t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+			}
+			mustEqual(t, "error URL", valErr.URL, baseURL)
+			mustEqual(t, "error", valErr.Error(), `validate "https://example.com/sitemaps/index.xml": <loc> of an entry is empty or missing`)
+		})
+	}
+}
+
+// TestS_Parse_EmptyLocationInIndex verifies that a sitemap index entry without
+// a location is not followed. Resolved like a relative URL it would be the URL
+// of the index, which would then be fetched once more.
+func TestS_Parse_EmptyLocationInIndex(t *testing.T) {
+	const indexContent = `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap><loc></loc></sitemap>
+    <sitemap><lastmod>2024-01-15</lastmod></sitemap>
+</sitemapindex>`
+
+	tests := []struct {
+		name        string
+		multiThread bool
+		// passContent tells whether the index is handed to Parse or fetched by it.
+		passContent bool
+		wantFetches int
+	}{
+		{"fetched index, sequential", false, false, 1},
+		{"fetched index, multi-thread", true, false, 1},
+		{"index passed as content, sequential", false, true, 0},
+		{"index passed as content, multi-thread", true, true, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var fetchCount int
+			var mu sync.Mutex
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				mu.Lock()
+				fetchCount++
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = fmt.Fprint(w, indexContent)
+			}))
+			defer srv.Close()
+
+			indexURL := srv.URL + "/sitemapindex.xml"
+			var content *string
+			if tt.passContent {
+				content = pointerOfString(indexContent)
+			}
+			s := New().SetMultiThread(tt.multiThread)
+			requireParse(t, s, indexURL, content)
+
+			mu.Lock()
+			got := fetchCount
+			mu.Unlock()
+			mustEqual(t, "fetches", got, tt.wantFetches)
+
+			assertCounts(t, s, 0, 2)
+			for _, err := range s.GetErrors() {
+				var valErr *ValidationError
+				if !errors.As(err, &valErr) {
+					t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+				}
+				mustEqual(t, "error URL", valErr.URL, indexURL)
 			}
 		})
 	}
@@ -4372,6 +4458,100 @@ func TestS_parse_MalformedXML(t *testing.T) {
 			}
 			if len(s.errs) != 1 || !strings.Contains(s.errs[0].Error(), "unexpected EOF") {
 				t.Errorf("strict=%v: expected an unexpected EOF error, got %v", strict, s.errs)
+			}
+		}
+	})
+}
+
+// TestS_parse_EmptyLocation verifies that an entry without a location yields
+// no location at all. Resolved like a relative URL, an empty location would be
+// the URL of the sitemap itself.
+func TestS_parse_EmptyLocation(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	wantLocations := []string{"https://example.com/a", "https://example.com/b"}
+
+	// A sitemap entry must have a <loc>: an entry without one is skipped and
+	// reported. Each document holds such an entry between two valid ones.
+	formats := map[string]string{
+		"urlset":       `<urlset><url><loc>https://example.com/a</loc></url><url>%s</url><url><loc>https://example.com/b</loc></url></urlset>`,
+		"sitemapindex": `<sitemapindex><sitemap><loc>https://example.com/a</loc></sitemap><sitemap>%s</sitemap><sitemap><loc>https://example.com/b</loc></sitemap></sitemapindex>`,
+	}
+	entries := []struct {
+		name    string
+		content string
+	}{
+		{"empty loc", `<loc></loc>`},
+		{"self-closing loc", `<loc/>`},
+		{"whitespace-only loc", "<loc> \n\t </loc>"},
+		{"missing loc", `<lastmod>2024-01-15</lastmod>`},
+		{"empty entry", ``},
+	}
+
+	for format, template := range formats {
+		for _, entry := range entries {
+			for _, strict := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s %s strict=%v", format, entry.name, strict), func(t *testing.T) {
+					s := New().SetStrict(strict)
+					locations := parsedLocations(s, fmt.Sprintf(template, entry.content))
+
+					assertStringSlice(t, "locations", locations, wantLocations)
+					if format == "sitemapindex" {
+						assertStringSlice(t, "sitemap locations", s.sitemapLocations, append([]string{url}, wantLocations...))
+					}
+					if len(s.errs) != 1 {
+						t.Fatalf("expected 1 error, got %d: %v", len(s.errs), s.errs)
+					}
+					var valErr *ValidationError
+					if !errors.As(s.errs[0], &valErr) {
+						t.Fatalf("expected *ValidationError, got %T: %v", s.errs[0], s.errs[0])
+					}
+					mustEqual(t, "error URL", valErr.URL, url)
+					mustEqual(t, "error", valErr.Error(), `validate "https://example.com/sitemap.xml": <loc> of an entry is empty or missing`)
+				})
+			}
+		}
+	}
+
+	// The link of a feed item is optional: an item without one is skipped
+	// without an error.
+	feeds := []struct {
+		name    string
+		content string
+	}{
+		{"rss item without link", `<rss><channel><item><link>https://example.com/a</link></item><item><title>No link</title></item><item><link>https://example.com/b</link></item></channel></rss>`},
+		{"rss empty link", `<rss><channel><item><link>https://example.com/a</link></item><item><link></link></item><item><link>https://example.com/b</link></item></channel></rss>`},
+		{"rss whitespace-only link", "<rss><channel><item><link>https://example.com/a</link></item><item><link> \n\t </link></item><item><link>https://example.com/b</link></item></channel></rss>"},
+		{"atom entry without link", `<feed><entry><link href="https://example.com/a"/></entry><entry><title>No link</title></entry><entry><link href="https://example.com/b"/></entry></feed>`},
+		{"atom empty href", `<feed><entry><link href="https://example.com/a"/></entry><entry><link href=""/></entry><entry><link href="https://example.com/b"/></entry></feed>`},
+		{"atom whitespace-only href", `<feed><entry><link href="https://example.com/a"/></entry><entry><link href="   "/></entry><entry><link href="https://example.com/b"/></entry></feed>`},
+	}
+
+	for _, feed := range feeds {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s strict=%v", feed.name, strict), func(t *testing.T) {
+				s := New().SetStrict(strict)
+				locations := parsedLocations(s, feed.content)
+
+				assertStringSlice(t, "locations", locations, wantLocations)
+				if len(s.errs) != 0 {
+					t.Errorf("unexpected errors: %v", s.errs)
+				}
+			})
+		}
+	}
+
+	t.Run("locations are trimmed", func(t *testing.T) {
+		documents := map[string]string{
+			"rss":  "<rss><channel><item><link>\n  https://example.com/a\n</link></item></channel></rss>",
+			"atom": `<feed><entry><link href="  https://example.com/a  "/></entry></feed>`,
+		}
+		for format, content := range documents {
+			s := New()
+			locations := parsedLocations(s, content)
+
+			assertStringSlice(t, format+" locations", locations, []string{"https://example.com/a"})
+			if len(s.errs) != 0 {
+				t.Errorf("%s: unexpected errors: %v", format, s.errs)
 			}
 		}
 	})

@@ -9,15 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `examples/reuse`: runnable example of reusing one instance for several `Parse()` calls and of correcting an invalid setting. `README.md` gained a matching `Reusing an instance` section
-- `examples/tolerant`: runnable example of how tolerant and strict mode treat a sitemap with invalid values and malformed XML in it
+- `examples/tolerant`: runnable example of how tolerant and strict mode treat a sitemap with invalid values, entries without a location and malformed XML in it
 - `examples/encoding`: runnable example of parsing a sitemap that is not UTF-8 encoded. `README.md` gained a matching `Character encoding` section, which also lists the limitations (UTF-16 / UTF-32 and the HTTP `Content-Type` charset are not supported)
 
 ### Changed
+- In strict mode an entry without a `<loc>` is reported as `validate "https://example.com/sitemap.xml": <loc> of an entry is empty or missing`, naming the sitemap it stands in, instead of `validate "": strict mode: unsupported scheme ""`
+- In strict mode an RSS `<item>` without a `<link>` is no longer reported, the link of a feed item being optional. It is skipped without an error, as an Atom `<entry>` without a link already was
 - Tolerant mode reads XML leniently: an unescaped `&` or an unknown entity such as `&nbsp;` is taken literally, and a missing end tag is made up for. Such a document used to be rejected as a whole with an XML syntax error. Strict mode still requires well-formed XML and rejects the document
 - A value that cannot be parsed is reported as a `*ValidationError` for the page it belongs to (`validate "https://example.com/page": invalid <lastmod> value "2024-01-15 10:30:00"`) instead of a `*ParseError` for the whole sitemap
 - A `Parse()` / `ParseContext()` call that returns early — because a configuration error is outstanding or the input URL is invalid — now leaves `GetURLs()` empty. Previously the URLs collected by the preceding call were still returned in that case, so a failed call could be mistaken for a successful one. `GetURLs()` and `GetErrors()` now always describe the most recent call only
 
 ### Fixed
+- An entry without a location no longer yields the URL of the sitemap itself. In tolerant mode a `<url>` whose `<loc>` is missing, empty or holds only whitespace used to be resolved like a relative URL, that is to the URL of the sitemap, which `GetURLs()` then returned as one of its pages. The same happened to an RSS `<item>` without a `<link>` and to an Atom `<link>` with a whitespace-only `href`. Such a `<url>` is now skipped and reported as a `*ValidationError` naming the sitemap; such a feed item is skipped without an error
+- A `<sitemap>` entry without a `<loc>` in a sitemap index no longer makes the parser fetch the index itself, a second time or, when the content of the index was passed to `Parse()`, over the network for the first time. The entry is skipped and reported
 - A single value that cannot be parsed no longer discards the whole sitemap. A malformed `<lastmod>` (e.g. `2024-01-15T10:30:00`, `2024-01-15T10:30:00+0100`, `2024-01-15 10:30:00`), `<priority>` (e.g. `0,5`), `<video:duration>`, `<video:rating>`, `<video:view_count>`, `<video:expiration_date>`, `<video:publication_date>` or `<news:publication_date>` in one entry used to fail the decoding of the entire document, so a sitemap of 50,000 URLs yielded none. Such a value now costs only itself: the field is left `nil`, the entry is kept and the value is reported. In strict mode an entry whose `<lastmod>` or `<priority>` cannot be parsed is skipped, as an entry with an out-of-range priority already was
 - An unescaped `&` in a URL (`<loc>https://example.com/?a=1&b=2</loc>`) no longer discards the whole document in tolerant mode, and neither does an undefined entity such as `&nbsp;` in an RSS or Atom feed
 - A numeric element holding only whitespace (`<priority> </priority>`) is read like an empty one instead of failing the document
