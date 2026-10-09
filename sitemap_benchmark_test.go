@@ -1,6 +1,9 @@
 package sitemap
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func Benchmark_New(b *testing.B) {
 	b.Run("New", func(b *testing.B) {
@@ -53,4 +56,27 @@ func Benchmark_Parse(b *testing.B) {
 			}
 		}
 	})
+}
+
+// Benchmark_Parse_SitemapIndex parses a sitemap index of 16 sitemaps of 5,000
+// URLs each, with multi-threading on and off. What it measures is mostly the
+// decoding of the sitemaps, the server being local.
+func Benchmark_Parse_SitemapIndex(b *testing.B) {
+	const sitemaps, pages = 16, 5000
+
+	server := sitemapIndexServer(b, sitemaps, pages, nil)
+
+	for _, multiThread := range []bool{true, false} {
+		b.Run(fmt.Sprintf("multiThread=%v", multiThread), func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				s, err := New().SetMultiThread(multiThread).Parse(server.URL+"/index.xml", nil)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if s.GetURLCount() != sitemaps*pages {
+					b.Fatalf("expected %d URLs, got %d", sitemaps*pages, s.GetURLCount())
+				}
+			}
+		})
+	}
 }

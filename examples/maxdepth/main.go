@@ -12,14 +12,16 @@ import (
 // may in turn reference further indexes. SetMaxDepth caps how many levels
 // deep the parser will follow before stopping. The default is 10.
 //
-// When the depth limit is reached, a *ParseError is recorded in GetErrors()
-// and the parser stops following that branch. URLs already collected up to
-// that depth remain available via GetURLs().
+// When the depth limit is reached, the parser stops following that branch and
+// records a *ParseError in GetErrors() that names the sitemap index whose
+// sitemaps are not followed. Reaching the limit does not fail Parse(), and the
+// URLs collected up to that depth remain available via GetURLs().
 func main() {
 	url := "https://www.sitemaps.org/sitemap.xml"
 
-	// Limit recursion to a single level: the parser will parse the root
-	// sitemap but will not follow any sitemap index entries it finds there.
+	// Limit recursion to a single level: the sitemaps listed by the document at
+	// url are fetched, but if one of them is a sitemap index itself, the
+	// sitemaps it lists are not.
 	s := sitemap.New().SetMaxDepth(1)
 
 	sm, err := s.Parse(url, nil)
