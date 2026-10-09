@@ -20,8 +20,12 @@ import (
 //
 // Whitespace around a value is no part of it in either mode. A <changefreq>
 // of the protocol that is written in another letter case is read as the value
-// itself in tolerant mode, so that it equals its constant. Strict mode keeps
-// it as the document gives it.
+// itself in tolerant mode, so that it equals its constant. Strict mode accepts
+// the values only as the protocol writes them: it skips the entry and reports
+// the value.
+//
+// A space in a URL is percent-encoded in tolerant mode, so that the URL can
+// be requested as it is. Strict mode rejects the URL.
 //
 // An entry without a location names no page. It is skipped and reported in
 // both modes; the error names the sitemap, the entry having no URL of its own.
@@ -35,11 +39,11 @@ import (
 // The sitemap content is passed in directly, so the example runs without
 // network access.
 func main() {
-	// Two of the six entries hold a value that cannot be parsed: a <lastmod>
+	// Two of the seven entries hold a value that cannot be parsed: a <lastmod>
 	// without the "T" separator and a time zone, and a <priority> written with
 	// a decimal comma. The <lastmod> of the fifth entry is empty. The
-	// <changefreq> of the last one stands on a line of its own and begins with
-	// a capital letter.
+	// <changefreq> of the sixth one stands on a line of its own and begins with
+	// a capital letter. The URL of the last one has a space in it.
 	invalidValues := `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
@@ -69,6 +73,9 @@ func main() {
     <changefreq>
       Daily
     </changefreq>
+  </url>
+  <url>
+    <loc>https://example.com/search?q=summer sale</loc>
   </url>
 </urlset>`
 
@@ -130,9 +137,9 @@ func parse(s *sitemap.S, content string) {
 			fmt.Printf("    Priority: %.1f\n", *u.Priority)
 		}
 		// ChangeFreq is nil when the element is absent or empty. A value that
-		// is set has no whitespace around it; whether it equals a constant
-		// such as sitemap.ChangeFreqDaily when it is written as "Daily" is up
-		// to the mode.
+		// is set has no whitespace around it. Written as "Daily" it equals
+		// sitemap.ChangeFreqDaily in tolerant mode; strict mode skips an entry
+		// with such a value, so this line is printed in tolerant mode only.
 		if u.ChangeFreq != nil {
 			fmt.Printf("    ChangeFreq: %s (equals ChangeFreqDaily: %t)\n", *u.ChangeFreq, *u.ChangeFreq == sitemap.ChangeFreqDaily)
 		}

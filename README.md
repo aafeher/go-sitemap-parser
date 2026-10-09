@@ -339,21 +339,32 @@ By default, the parser operates in **tolerant mode**: relative URLs found in `<l
 
 To enable **strict mode**, use the `SetStrict()` function. In strict mode, all URL entries are validated per the [sitemaps.org protocol](http://www.sitemaps.org/protocol.html):
 - `<loc>` must be an absolute HTTP or HTTPS URL
-- `<loc>` must use the same host and protocol as the sitemap file (for a sitemap reached through a redirect: as the URL it was served from, see [Redirects](#redirects))
+- `<loc>` must use the same host and protocol as the sitemap file (for a sitemap reached through a redirect: as the URL it was served from, see [Redirects](#redirects)); what counts as the same host is described below
+- `<loc>` must hold neither a space nor a control character (a tab or a line break for one); a URL gives them percent-encoded, a space as `%20`
 - `<loc>` must not exceed 2,048 characters
+- `<changefreq>` must be one of the values of the protocol, written as the protocol writes them: `always`, `hourly`, `daily`, `weekly`, `monthly`, `yearly` or `never` (if present)
 - `<priority>` must be between `0.0` and `1.0` inclusive (if present)
 - `<lastmod>` and `<priority>` must hold a value that can be parsed (if present)
 - The document must be well-formed XML, otherwise it is rejected as a whole and reported as a `*ParseError`
 
 In **tolerant mode** (the default):
 - Relative `<loc>` URLs are resolved against the parent sitemap URL
+- A space in a `<loc>` URL is percent-encoded (`%20`) wherever it stands, so that the URL can be requested as it is: `https://example.com/search?q=summer sale` is returned as `https://example.com/search?q=summer%20sale`
 - `<loc>` URLs exceeding 2,048 characters after resolution are rejected
 - `<priority>` values outside `[0.0, 1.0]` are accepted as-is
 - A `<lastmod>` or `<priority>` that cannot be parsed is left unset (`nil`) and reported, the entry itself is kept
-- A `<changefreq>` value of the protocol that is written in another letter case (`Daily`, `WEEKLY`) is read as the value itself (`daily`, `weekly`), so that it equals its constant; strict mode keeps it as the document gives it
+- A `<changefreq>` value of the protocol that is written in another letter case (`Daily`, `WEEKLY`) is read as the value itself (`daily`, `weekly`), so that it equals its constant; a value the protocol does not know is kept as the document gives it
 - XML mistakes that can be read past are accepted: an unescaped `&`, an unknown entity such as `&nbsp;`, a missing end tag
 
 Entries that fail validation are skipped and reported via `GetErrors()`.
+
+Strict mode takes a URL to be on the host of the sitemap when it names the same host and the same port. The name of a host is not case-sensitive, and a URL that names no port is on the default port of its protocol (80 for HTTP, 443 for HTTPS). In a sitemap at `https://example.com/sitemap.xml`, `https://Example.com/page` and `https://example.com:443/page` are therefore accepted, while a URL on another host, on a subdomain (`https://www.example.com/page`) or on another port (`https://example.com:8443/page`) is rejected:
+
+```
+validate "https://example.com:8443/page": strict mode: host "example.com:8443" does not match sitemap host "example.com"
+```
+
+The same goes for the sitemaps a sitemap index lists. An internationalised host name has to be written the same way in both URLs: its Unicode form and its Punycode form (`xn--...`) are not taken for the same host.
 
 An entry without a location is one of them in both modes. A `<url>` or `<sitemap>` whose `<loc>` is missing, empty or holds only whitespace is skipped and reported as a `*ValidationError`. The entry has no URL of its own, so the error names the sitemap it stands in:
 
@@ -363,7 +374,7 @@ validate "https://example.com/sitemap.xml": <loc> of an entry is empty or missin
 
 An RSS `<item>` without a `<link>` and an Atom `<entry>` without a link are skipped without an error, since a feed item is not required to have one.
 
-The sitemaps a `robots.txt` names are checked before they are fetched as well. The value of a `Sitemap:` line has to be an HTTP or HTTPS URL of at most 2,048 characters. Tolerant mode resolves a relative one against the URL of the `robots.txt`, strict mode requires an absolute one. The sitemap may be on another host than the `robots.txt` in both modes, which the protocol allows. A value that is rejected is skipped and reported as a `*ValidationError`:
+The sitemaps a `robots.txt` names are checked before they are fetched as well. The value of a `Sitemap:` line has to be an HTTP or HTTPS URL of at most 2,048 characters. Tolerant mode resolves a relative one against the URL of the `robots.txt` and percent-encodes a space in it, strict mode requires an absolute one without a space. The sitemap may be on another host than the `robots.txt` in both modes, which the protocol allows. A value that is rejected is skipped and reported as a `*ValidationError`:
 
 ```
 validate "ftp://example.com/sitemap.xml": unsupported scheme "ftp"
@@ -379,7 +390,7 @@ An empty date is no such value. A `<lastmod>`, `<news:publication_date>`, `<vide
 
 Whitespace around a value is no part of it, in both modes. The content of an element may be indented or stand on a line of its own, and an attribute may be padded: every text value of an entry is returned without the whitespace that surrounds it, those of the extensions included. A value that holds nothing but whitespace is therefore an empty one. A `<changefreq>` like that is read as if the element were not there, and a value an extension requires is missing then, see [GetURLs](#geturls).
 
-See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location among them.
+See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location among them, and [`examples/strict`](examples/strict/main.go) for one of what strict mode requires of a URL.
 
 ```go
 s := sitemap.New()
@@ -616,7 +627,7 @@ urls := s.GetURLs()
 Each `URL` struct contains the following fields:
 - `Loc` (`string`) — the URL location; never empty, an entry without a `<loc>` is skipped
 - `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`; also `nil` when the element is empty or the value cannot be parsed, see [Strict mode](#strict-mode)
-- `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`; also `nil` when the element is empty. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`. A value that is none of them is kept as the document gives it; tolerant mode reads one of them in whatever letter case it is written, see [Strict mode](#strict-mode)
+- `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`; also `nil` when the element is empty. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`. Tolerant mode reads one of them in whatever letter case it is written and keeps a value that is none of them as the document gives it; strict mode skips an entry with either, so a field that is set equals one of the constants there, see [Strict mode](#strict-mode)
 - `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`; also `nil` when the value cannot be parsed
 - `Images` (`[]Image`) — images associated with this URL via the Google Image Sitemap extension, may be `nil`
 - `News` (`*News`) — news metadata associated with this URL via the Google News Sitemap extension, may be `nil`
@@ -624,6 +635,12 @@ Each `URL` struct contains the following fields:
 - `Hreflangs` (`[]AlternateLink`) — alternate language/region versions of this URL via the XHTML extension, may be `nil`
 
 No text value of a `URL` has whitespace around it, see [Strict mode](#strict-mode). This goes for the fields of the extensions below as well: an `Image.Loc` or a `Video.Title` that stands on a line of its own in the document is returned without the line breaks and the indentation.
+
+The URL of an extension (`Image.Loc`, `Video.ThumbnailLoc`, `AlternateLink.Href`) may be on any host. Tolerant mode returns it as the document gives it. Strict mode requires an absolute HTTP or HTTPS URL that names a host and holds neither a space nor a control character; an image, a video or an alternate link whose URL is not one is left out and reported, the page itself is kept:
+
+```
+validate "https://cdn.example.com/summer sale.jpg": strict mode: URL contains a space
+```
 
 Each `Image` struct contains the following fields (all `string`):
 - `Loc` — image URL (required by the spec; images with an empty `Loc` are silently dropped in tolerant mode, or produce an error in strict mode)

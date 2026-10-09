@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -44,7 +45,8 @@ func addFileSeeds(f *testing.F, pattern string, add func(*testing.F, []byte)) {
 
 // assertLocInvariants checks the guarantees resolveAndValidateLoc is documented
 // to provide for every location that reaches the caller: the scheme is http or
-// https, and the URL is within the sitemaps.org length limit.
+// https, the URL is within the sitemaps.org length limit, and it holds neither
+// a space nor a control character, so that it can be requested as it is.
 func assertLocInvariants(t *testing.T, mode string, locs []string) {
 	t.Helper()
 
@@ -59,6 +61,33 @@ func assertLocInvariants(t *testing.T, mode string, locs []string) {
 		}
 		if parsed.Scheme != "http" && parsed.Scheme != "https" {
 			t.Fatalf("%s mode: accepted URL with scheme %q: %q", mode, parsed.Scheme, loc)
+		}
+		if strings.ContainsFunc(loc, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+			t.Fatalf("%s mode: accepted URL with a space or a control character in it: %q", mode, loc)
+		}
+	}
+}
+
+// assertOnSitemapHost checks what strict mode guarantees on top of that for the
+// locations a sitemap lists: each is on the protocol, the host and the port of
+// fuzzBaseURL. The letter case of the host makes no difference, and neither
+// does it whether the default port of HTTPS is named.
+func assertOnSitemapHost(t *testing.T, locs []string) {
+	t.Helper()
+
+	for _, loc := range locs {
+		parsed, err := neturl.Parse(loc)
+		if err != nil {
+			t.Fatalf("strict mode: accepted unparsable URL %q: %v", loc, err)
+		}
+		if parsed.Scheme != "https" {
+			t.Fatalf("strict mode: accepted URL of another protocol than the sitemap: %q", loc)
+		}
+		if !strings.EqualFold(parsed.Hostname(), "example.com") {
+			t.Fatalf("strict mode: accepted URL on another host than the sitemap: %q", loc)
+		}
+		if port := parsed.Port(); port != "" && port != "443" {
+			t.Fatalf("strict mode: accepted URL on another port than the sitemap: %q", loc)
 		}
 	}
 }
@@ -151,10 +180,10 @@ func assertURLLimit(t *testing.T, mode string, strict bool, content string) {
 
 // assertTextValues checks the text values of the URLs collected from content:
 // none of them has whitespace around it, a change frequency that is set names
-// one, and tolerant mode holds a change frequency of the protocol the way its
-// constant spells it.
-// The location is left out. It is a URL that has been resolved, and whether
-// that may hold whitespace is not what is checked here.
+// one, tolerant mode holds a change frequency of the protocol the way its
+// constant spells it, and strict mode holds no other one.
+// The location is left out: assertLocInvariants checks that it holds no space
+// at all.
 func assertTextValues(t *testing.T, mode string, strict bool, content string) {
 	t.Helper()
 
@@ -178,13 +207,17 @@ func assertTextValues(t *testing.T, mode string, strict bool, content string) {
 		if canonical := canonicalChangeFreq(*u.ChangeFreq); !strict && canonical != *u.ChangeFreq {
 			t.Fatalf("%s mode: the change frequency of %q is %q, not %q", mode, u.Loc, *u.ChangeFreq, canonical)
 		}
+		if strict && !slices.Contains(changeFreqs[:], *u.ChangeFreq) {
+			t.Fatalf("%s mode: the change frequency of %q is %q, which is no value of the protocol", mode, u.Loc, *u.ChangeFreq)
+		}
 	}
 }
 
 // FuzzParse exercises the full format-dispatch path — sitemap index, urlset,
 // RSS, Atom and plain text — with untrusted content. Every location the parser
 // hands back must satisfy the documented URL invariants in both tolerant and
-// strict mode, parsing must be deterministic, a byte order mark put before the
+// strict mode, in strict mode it must be on the host of the sitemap as well,
+// parsing must be deterministic, a byte order mark put before the
 // document must change nothing, no text value may have whitespace around it,
 // the call must fail exactly when the document cannot be parsed, and a limit
 // on the URLs must leave the first ones as they are.
@@ -202,6 +235,11 @@ func FuzzParse(f *testing.F) {
 		`<urlset><url><loc>https://example.com/a</loc><changefreq> Daily </changefreq></url><url><loc>https://example.com/b</loc><changefreq> </changefreq></url></urlset>`,
 		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://example.com/p</loc><image:image><image:loc> https://example.com/i.jpg </image:loc><image:title> t </image:title></image:image><news:news><news:publication><news:name> n </news:name><news:language> en </news:language></news:publication><news:title> t </news:title></news:news><video:video><video:thumbnail_loc> https://example.com/t.jpg </video:thumbnail_loc><video:title> t </video:title><video:restriction relationship=" allow "> IE GB </video:restriction><video:uploader info=" https://example.com/u "> u </video:uploader><video:tag> one </video:tag></video:video><xhtml:link rel=" alternate " hreflang=" de " href=" https://example.com/de "/></url></urlset>`,
 		`<feed><entry><link rel=" alternate " href=" https://example.com/atom-padded "/></entry></feed>`,
+		`<urlset><url><loc>https://EXAMPLE.com:443/a b?c=d e#f g</loc><changefreq>Daily</changefreq></url><url><loc>https://example.com:8443/other-port</loc><changefreq>sometimes</changefreq><priority>1.5</priority></url><url><loc>https://Example.COM:/empty-port?q=a #</loc><changefreq>never</changefreq></url></urlset>`,
+		`<sitemapindex><sitemap><loc>https://example.com:443/site map.xml?v=a b</loc></sitemap><sitemap><loc>https://EXAMPLE.COM/upper.xml</loc></sitemap><sitemap><loc>https://www.example.com/other-host.xml</loc></sitemap></sitemapindex>`,
+		"https://Example.com/text one\nhttps://example.com:443/text?q=two three #\nhttps://example.com:80/http-port\n",
+		"https://example.com/fragment#a\x1db\nhttps://example.com/fragment#\x7f\n",
+		"<urlset><url><loc>https://example.com/fragment#a&#9;b</loc></url><url><loc>https://example.com/fragment#a\nb</loc></url></urlset>",
 		"\ufeff<urlset><url><loc>https://example.com/bom</loc></url></urlset>",
 		"\ufeffhttps://example.com/bom-one\nhttps://example.com/bom-two\n",
 		"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><urlset><url><loc>https://example.com/caf\xe9</loc></url></urlset>",
@@ -234,6 +272,9 @@ func FuzzParse(f *testing.F) {
 
 			locs := collectLocs(strict, content)
 			assertLocInvariants(t, mode, locs)
+			if strict {
+				assertOnSitemapHost(t, locs)
+			}
 
 			// Parsing the same bytes twice must produce the same result.
 			if again := collectLocs(strict, content); !slicesEqual(locs, again) {
@@ -363,6 +404,7 @@ func FuzzParseRobotsTXT(f *testing.F) {
 		"Sitemap: ftp://example.com/sitemap.xml\nSitemap: file:///etc/passwd\nSitemap: javascript:alert(1)\n",
 		"Sitemap: https://example.com/" + strings.Repeat("a", maxLocLength+100) + "\n",
 		"Sitemap: https://example.com/%zz.xml\n",
+		"Sitemap: https://example.com/site map.xml?v=a b\nSitemap: https://EXAMPLE.com:8443/other-port.xml\n",
 		"",
 	}
 	for _, seed := range seeds {

@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -1702,6 +1703,13 @@ func TestS_resolveAndValidateLoc(t *testing.T) {
 		{"strict rejects URL exceeding 2048 chars", true, longURL2049, baseURL, true, ""},
 		{"strict accepts URL at exactly 2048 chars", true, longURL2048, baseURL, false, ""},
 		{"strict rejects missing host", true, "https:///path", baseURL, true, ""},
+		{"strict accepts host in another letter case", true, "https://EXAMPLE.com/page1", baseURL, false, "https://EXAMPLE.com/page1"},
+		{"strict accepts the default port", true, "https://example.com:443/page1", baseURL, false, "https://example.com:443/page1"},
+		{"strict rejects another port", true, "https://example.com:8443/page1", baseURL, true, ""},
+		{"strict rejects a space", true, "https://example.com/page 1", baseURL, true, ""},
+		{"tolerant encodes a space of the path", false, "https://example.com/page 1", baseURL, false, "https://example.com/page%201"},
+		{"tolerant encodes a space of the query", false, "https://example.com/page?q=a b", baseURL, false, "https://example.com/page?q=a%20b"},
+		{"tolerant encodes a space of a relative URL", false, "page 1?q=a b", baseURL, false, "https://example.com/sitemaps/page%201?q=a%20b"},
 		{"tolerant rejects resolved URL exceeding 2048 chars", false, longURL2049, baseURL, true, ""},
 		{"tolerant accepts resolved URL at exactly 2048 chars", false, longURL2048, baseURL, false, ""},
 		{"tolerant rejects relative URL that resolves beyond 2048 chars", false, longRelPath, baseURL, true, ""},
@@ -5447,74 +5455,107 @@ func TestS_Parse_SurroundingWhitespace_EveryEntry(t *testing.T) {
 
 // TestS_Parse_ChangeFreq verifies how the content of a <changefreq> is read. Whitespace
 // around it is no part of the value, and an element that holds nothing else names no
-// frequency: the field is nil then, as it is without the element. A value of the protocol
-// that is written in another letter case is read as that value in tolerant mode and is left
-// as it is in strict mode. No form of the element costs the entry or is reported.
+// frequency: the field is nil then, as it is without the element. Neither costs the entry
+// or is reported.
+// A value of the protocol that is written in another letter case is read as that value in
+// tolerant mode, and a value the protocol does not know is kept there as it is. Strict mode
+// accepts the values of the protocol as the protocol writes them and nothing else: any
+// other value is reported and costs the entry, though no other entry.
 func TestS_Parse_ChangeFreq(t *testing.T) {
-	const sitemapURL = "https://example.com/sitemap.xml"
+	const (
+		sitemapURL = "https://example.com/sitemap.xml"
+		pageURL    = "https://example.com/page"
+	)
 
 	type test struct {
 		element string
-		// tolerant and strict are the value of the field in the two modes, nil for a
-		// field that is nil.
+		// tolerant is the value of the field in tolerant mode, nil for a field that is nil.
 		tolerant *URLChangeFreq
-		strict   *URLChangeFreq
+		// strict is the value of the field in strict mode, nil for a field that is nil.
+		strict *URLChangeFreq
+		// invalid is the value strict mode rejects the entry for, empty if it accepts it.
+		invalid string
 	}
 	freq := func(value URLChangeFreq) *URLChangeFreq { return &value }
 	tests := []test{
-		{`<changefreq>daily</changefreq>`, freq(ChangeFreqDaily), freq(ChangeFreqDaily)},
-		{`<changefreq> daily </changefreq>`, freq(ChangeFreqDaily), freq(ChangeFreqDaily)},
-		{"<changefreq>\n      daily\n    </changefreq>", freq(ChangeFreqDaily), freq(ChangeFreqDaily)},
-		{"<changefreq>\tdaily\r\n</changefreq>", freq(ChangeFreqDaily), freq(ChangeFreqDaily)},
-		{`<changefreq><![CDATA[ daily ]]></changefreq>`, freq(ChangeFreqDaily), freq(ChangeFreqDaily)},
-		{`<changefreq>Daily</changefreq>`, freq(ChangeFreqDaily), freq("Daily")},
-		{`<changefreq> Daily </changefreq>`, freq(ChangeFreqDaily), freq("Daily")},
-		{`<changefreq>dAiLy</changefreq>`, freq(ChangeFreqDaily), freq("dAiLy")},
-		// A value the protocol does not know is kept as the document gives it.
-		{`<changefreq>sometimes</changefreq>`, freq("sometimes"), freq("sometimes")},
-		{`<changefreq> Some Times </changefreq>`, freq("Some Times"), freq("Some Times")},
-		{`<changefreq>dailyish</changefreq>`, freq("dailyish"), freq("dailyish")},
-		{`<changefreq>Biweekly</changefreq>`, freq("Biweekly"), freq("Biweekly")},
-		{`<changefreq>DAILY!</changefreq>`, freq("DAILY!"), freq("DAILY!")},
-		{`<changefreq></changefreq>`, nil, nil},
-		{`<changefreq/>`, nil, nil},
-		{`<changefreq> </changefreq>`, nil, nil},
-		{"<changefreq>\n\t \r\n</changefreq>", nil, nil},
-		{`<changefreq><![CDATA[ ]]></changefreq>`, nil, nil},
-		{`<changefreq><!-- daily --></changefreq>`, nil, nil},
-		{``, nil, nil},
+		{`<changefreq>daily</changefreq>`, freq(ChangeFreqDaily), freq(ChangeFreqDaily), ""},
+		{`<changefreq> daily </changefreq>`, freq(ChangeFreqDaily), freq(ChangeFreqDaily), ""},
+		{"<changefreq>\n      daily\n    </changefreq>", freq(ChangeFreqDaily), freq(ChangeFreqDaily), ""},
+		{"<changefreq>\tdaily\r\n</changefreq>", freq(ChangeFreqDaily), freq(ChangeFreqDaily), ""},
+		{`<changefreq><![CDATA[ daily ]]></changefreq>`, freq(ChangeFreqDaily), freq(ChangeFreqDaily), ""},
+		{`<changefreq>Daily</changefreq>`, freq(ChangeFreqDaily), nil, "Daily"},
+		{`<changefreq> Daily </changefreq>`, freq(ChangeFreqDaily), nil, "Daily"},
+		{`<changefreq>dAiLy</changefreq>`, freq(ChangeFreqDaily), nil, "dAiLy"},
+		// A value the protocol does not know is kept as the document gives it in tolerant
+		// mode.
+		{`<changefreq>sometimes</changefreq>`, freq("sometimes"), nil, "sometimes"},
+		{`<changefreq> Some Times </changefreq>`, freq("Some Times"), nil, "Some Times"},
+		{`<changefreq>dailyish</changefreq>`, freq("dailyish"), nil, "dailyish"},
+		{`<changefreq>Biweekly</changefreq>`, freq("Biweekly"), nil, "Biweekly"},
+		{`<changefreq>biweekly</changefreq>`, freq("biweekly"), nil, "biweekly"},
+		{`<changefreq>DAILY!</changefreq>`, freq("DAILY!"), nil, "DAILY!"},
+		{`<changefreq>dail</changefreq>`, freq("dail"), nil, "dail"},
+		{`<changefreq>daily weekly</changefreq>`, freq("daily weekly"), nil, "daily weekly"},
+		{`<changefreq></changefreq>`, nil, nil, ""},
+		{`<changefreq/>`, nil, nil, ""},
+		{`<changefreq> </changefreq>`, nil, nil, ""},
+		{"<changefreq>\n\t \r\n</changefreq>", nil, nil, ""},
+		{`<changefreq><![CDATA[ ]]></changefreq>`, nil, nil, ""},
+		{`<changefreq><!-- daily --></changefreq>`, nil, nil, ""},
+		{``, nil, nil, ""},
 	}
 	for _, known := range changeFreqs {
 		upper := strings.ToUpper(string(known))
 		title := upper[:1] + string(known)[1:]
 		tests = append(tests,
-			test{`<changefreq>` + string(known) + `</changefreq>`, freq(known), freq(known)},
-			test{`<changefreq>` + upper + `</changefreq>`, freq(known), freq(URLChangeFreq(upper))},
-			test{"<changefreq>\n  " + title + "\n</changefreq>", freq(known), freq(URLChangeFreq(title))},
+			test{`<changefreq>` + string(known) + `</changefreq>`, freq(known), freq(known), ""},
+			test{"<changefreq>\n  " + string(known) + "\n</changefreq>", freq(known), freq(known), ""},
+			test{`<changefreq>` + upper + `</changefreq>`, freq(known), nil, upper},
+			test{"<changefreq>\n  " + title + "\n</changefreq>", freq(known), nil, title},
 		)
 	}
 
 	for _, test := range tests {
 		for _, strict := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%q, strict=%v", test.element, strict), func(t *testing.T) {
-				content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com/page</loc>` + test.element + `<priority>0.5</priority></url></urlset>`
+				content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">` +
+					`<url><loc>https://example.com/before</loc></url>` +
+					`<url><loc>` + pageURL + `</loc>` + test.element + `<priority>0.5</priority></url>` +
+					`<url><loc>https://example.com/after</loc></url></urlset>`
 				s := New().SetStrict(strict)
 				requireParse(t, s, sitemapURL, &content)
 
-				if errs := s.GetErrors(); len(errs) != 0 {
-					t.Errorf("unexpected errors: %v", errs)
+				if strict && test.invalid != "" {
+					assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/before", "https://example.com/after"})
+					errs := s.GetErrors()
+					if len(errs) != 1 {
+						t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+					}
+					var validationErr *ValidationError
+					if !errors.As(errs[0], &validationErr) {
+						t.Fatalf("expected a *ValidationError, got %T: %v", errs[0], errs[0])
+					}
+					mustEqual(t, "URL of the error", validationErr.URL, pageURL)
+					mustEqual(t, "error", validationErr.Err.Error(), fmt.Sprintf("strict mode: invalid <changefreq> value %q", test.invalid))
+					return
 				}
+
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+				assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/before", pageURL, "https://example.com/after"})
 				urls := s.GetURLs()
-				if len(urls) != 1 {
-					t.Fatalf("expected 1 URL, got %d", len(urls))
+				if len(urls) != 3 {
+					t.FailNow()
 				}
-				assertPtrFloat32(t, "Priority", urls[0].Priority, 0.5)
+				assertPtrFloat32(t, "Priority", urls[1].Priority, 0.5)
+				if urls[0].ChangeFreq != nil || urls[2].ChangeFreq != nil {
+					t.Errorf("the change frequency of an entry got into another one: %v, %v", urls[0].ChangeFreq, urls[2].ChangeFreq)
+				}
 
 				want := test.tolerant
 				if strict {
 					want = test.strict
 				}
-				got := urls[0].ChangeFreq
+				got := urls[1].ChangeFreq
 				switch {
 				case want == nil && got != nil:
 					t.Errorf("ChangeFreq: got %q, want nil", *got)
@@ -5525,6 +5566,62 @@ func TestS_Parse_ChangeFreq(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestS_Parse_Strict_ValuesNotAllowed verifies what strict mode reports for an entry that
+// has more than one value of its own wrong. A value that cannot be parsed is reported in
+// both modes and costs the entry in strict mode, which looks no further into it then. Of
+// the values that can be parsed, strict mode reports every one the protocol does not
+// allow, the change frequency and the priority alike, and skips the entry. Tolerant mode
+// keeps the entry and the values in every case.
+func TestS_Parse_Strict_ValuesNotAllowed(t *testing.T) {
+	const (
+		sitemapURL = "https://example.com/sitemap.xml"
+		pageURL    = "https://example.com/page"
+
+		changeFreqErr = `validate "https://example.com/page": strict mode: invalid <changefreq> value "sometimes"`
+		priorityErr   = `validate "https://example.com/page": strict mode: priority 1.5 is out of range [0.0, 1.0]`
+		lastModErr    = `validate "https://example.com/page": invalid <lastmod> value "yesterday"`
+	)
+
+	tests := []struct {
+		name     string
+		elements string
+		// tolerant and strict are the errors of the two modes.
+		tolerant []string
+		strict   []string
+	}{
+		{"values of the protocol", `<changefreq>daily</changefreq><priority>1.0</priority>`, []string{}, []string{}},
+		{"change frequency", `<changefreq>sometimes</changefreq><priority>1.0</priority>`, []string{}, []string{changeFreqErr}},
+		{"priority", `<changefreq>daily</changefreq><priority>1.5</priority>`, []string{}, []string{priorityErr}},
+		{"change frequency and priority", `<changefreq>sometimes</changefreq><priority>1.5</priority>`, []string{}, []string{changeFreqErr, priorityErr}},
+		{"priority before the change frequency", `<priority>1.5</priority><changefreq>sometimes</changefreq>`, []string{}, []string{changeFreqErr, priorityErr}},
+		{"date that cannot be parsed", `<lastmod>yesterday</lastmod><changefreq>sometimes</changefreq><priority>1.5</priority>`, []string{lastModErr}, []string{lastModErr}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name+", tolerant mode", func(t *testing.T) {
+			content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + pageURL + `</loc>` + test.elements + `</url></urlset>`
+			s := New()
+			requireParse(t, s, sitemapURL, &content)
+
+			assertStringSlice(t, "errors", errorsOf(s), test.tolerant)
+			assertStringSlice(t, "URLs", locsOf(s), []string{pageURL})
+		})
+
+		t.Run(test.name+", strict mode", func(t *testing.T) {
+			content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + pageURL + `</loc>` + test.elements + `</url></urlset>`
+			s := New().SetStrict(true)
+			requireParse(t, s, sitemapURL, &content)
+
+			assertStringSlice(t, "errors", errorsOf(s), test.strict)
+			want := []string{pageURL}
+			if len(test.strict) > 0 {
+				want = []string{}
+			}
+			assertStringSlice(t, "URLs", locsOf(s), want)
+		})
 	}
 }
 
@@ -5793,6 +5890,612 @@ func TestCanonicalChangeFreq(t *testing.T) {
 		})
 	}
 	mustEqual(t, "values of the protocol", len(changeFreqs), 7)
+}
+
+// TestS_Parse_SameHost verifies which URLs strict mode takes to be on the host of the
+// sitemap. The name of a host is not case-sensitive, and a URL that names no port is on
+// the default port of its protocol, so neither difference makes for another host. A
+// different name or port does. Tolerant mode does not compare the hosts at all.
+func TestS_Parse_SameHost(t *testing.T) {
+	const (
+		httpsSitemap = "https://example.com/sitemap.xml"
+		httpSitemap  = "http://example.com/sitemap.xml"
+	)
+
+	tests := []struct {
+		name    string
+		sitemap string
+		loc     string
+		same    bool
+	}{
+		{"same host", httpsSitemap, "https://example.com/page", true},
+		{"host of the URL in capitals", httpsSitemap, "https://EXAMPLE.COM/page", true},
+		{"host of the URL in mixed case", httpsSitemap, "https://Example.Com/page", true},
+		{"host of the sitemap in capitals", "https://EXAMPLE.COM/sitemap.xml", "https://example.com/page", true},
+		{"default port of HTTPS on the URL", httpsSitemap, "https://example.com:443/page", true},
+		{"default port of HTTPS on the sitemap", "https://example.com:443/sitemap.xml", "https://example.com/page", true},
+		{"default port of HTTPS on both", "https://example.com:443/sitemap.xml", "https://example.com:443/page", true},
+		{"default port of HTTP on the URL", httpSitemap, "http://example.com:80/page", true},
+		{"default port of HTTP on the sitemap", "http://example.com:80/sitemap.xml", "http://example.com/page", true},
+		{"empty port on the URL", httpsSitemap, "https://example.com:/page", true},
+		{"default port and capitals", httpsSitemap, "https://EXAMPLE.com:443/page", true},
+		{"same port that is not the default one", "https://example.com:8443/sitemap.xml", "https://Example.com:8443/page", true},
+		{"IPv4 address with the default port", "https://192.0.2.1/sitemap.xml", "https://192.0.2.1:443/page", true},
+		{"IPv6 address in capitals with the default port", "https://[2001:db8::1]/sitemap.xml", "https://[2001:DB8::1]:443/page", true},
+		{"host that is not ASCII in capitals", "https://bücher.example/sitemap.xml", "https://BÜCHER.example/page", true},
+		{"user information on the URL", httpsSitemap, "https://user@example.com/page", true},
+
+		{"other host", httpsSitemap, "https://example.org/page", false},
+		{"subdomain", httpsSitemap, "https://www.example.com/page", false},
+		{"parent domain", "https://www.example.com/sitemap.xml", "https://example.com/page", false},
+		{"host that begins with the host of the sitemap", httpsSitemap, "https://example.com.evil.test/page", false},
+		{"host that ends with the host of the sitemap", httpsSitemap, "https://notexample.com/page", false},
+		{"host with a trailing dot", httpsSitemap, "https://example.com./page", false},
+		{"other host in capitals", httpsSitemap, "https://EXAMPLE.ORG/page", false},
+		{"other port", httpsSitemap, "https://example.com:8443/page", false},
+		{"other port on the sitemap", "https://example.com:8443/sitemap.xml", "https://example.com/page", false},
+		{"default port against another port of the sitemap", "https://example.com:8443/sitemap.xml", "https://example.com:443/page", false},
+		{"port of HTTP on an HTTPS URL", httpsSitemap, "https://example.com:80/page", false},
+		{"port of HTTPS on an HTTP URL", httpSitemap, "http://example.com:443/page", false},
+		{"port that begins with the default one", httpsSitemap, "https://example.com:4430/page", false},
+		{"same port on another host", "https://example.com:8443/sitemap.xml", "https://example.org:8443/page", false},
+		{"other IPv6 address", "https://[2001:db8::1]/sitemap.xml", "https://[2001:db8::2]/page", false},
+	}
+
+	for _, test := range tests {
+		content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + test.loc + `</loc></url></urlset>`
+
+		t.Run(test.name+", strict mode", func(t *testing.T) {
+			s := New().SetStrict(true)
+			requireParse(t, s, test.sitemap, &content)
+
+			if test.same {
+				// Strict mode returns the URL the way the document gives it.
+				assertStringSlice(t, "URLs", locsOf(s), []string{test.loc})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+				return
+			}
+			loc, err := neturl.Parse(test.loc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sitemap, err := neturl.Parse(test.sitemap)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertStringSlice(t, "URLs", locsOf(s), []string{})
+			assertStringSlice(t, "errors", errorsOf(s), []string{
+				fmt.Sprintf(`validate %q: strict mode: host %q does not match sitemap host %q`, test.loc, loc.Host, sitemap.Host),
+			})
+		})
+
+		t.Run(test.name+", tolerant mode", func(t *testing.T) {
+			s := New()
+			requireParse(t, s, test.sitemap, &content)
+
+			mustEqual(t, "URLs", s.GetURLCount(), 1)
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+	}
+}
+
+// TestS_Parse_SameProtocol verifies that strict mode requires the protocol of the sitemap
+// whatever port the URL names: a URL of the other protocol is not on the host of the
+// sitemap for naming the port the sitemap is served on. The letter case of the protocol
+// makes no difference. Tolerant mode does not compare the protocols.
+func TestS_Parse_SameProtocol(t *testing.T) {
+	const (
+		httpsSitemap = "https://example.com/sitemap.xml"
+		httpSitemap  = "http://example.com/sitemap.xml"
+	)
+
+	tests := []struct {
+		name    string
+		sitemap string
+		loc     string
+		// err is the error of strict mode, empty for a URL it accepts.
+		err string
+	}{
+		{"HTTPS URL in an HTTPS sitemap", httpsSitemap, "https://example.com/page", ""},
+		{"HTTP URL in an HTTP sitemap", httpSitemap, "http://example.com/page", ""},
+		{"protocol in capitals", httpsSitemap, "HTTPS://example.com/page", ""},
+		{"HTTP URL in an HTTPS sitemap", httpsSitemap, "http://example.com/page", `strict mode: scheme "http" does not match sitemap scheme "https"`},
+		{"HTTP URL on the port of HTTPS in an HTTPS sitemap", httpsSitemap, "http://example.com:443/page", `strict mode: scheme "http" does not match sitemap scheme "https"`},
+		{"HTTPS URL in an HTTP sitemap", httpSitemap, "https://example.com/page", `strict mode: scheme "https" does not match sitemap scheme "http"`},
+		{"HTTPS URL on the port of HTTP in an HTTP sitemap", httpSitemap, "https://example.com:80/page", `strict mode: scheme "https" does not match sitemap scheme "http"`},
+		{"HTTP URL on the port of an HTTPS sitemap", "https://example.com:8443/sitemap.xml", "http://example.com:8443/page", `strict mode: scheme "http" does not match sitemap scheme "https"`},
+	}
+
+	for _, test := range tests {
+		content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + test.loc + `</loc></url></urlset>`
+
+		t.Run(test.name+", strict mode", func(t *testing.T) {
+			s := New().SetStrict(true)
+			requireParse(t, s, test.sitemap, &content)
+
+			if test.err == "" {
+				assertStringSlice(t, "URLs", locsOf(s), []string{test.loc})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+				return
+			}
+			assertStringSlice(t, "URLs", locsOf(s), []string{})
+			assertStringSlice(t, "errors", errorsOf(s), []string{fmt.Sprintf(`validate %q: %s`, test.loc, test.err)})
+		})
+
+		t.Run(test.name+", tolerant mode", func(t *testing.T) {
+			s := New()
+			requireParse(t, s, test.sitemap, &content)
+
+			mustEqual(t, "URLs", s.GetURLCount(), 1)
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+	}
+}
+
+// TestS_Parse_SameHost_SitemapIndex verifies that the sitemaps a sitemap index lists are
+// compared with the host of the index the same way: a host in another letter case and the
+// default port are no other host, so the sitemap is fetched in strict mode.
+func TestS_Parse_SameHost_SitemapIndex(t *testing.T) {
+	content := `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://EXAMPLE.com:443/sitemap-1.xml</loc></sitemap>
+  <sitemap><loc>https://example.com:8443/sitemap-2.xml</loc></sitemap>
+</sitemapindex>`
+
+	var requested []string
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		requested = append(requested, req.URL.String())
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`<urlset><url><loc>https://example.com/page</loc></url></urlset>`)),
+			Request:    req,
+		}, nil
+	})}
+	s := New().SetStrict(true).SetMultiThread(false).SetHTTPClient(client)
+	requireParse(t, s, "https://example.com/sitemap-index.xml", &content)
+
+	assertStringSlice(t, "requests", requested, []string{"https://EXAMPLE.com:443/sitemap-1.xml"})
+	assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page"})
+	assertStringSlice(t, "errors", errorsOf(s), []string{
+		`validate "https://example.com:8443/sitemap-2.xml": strict mode: host "example.com:8443" does not match sitemap host "example.com"`,
+	})
+}
+
+func TestSameHost(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"https://example.com/", "https://example.com/other?query#fragment", true},
+		{"https://example.com/", "https://EXAMPLE.com/", true},
+		{"https://example.com/", "https://example.com:443/", true},
+		{"https://example.com/", "https://example.com:/", true},
+		{"http://example.com/", "http://example.com:80/", true},
+		{"https://example.com:8443/", "https://example.com:8443/", true},
+		{"https://example.com/", "https://example.org/", false},
+		{"https://example.com/", "https://www.example.com/", false},
+		{"https://example.com/", "https://example.com:8443/", false},
+		{"https://example.com/", "https://example.com:80/", false},
+		{"http://example.com/", "http://example.com:443/", false},
+		{"https://example.com:8443/", "https://example.com:8444/", false},
+		{"https://example.com:8443/", "https://example.org:8443/", false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.a+" and "+test.b, func(t *testing.T) {
+			a, err := neturl.Parse(test.a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := neturl.Parse(test.b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustEqual(t, "sameHost", sameHost(a, b), test.want)
+			mustEqual(t, "sameHost the other way round", sameHost(b, a), test.want)
+		})
+	}
+}
+
+// TestS_Parse_SpaceInURL verifies what becomes of a URL that has a space in it, which a URL
+// has to give as "%20". Tolerant mode percent-encodes the space wherever it stands: in the
+// path, in the query and in the fragment, so that the URL it returns can be requested as
+// it is. Strict mode rejects the URL. It makes no difference which format lists the URL.
+func TestS_Parse_SpaceInURL(t *testing.T) {
+	tests := []struct {
+		name string
+		loc  string
+		// tolerant is the URL tolerant mode returns.
+		tolerant string
+	}{
+		{"path", "https://example.com/a b", "https://example.com/a%20b"},
+		{"query", "https://example.com/search?q=a b", "https://example.com/search?q=a%20b"},
+		{"fragment", "https://example.com/page#a b", "https://example.com/page#a%20b"},
+		{"path, query and fragment", "https://example.com/a b?c d#e f", "https://example.com/a%20b?c%20d#e%20f"},
+		{"several in the query", "https://example.com/search?q=a  b c", "https://example.com/search?q=a%20%20b%20c"},
+		{"end of the query, before an empty fragment", "https://example.com/search?q=a #", "https://example.com/search?q=a%20"},
+		{"end of the path, before an empty fragment", "https://example.com/a #", "https://example.com/a%20"},
+		{"beside one that is encoded", "https://example.com/a%20b?c=d%20e f+g", "https://example.com/a%20b?c=d%20e%20f+g"},
+	}
+	formats := []struct {
+		name    string
+		url     string
+		content func(loc string) string
+	}{
+		{"urlset", "https://example.com/sitemap.xml", func(loc string) string {
+			return `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + loc + `</loc></url></urlset>`
+		}},
+		{"text", "https://example.com/sitemap.txt", func(loc string) string { return loc + "\n" }},
+		{"RSS", "https://example.com/rss.xml", func(loc string) string {
+			return `<rss version="2.0"><channel><item><link>` + loc + `</link></item></channel></rss>`
+		}},
+		{"Atom", "https://example.com/atom.xml", func(loc string) string {
+			return `<feed xmlns="http://www.w3.org/2005/Atom"><entry><link href="` + loc + `"/></entry></feed>`
+		}},
+	}
+
+	for _, format := range formats {
+		for _, test := range tests {
+			content := format.content(test.loc)
+
+			t.Run(format.name+", "+test.name+", tolerant mode", func(t *testing.T) {
+				s := New()
+				requireParse(t, s, format.url, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), []string{test.tolerant})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+			})
+
+			t.Run(format.name+", "+test.name+", strict mode", func(t *testing.T) {
+				s := New().SetStrict(true)
+				requireParse(t, s, format.url, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), []string{})
+				errs := s.GetErrors()
+				if len(errs) != 1 {
+					t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+				}
+				var validationErr *ValidationError
+				if !errors.As(errs[0], &validationErr) {
+					t.Fatalf("expected a *ValidationError, got %T: %v", errs[0], errs[0])
+				}
+				mustEqual(t, "URL of the error", validationErr.URL, test.loc)
+				mustEqual(t, "error", validationErr.Err.Error(), "strict mode: URL contains a space")
+			})
+		}
+
+		// A URL that gives its spaces the way a URL has to is left as it is in both modes.
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, no space, strict=%v", format.name, strict), func(t *testing.T) {
+				const loc = "https://example.com/a%20b?c=d%20e+f#g%20h"
+				content := format.content(loc)
+				s := New().SetStrict(strict)
+				requireParse(t, s, format.url, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), []string{loc})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+			})
+		}
+	}
+}
+
+// TestS_Parse_ControlCharacterInURL verifies what becomes of a URL that has a control
+// character in it, a tab or a line break for one. In the path and in the query it makes a
+// URL that cannot be parsed, which is rejected in both modes. In the fragment tolerant
+// mode percent-encodes it, as it does a space, and strict mode rejects the URL.
+func TestS_Parse_ControlCharacterInURL(t *testing.T) {
+	const parseErr = "net/url: invalid control character in URL"
+
+	tests := []struct {
+		name string
+		// content is the text sitemap that lists the URL, loc the URL as the errors name it.
+		content string
+		loc     string
+		// tolerant is the URL tolerant mode returns, empty if it rejects the URL.
+		tolerant string
+		// strict is the error of strict mode.
+		strict string
+	}{
+		{"tab in the fragment", "https://example.com/page#a\tb\n", "https://example.com/page#a\tb", "https://example.com/page#a%09b", "strict mode: URL contains a control character"},
+		{"control character in the fragment", "https://example.com/page#a\x1db\n", "https://example.com/page#a\x1db", "https://example.com/page#a%1Db", "strict mode: URL contains a control character"},
+		{"control character at the end of the fragment", "https://example.com/page#\x1d\n", "https://example.com/page#\x1d", "https://example.com/page#%1D", "strict mode: URL contains a control character"},
+		{"NUL in the fragment", "https://example.com/page#a\x00b\n", "https://example.com/page#a\x00b", "https://example.com/page#a%00b", "strict mode: URL contains a control character"},
+		{"DEL in the fragment", "https://example.com/page#a\x7fb\n", "https://example.com/page#a\x7fb", "https://example.com/page#a%7Fb", "strict mode: URL contains a control character"},
+		{"space and tab in the fragment", "https://example.com/page#a b\tc\n", "https://example.com/page#a b\tc", "https://example.com/page#a%20b%09c", "strict mode: URL contains a space"},
+		{"tab in the path", "https://example.com/a\tb\n", "https://example.com/a\tb", "", parseErr},
+		{"tab in the query", "https://example.com/page?q=a\tb\n", "https://example.com/page?q=a\tb", "", parseErr},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name+", tolerant mode", func(t *testing.T) {
+			content := test.content
+			s := New()
+			requireParse(t, s, "https://example.com/sitemap.txt", &content)
+
+			if test.tolerant != "" {
+				assertStringSlice(t, "URLs", locsOf(s), []string{test.tolerant})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+				return
+			}
+			assertStringSlice(t, "URLs", locsOf(s), []string{})
+			assertStringSlice(t, "errors", errorsOf(s), []string{fmt.Sprintf(`validate %q: parse %q: %s`, test.loc, test.loc, parseErr)})
+		})
+
+		t.Run(test.name+", strict mode", func(t *testing.T) {
+			content := test.content
+			s := New().SetStrict(true)
+			requireParse(t, s, "https://example.com/sitemap.txt", &content)
+
+			want := fmt.Sprintf(`validate %q: %s`, test.loc, test.strict)
+			if test.strict == parseErr {
+				want = fmt.Sprintf(`validate %q: parse %q: %s`, test.loc, test.loc, parseErr)
+			}
+			assertStringSlice(t, "URLs", locsOf(s), []string{})
+			assertStringSlice(t, "errors", errorsOf(s), []string{want})
+		})
+	}
+
+	// In an XML document the character is a tab or a line break: the others are no
+	// characters of XML.
+	for name, loc := range map[string]string{
+		"tab as a character reference": "https://example.com/page#a&#9;b",
+		"line break":                   "https://example.com/page#a\nb",
+	} {
+		content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url><loc>` + loc + `</loc></url>
+  <url><loc>https://example.com/other</loc><image:image><image:loc>` + loc + `</image:loc></image:image></url>
+</urlset>`
+
+		t.Run("urlset, "+name+", tolerant mode", func(t *testing.T) {
+			s := New()
+			requireParse(t, s, "https://example.com/sitemap.xml", &content)
+
+			encoded := "https://example.com/page#a%09b"
+			if name == "line break" {
+				encoded = "https://example.com/page#a%0Ab"
+			}
+			assertStringSlice(t, "URLs", locsOf(s), []string{encoded, "https://example.com/other"})
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+
+		t.Run("urlset, "+name+", strict mode", func(t *testing.T) {
+			s := New().SetStrict(true)
+			requireParse(t, s, "https://example.com/sitemap.xml", &content)
+
+			raw := strings.NewReplacer("&#9;", "\t").Replace(loc)
+			want := fmt.Sprintf(`validate %q: strict mode: URL contains a control character`, raw)
+			assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/other"})
+			assertStringSlice(t, "errors", errorsOf(s), []string{want, want})
+			if urls := s.GetURLs(); len(urls) == 1 && len(urls[0].Images) != 0 {
+				t.Errorf("expected the image to be left out, got %+v", urls[0].Images)
+			}
+		})
+	}
+}
+
+func TestIsControl(t *testing.T) {
+	for _, r := range []rune{0x00, '\t', '\n', '\r', 0x1b, 0x1f, 0x7f} {
+		if !isControl(r) {
+			t.Errorf("isControl(%q): got false, want true", r)
+		}
+	}
+	// A space is no control character, and neither is a character beyond ASCII.
+	for _, r := range []rune{' ', '!', 'a', '~', 0x80, 0x85, 0xa0, 'é', 0x2028} {
+		if isControl(r) {
+			t.Errorf("isControl(%q): got true, want false", r)
+		}
+	}
+}
+
+// TestS_Parse_SpaceInURL_Relative verifies that tolerant mode percent-encodes the spaces
+// of a relative URL as well, the ones of its query included.
+func TestS_Parse_SpaceInURL_Relative(t *testing.T) {
+	content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>/a b?c d#e f</loc></url>
+  <url><loc>?q=a b</loc></url>
+</urlset>`
+	s := New()
+	requireParse(t, s, "https://example.com/maps/sitemap.xml", &content)
+
+	assertStringSlice(t, "URLs", locsOf(s), []string{
+		"https://example.com/a%20b?c%20d#e%20f",
+		"https://example.com/maps/sitemap.xml?q=a%20b",
+	})
+	assertStringSlice(t, "errors", errorsOf(s), []string{})
+}
+
+// TestS_Parse_SpaceInURL_OtherProtocol verifies that a URL of a protocol that is not
+// supported is reported the way the document gives it: the space of a URL that is rejected
+// anyway is left alone.
+func TestS_Parse_SpaceInURL_OtherProtocol(t *testing.T) {
+	content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>mailto:someone@example.com?subject=a b</loc></url></urlset>`
+
+	for strict, want := range map[bool]string{
+		false: `validate "mailto:someone@example.com?subject=a b": unsupported scheme "mailto"`,
+		true:  `validate "mailto:someone@example.com?subject=a b": strict mode: unsupported scheme "mailto"`,
+	} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			s := New().SetStrict(strict)
+			requireParse(t, s, "https://example.com/sitemap.xml", &content)
+
+			assertStringSlice(t, "URLs", locsOf(s), []string{})
+			assertStringSlice(t, "errors", errorsOf(s), []string{want})
+		})
+	}
+}
+
+// TestS_Parse_SpaceInURL_Length verifies that tolerant mode applies the limit on the length
+// of a URL to the URL it returns: a space counts as the three characters it is encoded to.
+func TestS_Parse_SpaceInURL_Length(t *testing.T) {
+	const prefix = "https://example.com/search?q=a b"
+
+	for _, over := range []int{0, 1} {
+		t.Run(fmt.Sprintf("%d over the limit", over), func(t *testing.T) {
+			// The encoded space makes the URL two characters longer.
+			loc := prefix + strings.Repeat("c", maxLocLength-2-len(prefix)+over)
+			encoded := strings.Replace(loc, " ", "%20", 1)
+			mustEqual(t, "length of the encoded URL", len(encoded), maxLocLength+over)
+
+			content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + loc + `</loc></url></urlset>`
+			s := New()
+			requireParse(t, s, "https://example.com/sitemap.xml", &content)
+
+			if over == 0 {
+				assertStringSlice(t, "URLs", locsOf(s), []string{encoded})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+				return
+			}
+			assertStringSlice(t, "URLs", locsOf(s), []string{})
+			assertStringSlice(t, "errors", errorsOf(s), []string{
+				fmt.Sprintf(`validate %q: URL exceeds maximum length of %d characters (%d)`, encoded, maxLocLength, maxLocLength+1),
+			})
+		})
+	}
+}
+
+// TestS_Parse_SpaceInURL_SitemapIndex verifies that the request for a sitemap whose URL a
+// sitemap index gives with a space in it is sent for the encoded URL in tolerant mode, a
+// request for a URL with a space in it being malformed. Strict mode does not fetch it.
+func TestS_Parse_SpaceInURL_SitemapIndex(t *testing.T) {
+	content := `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://example.com/site map.xml?v=a b</loc></sitemap>
+</sitemapindex>`
+
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			var requested []string
+			client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				requested = append(requested, req.URL.RequestURI())
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(`<urlset><url><loc>https://example.com/page</loc></url></urlset>`)),
+					Request:    req,
+				}, nil
+			})}
+			s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(client)
+			requireParse(t, s, "https://example.com/sitemap-index.xml", &content)
+
+			if strict {
+				if len(requested) != 0 {
+					t.Errorf("expected no request, got %v", requested)
+				}
+				assertStringSlice(t, "URLs", locsOf(s), []string{})
+				assertStringSlice(t, "errors", errorsOf(s), []string{
+					`validate "https://example.com/site map.xml?v=a b": strict mode: URL contains a space`,
+				})
+				return
+			}
+			assertStringSlice(t, "requests", requested, []string{"/site%20map.xml?v=a%20b"})
+			assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page"})
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+	}
+}
+
+// TestS_Parse_Strict_ExtensionURL verifies what strict mode requires of the URL of an
+// image, of the thumbnail of a video and of an alternate link: an absolute HTTP or HTTPS
+// URL that names a host and has no space in it. Unlike the URL of the page it may be on
+// any host. An entry whose URL is not one is left out and reported, the page is kept.
+// Tolerant mode returns the URL as the document gives it.
+func TestS_Parse_Strict_ExtensionURL(t *testing.T) {
+	const (
+		sitemapURL = "https://example.com/sitemap.xml"
+		pageURL    = "https://example.com/page"
+	)
+	// entries holds, for each kind, the extension entry that is located at loc.
+	entries := map[string]func(loc string) string{
+		"image": func(loc string) string { return `<image:image><image:loc>` + loc + `</image:loc></image:image>` },
+		"video": func(loc string) string {
+			return `<video:video><video:thumbnail_loc>` + loc + `</video:thumbnail_loc><video:title>Video title</video:title><video:description>Video description</video:description><video:player_loc>https://example.com/player</video:player_loc></video:video>`
+		},
+		"alternate link": func(loc string) string { return `<xhtml:link rel="alternate" hreflang="de" href="` + loc + `"/>` },
+	}
+	locOf := func(u URL) []string {
+		locs := []string{}
+		for _, image := range u.Images {
+			locs = append(locs, image.Loc)
+		}
+		for _, video := range u.Videos {
+			locs = append(locs, video.ThumbnailLoc)
+		}
+		for _, link := range u.Hreflangs {
+			locs = append(locs, link.Href)
+		}
+		return locs
+	}
+
+	tests := []struct {
+		name string
+		loc  string
+		// err is the error of strict mode, empty for a URL it accepts.
+		err string
+	}{
+		{"URL on the host of the page", "https://example.com/file", ""},
+		{"URL on another host and port", "https://CDN.example.net:8443/a%20b?c=d+e#f", ""},
+		{"HTTP URL", "http://cdn.example.net/file", ""},
+		{"space in the path", "https://cdn.example.net/a b", "strict mode: URL contains a space"},
+		{"space in the query", "https://cdn.example.net/file?v=a b", "strict mode: URL contains a space"},
+		{"space in the fragment", "https://cdn.example.net/file#a b", "strict mode: URL contains a space"},
+		{"no host", "https:///file", "strict mode: missing host"},
+		{"no host and no path", "https:file", "strict mode: missing host"},
+		{"no host and a space", "https:///a b", "strict mode: missing host"},
+		{"relative URL", "/file", `strict mode: unsupported scheme ""`},
+		{"relative URL with a space", "/a b", `strict mode: unsupported scheme ""`},
+		{"other protocol", "ftp://cdn.example.net/file", `strict mode: unsupported scheme "ftp"`},
+		{"URL that cannot be parsed", "https://cdn.example.net/%zz", `parse "https://cdn.example.net/%zz": invalid URL escape "%zz"`},
+	}
+
+	for kind, entry := range entries {
+		for _, test := range tests {
+			content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url><loc>` + pageURL + `</loc>` + entry(test.loc) + `</url>
+</urlset>`
+
+			t.Run(kind+", "+test.name+", tolerant mode", func(t *testing.T) {
+				s := New()
+				requireParse(t, s, sitemapURL, &content)
+
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+				urls := s.GetURLs()
+				if len(urls) != 1 {
+					t.Fatalf("expected 1 URL, got %d", len(urls))
+				}
+				assertStringSlice(t, "entries", locOf(urls[0]), []string{test.loc})
+			})
+
+			t.Run(kind+", "+test.name+", strict mode", func(t *testing.T) {
+				s := New().SetStrict(true)
+				requireParse(t, s, sitemapURL, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), []string{pageURL})
+				urls := s.GetURLs()
+				if len(urls) != 1 {
+					t.FailNow()
+				}
+				if test.err == "" {
+					assertStringSlice(t, "errors", errorsOf(s), []string{})
+					assertStringSlice(t, "entries", locOf(urls[0]), []string{test.loc})
+					return
+				}
+				assertStringSlice(t, "entries", locOf(urls[0]), []string{})
+				errs := s.GetErrors()
+				if len(errs) != 1 {
+					t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+				}
+				var validationErr *ValidationError
+				if !errors.As(errs[0], &validationErr) {
+					t.Fatalf("expected a *ValidationError, got %T: %v", errs[0], errs[0])
+				}
+				mustEqual(t, "URL of the error", validationErr.URL, test.loc)
+				mustEqual(t, "error", validationErr.Err.Error(), test.err)
+			})
+		}
+	}
 }
 
 func TestParseFloat32(t *testing.T) {
@@ -7387,6 +8090,24 @@ func TestS_robotsTXTSitemapLocations(t *testing.T) {
 			wantErrs: []string{`validate "https:///sitemap.xml": strict mode: missing host`},
 		},
 		{
+			name:     "URL with a space in it",
+			sitemaps: []string{"https://example.com/site map.xml?v=a b", "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/site%20map.xml?v=a%20b", "https://example.com/sitemap.xml"},
+		},
+		{
+			name:     "URL with a space in it, strict mode",
+			strict:   true,
+			sitemaps: []string{"https://example.com/site map.xml?v=a b", "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml"},
+			wantErrs: []string{`validate "https://example.com/site map.xml?v=a b": strict mode: URL contains a space`},
+		},
+		{
+			name:     "host in another letter case and on another port, strict mode",
+			strict:   true,
+			sitemaps: []string{"https://EXAMPLE.com:8443/sitemap.xml"},
+			want:     []string{"https://EXAMPLE.com:8443/sitemap.xml"},
+		},
+		{
 			name:     "URL that is too long",
 			sitemaps: []string{tooLong, "https://example.com/sitemap.xml"},
 			want:     []string{"https://example.com/sitemap.xml"},
@@ -8381,6 +9102,15 @@ func locsOf(s *S) []string {
 		locs = append(locs, u.Loc)
 	}
 	return locs
+}
+
+// errorsOf returns the texts of the errors s has recorded.
+func errorsOf(s *S) []string {
+	texts := []string{}
+	for _, err := range s.GetErrors() {
+		texts = append(texts, err.Error())
+	}
+	return texts
 }
 
 // limitErrors returns the errors among those of s that tell a limit of the

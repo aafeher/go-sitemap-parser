@@ -12,6 +12,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -269,8 +270,9 @@ type (
 	// In the URLs that Parse and ParseContext collect, a field of this type is nil when the
 	// <changefreq> element is absent or empty. In tolerant mode one of the values above that is
 	// written in another letter case, such as "Daily", is replaced by the value itself, so that
-	// it equals its constant. Any other value is kept as the document gives it, and so is every
-	// value in strict mode.
+	// it equals its constant, and any other value is kept as the document gives it. Strict mode
+	// skips and reports an entry whose value is not one of the values above as they are written
+	// here, so a field that is set equals one of the constants there.
 	URLChangeFreq string
 )
 
@@ -591,9 +593,12 @@ func (s *S) SetHTTPClient(client *http.Client) *S {
 
 // SetStrict enables or disables strict mode for URL validation.
 // In strict mode, all URLs in sitemap <loc> elements must be absolute HTTP(S) URLs
-// on the same host and protocol as the sitemap file, and must not exceed 2048 characters,
-// as required by the sitemaps.org specification.
-// In tolerant mode (default), relative URLs are resolved against the parent sitemap URL.
+// on the same host and protocol as the sitemap file, must hold neither a space nor a control
+// character and must not exceed 2048 characters, as required by the sitemaps.org specification.
+// The host is compared without regard to letter case, and the default port of the protocol is
+// the same as no port.
+// In tolerant mode (default), relative URLs are resolved against the parent sitemap URL, and
+// a space in a URL is percent-encoded.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetStrict(strict bool) *S {
 	s.mu.Lock()
@@ -1631,7 +1636,7 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 	}
 	u.Loc = resolvedLoc
 	// Tolerant mode puts up with a change frequency that is written in another letter case.
-	// Strict mode leaves the value as the document gives it.
+	// Strict mode does not, see validateChangeFreq.
 	if !s.cfg.strict && u.ChangeFreq != nil {
 		*u.ChangeFreq = canonicalChangeFreq(*u.ChangeFreq)
 	}
@@ -1644,8 +1649,17 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 	if s.cfg.strict && entry.invalidOwn {
 		return
 	}
-	if err := s.validatePriority(u.Loc, u.Priority); err != nil {
-		s.errs = append(s.errs, err)
+	// Strict mode skips an entry with a value of its own that the protocol does not allow
+	// either. Each such value is reported.
+	changeFreqErr := s.validateChangeFreq(u.Loc, u.ChangeFreq)
+	if changeFreqErr != nil {
+		s.errs = append(s.errs, changeFreqErr)
+	}
+	priorityErr := s.validatePriority(u.Loc, u.Priority)
+	if priorityErr != nil {
+		s.errs = append(s.errs, priorityErr)
+	}
+	if changeFreqErr != nil || priorityErr != nil {
 		return
 	}
 	validImages, imageErrs := s.validateAndFilterImages(u.Images)
@@ -2089,6 +2103,21 @@ const robotsTXTDepth = -1
 // the formats that are read line by line take it off the first line.
 const utf8BOM = "\ufeff"
 
+// validateChangeFreq validates the <changefreq> value of a URL entry.
+// In strict mode, the value must be one of the values of the sitemaps.org protocol, written
+// the way the protocol writes them: "daily", not "Daily".
+// In tolerant mode, any value is accepted and nil is returned.
+// loc is the page URL used as context in the returned *ValidationError.
+func (s *S) validateChangeFreq(loc string, changeFreq *URLChangeFreq) error {
+	if !s.cfg.strict || changeFreq == nil {
+		return nil
+	}
+	if !slices.Contains(changeFreqs[:], *changeFreq) {
+		return &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: invalid <changefreq> value %q", string(*changeFreq))}
+	}
+	return nil
+}
+
 // validatePriority validates the <priority> value of a URL entry.
 // In strict mode, the value must be between 0.0 and 1.0 inclusive per the sitemaps.org specification.
 // In tolerant mode, any value is accepted and nil is returned.
@@ -2108,7 +2137,8 @@ func (s *S) validatePriority(loc string, priority *float32) error {
 //
 // In tolerant mode, images with an empty Loc are silently dropped. In strict mode,
 // an empty Loc is an error. In both modes, a Loc exceeding maxLocLength characters
-// is rejected. In strict mode, Loc must additionally be an absolute HTTP or HTTPS URL.
+// is rejected. In strict mode, Loc must additionally be an absolute HTTP or HTTPS URL,
+// see validateAbsoluteURL.
 //
 // Note: image Loc values are not required to share the host of the parent page URL —
 // CDN-hosted images are explicitly permitted by the Google Image Sitemap specification.
@@ -2130,13 +2160,8 @@ func (s *S) validateAndFilterImages(images []Image) ([]Image, []error) {
 			continue
 		}
 		if s.cfg.strict {
-			parsed, err := neturl.Parse(img.Loc)
-			if err != nil {
-				errs = append(errs, &ValidationError{URL: img.Loc, Err: err})
-				continue
-			}
-			if parsed.Scheme != "http" && parsed.Scheme != "https" {
-				errs = append(errs, &ValidationError{URL: img.Loc, Err: fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)})
+			if err := validateAbsoluteURL(img.Loc); err != nil {
+				errs = append(errs, err)
 				continue
 			}
 		}
@@ -2193,7 +2218,7 @@ func (s *S) validateNews(loc string, news *News, dateText *string) (*News, []err
 // ThumbnailLoc is treated as the primary key: videos with an empty ThumbnailLoc
 // are silently dropped in tolerant mode or produce an error in strict mode.
 // In both modes, a ThumbnailLoc exceeding maxLocLength is rejected. In strict mode,
-// ThumbnailLoc must additionally be a parseable absolute HTTP(S) URL.
+// ThumbnailLoc must additionally be an absolute HTTP or HTTPS URL, see validateAbsoluteURL.
 //
 // For videos that pass the ThumbnailLoc check, strict mode also validates the
 // remaining required fields (Title, Description, at least one of ContentLoc or
@@ -2217,9 +2242,8 @@ func (s *S) validateAndFilterVideos(videos []Video) ([]Video, []error) {
 			continue
 		}
 		if s.cfg.strict {
-			ok, thumbErrs := s.validateVideoThumbnailStrict(v.ThumbnailLoc)
-			errs = append(errs, thumbErrs...)
-			if !ok {
+			if err := validateAbsoluteURL(v.ThumbnailLoc); err != nil {
+				errs = append(errs, err)
 				continue
 			}
 			errs = append(errs, s.validateVideoFieldsStrict(v)...)
@@ -2227,19 +2251,6 @@ func (s *S) validateAndFilterVideos(videos []Video) ([]Video, []error) {
 		valid = append(valid, v)
 	}
 	return valid, errs
-}
-
-// validateVideoThumbnailStrict validates the ThumbnailLoc URL scheme in strict mode.
-// Returns false if the video should be skipped entirely.
-func (s *S) validateVideoThumbnailStrict(thumbnailLoc string) (bool, []error) {
-	parsed, err := neturl.Parse(thumbnailLoc)
-	if err != nil {
-		return false, []error{&ValidationError{URL: thumbnailLoc, Err: err}}
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return false, []error{&ValidationError{URL: thumbnailLoc, Err: fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)}}
-	}
-	return true, nil
 }
 
 // validateVideoFieldsStrict checks non-fatal strict-mode constraints on a video entry.
@@ -2272,7 +2283,7 @@ func (s *S) validateVideoFieldsStrict(v Video) []error {
 // In tolerant mode, links with an empty Href are silently dropped. In strict mode,
 // an empty Href is an error. In both modes, an Href exceeding maxLocLength characters
 // is rejected. In strict mode, Href must additionally be an absolute HTTP or HTTPS URL,
-// and Hreflang must not be empty.
+// see validateAbsoluteURL, and Hreflang must not be empty.
 func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, []error) {
 	if len(links) == 0 {
 		return links, nil
@@ -2299,13 +2310,8 @@ func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, 
 				errs = append(errs, &ValidationError{URL: link.Href, Err: errors.New("strict mode: alternate link <hreflang> is empty")})
 				continue
 			}
-			parsed, err := neturl.Parse(link.Href)
-			if err != nil {
-				errs = append(errs, &ValidationError{URL: link.Href, Err: err})
-				continue
-			}
-			if parsed.Scheme != "http" && parsed.Scheme != "https" {
-				errs = append(errs, &ValidationError{URL: link.Href, Err: fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)})
+			if err := validateAbsoluteURL(link.Href); err != nil {
+				errs = append(errs, err)
 				continue
 			}
 		}
@@ -2319,9 +2325,11 @@ func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, 
 // URL, and resolved as one it would name the sitemap itself. The error names that sitemap,
 // there being no location to name.
 // In both modes, URLs must not exceed 2048 characters (sitemaps.org specification).
-// In tolerant mode (strict=false), relative URLs are resolved against baseURL before the length check.
-// In strict mode (strict=true), URLs must additionally be absolute HTTP(S), on the same host
-// and protocol as baseURL.
+// In tolerant mode (strict=false), relative URLs are resolved against baseURL and a space in
+// the URL is percent-encoded before the length check.
+// In strict mode (strict=true), URLs must additionally be absolute HTTP(S) URLs without a
+// space or a control character in them, see strictURLError, on the same host and protocol as
+// baseURL, see sameHost.
 // baseURL is the URL the sitemap was served from: the location of the sitemap, whichever URL
 // the request for it began at.
 // Returns the resolved URL string and an error if validation fails.
@@ -2330,10 +2338,10 @@ func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
 }
 
 // resolveAndValidate resolves and validates a URL found in the document served from baseURL.
-// It does what resolveAndValidateLoc is documented to do. sameHost tells whether the URL has to
-// be on the host and protocol of baseURL in strict mode: the URLs listed in a sitemap have to,
-// the sitemaps named in a robots.txt do not.
-func (s *S) resolveAndValidate(loc string, baseURL string, sameHost bool) (string, error) {
+// It does what resolveAndValidateLoc is documented to do. onBaseHost tells whether the URL has
+// to be on the host and protocol of baseURL in strict mode: the URLs listed in a sitemap have
+// to, the sitemaps named in a robots.txt do not.
+func (s *S) resolveAndValidate(loc string, baseURL string, onBaseHost bool) (string, error) {
 	if loc == "" {
 		return loc, &ValidationError{URL: baseURL, Err: errors.New("<loc> of an entry is empty or missing")}
 	}
@@ -2349,16 +2357,13 @@ func (s *S) resolveAndValidate(loc string, baseURL string, sameHost bool) (strin
 	}
 
 	if s.cfg.strict {
-		if parsed.Scheme != "http" && parsed.Scheme != "https" {
-			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)}
+		if err := strictURLError(loc, parsed); err != nil {
+			return loc, &ValidationError{URL: loc, Err: err}
 		}
-		if parsed.Host == "" {
-			return loc, &ValidationError{URL: loc, Err: errors.New("strict mode: missing host")}
-		}
-		if sameHost && parsed.Scheme != base.Scheme {
+		if onBaseHost && parsed.Scheme != base.Scheme {
 			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: scheme %q does not match sitemap scheme %q", parsed.Scheme, base.Scheme)}
 		}
-		if sameHost && parsed.Host != base.Host {
+		if onBaseHost && !sameHost(parsed, base) {
 			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: host %q does not match sitemap host %q", parsed.Host, base.Host)}
 		}
 		if len(loc) > maxLocLength {
@@ -2370,15 +2375,76 @@ func (s *S) resolveAndValidate(loc string, baseURL string, sameHost bool) (strin
 	// Tolerant mode: resolve relative URLs against the base
 	resolved := base.ResolveReference(parsed)
 	if resolved.Scheme != "http" && resolved.Scheme != "https" {
-		resolvedStr := resolved.String()
-		return loc, &ValidationError{URL: resolvedStr, Err: fmt.Errorf("unsupported scheme %q", resolved.Scheme)}
+		return loc, &ValidationError{URL: resolved.String(), Err: fmt.Errorf("unsupported scheme %q", resolved.Scheme)}
 	}
-	resolvedStr := resolved.String()
+	// A space is no part of a URL, and a request for a URL with one in it is malformed. Those
+	// of the path and the fragment are percent-encoded already; this takes care of the rest,
+	// the ones of the query.
+	resolvedStr := strings.ReplaceAll(resolved.String(), " ", "%20")
 	if len(resolvedStr) > maxLocLength {
 		return loc, &ValidationError{URL: resolvedStr, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(resolvedStr))}
 	}
 
 	return resolvedStr, nil
+}
+
+// strictURLError tells what keeps rawURL from being a URL strict mode accepts: an absolute
+// HTTP or HTTPS URL that names a host and has neither a space nor a control character in it.
+// A URL has to give these percent-encoded, a space as "%20". parsed is rawURL as neturl.Parse
+// reads it. It returns nil for a URL that is one.
+func strictURLError(rawURL string, parsed *neturl.URL) error {
+	switch {
+	case parsed.Scheme != "http" && parsed.Scheme != "https":
+		return fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)
+	case parsed.Host == "":
+		return errors.New("strict mode: missing host")
+	case strings.Contains(rawURL, " "):
+		return errors.New("strict mode: URL contains a space")
+	case strings.ContainsFunc(rawURL, isControl):
+		// neturl.Parse turns down a control character itself, except in the fragment.
+		return errors.New("strict mode: URL contains a control character")
+	}
+	return nil
+}
+
+// isControl tells whether r is an ASCII control character, which a tab and a line break are.
+func isControl(r rune) bool {
+	return r < ' ' || r == 0x7f
+}
+
+// validateAbsoluteURL validates a URL of an extension in strict mode: the location of an
+// image, the thumbnail of a video, the target of an alternate link. It has to be a URL
+// strictURLError has nothing against; unlike the location of the page, it may be on any host.
+// It returns a *ValidationError for rawURL, or nil.
+func validateAbsoluteURL(rawURL string) error {
+	parsed, err := neturl.Parse(rawURL)
+	if err == nil {
+		err = strictURLError(rawURL, parsed)
+	}
+	if err != nil {
+		return &ValidationError{URL: rawURL, Err: err}
+	}
+	return nil
+}
+
+// defaultPorts holds the port a protocol is served on when a URL names none.
+var defaultPorts = map[string]string{"http": "80", "https": "443"}
+
+// sameHost tells whether a and b, two URLs of the same protocol, are on the same host: whether
+// they name the same host and the same port. Host names are compared without regard to letter
+// case, and a URL without a port is on the default port of its protocol. So
+// "https://Example.com:443/" is on the host of "https://example.com/", while
+// "https://example.com:8443/" and "https://www.example.com/" are not.
+func sameHost(a, b *neturl.URL) bool {
+	return strings.EqualFold(a.Hostname(), b.Hostname()) && portOf(a) == portOf(b)
+}
+
+// portOf returns the port u is on: the one it names, or the default port of its protocol.
+func portOf(u *neturl.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	return defaultPorts[u.Scheme]
 }
 
 // unzip decompresses the given content using gzip compression.
