@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-10
+
 ### Added
 - `examples/follow`: runnable example of restricting the sitemaps that are fetched with `SetFollow()`, those a `robots.txt` names and those of a sitemap index
 - `examples/redirect`: runnable example of parsing a sitemap that is reached through a redirect, in tolerant and in strict mode. `README.md` gained a matching `Redirects` section
@@ -38,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **In strict mode a `<changefreq>` has to be one of the values of the protocol, written as the protocol writes them** (`always`, `hourly`, `daily`, `weekly`, `monthly`, `yearly`, `never`). Strict mode did not look at the value at all: `Daily` and `sometimes` were accepted and returned as written. An entry with such a value is now skipped and reported, as one with a priority out of range is: `validate "https://example.com/page": strict mode: invalid <changefreq> value "Daily"`. When the change frequency and the priority of an entry are both not allowed, both are reported. Tolerant mode is not affected
 - **In strict mode a URL with a space in it is rejected**: `validate "https://example.com/a b": strict mode: URL contains a space`. A URL has to give a space as `%20`; strict mode used to accept the URL and return it with the space. The same goes for a control character, a tab or a line break for one, in the fragment of a URL (`strict mode: URL contains a control character`); anywhere else in the URL it was rejected already. This applies to every URL strict mode validates: the `<loc>` of a `<url>` and of a `<sitemap>` entry, the link of an RSS item and of an Atom entry, the line of a text sitemap, the value of a `Sitemap:` line of a `robots.txt`, and the URL of an image, of the thumbnail of a video and of an alternate link
 - In strict mode the URL of an image, of the thumbnail of a video and of an alternate link has to name a host, as a `<loc>` has to: `https:///image.jpg` is reported as `strict mode: missing host` and the image, video or link is left out. Only the protocol of these URLs was checked
+- `golang.org/x/net` updated from v0.59.0 to v0.60.0
+- CI: golangci-lint pinned to v2.14.0 instead of v2.13.2. The `stable` leg of the build matrix moved on to Go 1.27.2, with which v2.13.2 fails with `typecheck` errors (`export data version 5 is greater than maximum supported version 4`)
 
 ### Fixed
 - Multi-threaded parsing runs in parallel. A fetched sitemap used to be unzipped and decoded with the internal mutex held, so the sitemaps were fetched concurrently but parsed one after the other, and multi-threading gained nothing but the time spent waiting for the network: on 16 cores, an index of 16 sitemaps of 60,000 URLs each took 5.8 s with multi-threading on and 5.8 s with it off. Every sitemap is now unzipped and decoded without the mutex, which is taken only to add what the sitemap yielded to the results. The same index takes 1.6 s with multi-threading on; with it off the time is unchanged
@@ -286,7 +290,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each parsed `URL` exposes `Loc`, `LastMod`, `ChangeFreq`, and `Priority`
 - Method chaining (fluent interface) on all setters
 
-[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/aafeher/go-sitemap-parser/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.0...v1.0.1
