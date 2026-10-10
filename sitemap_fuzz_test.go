@@ -351,13 +351,24 @@ func FuzzUnzip(f *testing.F) {
 	f.Add([]byte("not gzip"))
 	f.Add([]byte("\x1f\x8b\x08"))            // gzip magic, truncated
 	f.Add([]byte("\x1f\x8b\x08\x00garbage")) // gzip magic, corrupt body
+	// Several members, with and without something after them, and a member cut short.
+	members := append(gzipByte("https://example.com/one\n"), gzipByte("https://example.com/two\n")...)
+	f.Add(members)
+	f.Add(append(members[:len(members):len(members)], '\n'))
+	f.Add(append(members[:len(members):len(members)], gzipByte("")...))
+	f.Add(members[:len(members)-5])
+	f.Add(append(members[:len(members):len(members)], "\x1f\x8b\x08"...))
 	addFileSeeds(f, "*.gz", func(f *testing.F, data []byte) { f.Add(data) })
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// Arbitrary input: unzip must fail cleanly rather than panic, and must
-		// never hand back more than the limit allows.
-		if out, err := unzip(string(data), fuzzUnzipLimit); err == nil && len(out) > fuzzUnzipLimit {
+		// Arbitrary input: unzip must fail cleanly rather than panic, must never
+		// hand back more than the limit allows, and no data together with an error.
+		out, err := unzip(string(data), fuzzUnzipLimit)
+		if err == nil && len(out) > fuzzUnzipLimit {
 			t.Fatalf("unzip returned %d bytes, limit is %d", len(out), fuzzUnzipLimit)
+		}
+		if err != nil && out != "" {
+			t.Fatalf("unzip returned %d bytes together with an error: %v", len(out), err)
 		}
 
 		// Round trip: whatever we compress must come back byte-for-byte.
@@ -370,7 +381,7 @@ func FuzzUnzip(f *testing.F) {
 			t.Fatalf("closing gzip writer: %v", err)
 		}
 
-		out, err := unzip(buf.String(), defaultMaxResponseSize)
+		out, err = unzip(buf.String(), defaultMaxResponseSize)
 		if err != nil {
 			t.Fatalf("unzip rejected data this package compressed: %v", err)
 		}
@@ -389,10 +400,28 @@ func FuzzUnzip(f *testing.F) {
 			t.Fatalf("unzip accepted a %d-byte payload over the %d-byte limit (returned %d bytes, err %v)", len(data), fuzzUnzipLimit, len(limited), err)
 		}
 
+		// Members: data compressed in two members, cut wherever its length puts
+		// the cut, must come back as one, whether or not a newline follows them.
+		cut := len(data) / 3
+		members := string(gzipByte(string(data[:cut]))) + string(gzipByte(string(data[cut:])))
+		for _, trailing := range []string{"", "\n"} {
+			out, err = unzip(members+trailing, defaultMaxResponseSize)
+			if err != nil {
+				t.Fatalf("unzip rejected two members this package compressed: %v", err)
+			}
+			if out != string(data) {
+				t.Fatalf("two members came back altered: got %d bytes, want %d", len(out), len(data))
+			}
+		}
+		// A member that is cut short must not pass for the end of the content.
+		if _, err = unzip(members[:len(members)-1], defaultMaxResponseSize); err == nil {
+			t.Fatal("unzip accepted content whose last member is cut short")
+		}
+
 		// checkAndUnzipContent must agree with unzip on well-formed input.
 		s := New()
-		if got := s.checkAndUnzipContent(fuzzBaseURL, buf.String()); got != string(data) {
-			t.Fatalf("checkAndUnzipContent returned %d bytes, want %d", len(got), len(data))
+		if got, ok := s.checkAndUnzipContent(fuzzBaseURL, buf.String()); !ok || got != string(data) {
+			t.Fatalf("checkAndUnzipContent returned %d bytes and %v, want %d", len(got), ok, len(data))
 		}
 	})
 }

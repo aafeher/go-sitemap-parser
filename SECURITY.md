@@ -64,7 +64,7 @@ The errors of a call are not limited. An entry that is not valid is recorded as 
 ### XML security
 
 Go's `encoding/xml` package does not expand XML external entities (XXE), so the parser is **not vulnerable to XXE attacks** by default.
-Gzip-compressed sitemaps are decompressed with a size limit enforced by `SetMaxResponseSize()`: decompression stops as soon as the output exceeds the limit and the content is rejected, which mitigates zip-bomb style attacks. Versions up to and including v1.1.0 did not enforce this limit on decompressed data.
+Gzip-compressed sitemaps are decompressed with a size limit enforced by `SetMaxResponseSize()`: decompression stops as soon as the output exceeds the limit and the content is rejected, which mitigates zip-bomb style attacks. The limit is on all the members of a gzip file together. Versions up to and including v1.1.0 did not enforce this limit on decompressed data.
 
 ### TLS verification
 

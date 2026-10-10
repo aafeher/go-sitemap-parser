@@ -4213,25 +4213,16 @@ func TestS_fetch_IOCopyError(t *testing.T) {
 }
 
 func TestS_checkAndUnzipContent(t *testing.T) {
-	// Preparing gzipped data
-	//gzipPrefix := []byte("\x1f\x8b\x08")
-	buffer := new(bytes.Buffer)
-	writer := gzip.NewWriter(buffer)
-	_, err := writer.Write([]byte("test content"))
-	if err != nil {
-		return
-	}
-	err = writer.Close()
-	if err != nil {
-		return
-	}
-
-	gzippedContent := buffer.String()
+	const url = "https://example.com/sitemap.xml.gz"
+	gzippedContent := string(gzipByte("test content"))
 
 	tests := []struct {
 		name    string
 		content string
 		want    string
+		// wantErr is what is recorded about gzip content that cannot be unzipped. Nothing is
+		// returned to be parsed then.
+		wantErr string
 	}{
 		{
 			name:    "Uncompressed data",
@@ -4239,14 +4230,39 @@ func TestS_checkAndUnzipContent(t *testing.T) {
 			want:    "plain content",
 		},
 		{
+			name:    "No data",
+			content: "",
+			want:    "",
+		},
+		{
 			name:    "Gzipped data",
 			content: gzippedContent,
 			want:    "test content",
 		},
 		{
+			name:    "Gzipped data of two members",
+			content: gzippedContent + string(gzipByte(", and more")),
+			want:    "test content, and more",
+		},
+		{
+			name:    "Gzipped data that is empty",
+			content: string(gzipByte("")),
+			want:    "",
+		},
+		{
 			name:    "Invalid data",
 			content: "\x1f\x8b\x08" + "invalid", // gzip prefix + invalid content
-			want:    "\x1f\x8b\x08" + "invalid",
+			wantErr: "gzip decompression failed: unexpected EOF",
+		},
+		{
+			name:    "Gzipped data that is cut short",
+			content: gzippedContent[:len(gzippedContent)-4],
+			wantErr: "gzip decompression failed: unexpected EOF",
+		},
+		{
+			name:    "Gzipped data whose second member is cut short",
+			content: gzippedContent + gzippedContent[:len(gzippedContent)-4],
+			wantErr: "gzip decompression failed: unexpected EOF",
 		},
 	}
 
@@ -4256,10 +4272,21 @@ func TestS_checkAndUnzipContent(t *testing.T) {
 				errs: []error{},
 			}
 
-			got := s.checkAndUnzipContent("", tt.content)
+			got, ok := s.checkAndUnzipContent(url, tt.content)
 
 			if got != tt.want {
 				t.Errorf("checkAndUnzipContent() got = %q, want %q", got, tt.want)
+			}
+			if tt.wantErr == "" {
+				mustEqual(t, "ok", ok, true)
+				mustEqual(t, "errors", len(s.errs), 0)
+				return
+			}
+			mustEqual(t, "ok", ok, false)
+			assertStringSlice(t, "errors", errorsOf(s), []string{fmt.Sprintf("parse %q: %s", url, tt.wantErr)})
+			var parseErr *ParseError
+			if len(s.errs) == 1 && !errors.As(s.errs[0], &parseErr) {
+				t.Errorf("expected a *ParseError, got %T", s.errs[0])
 			}
 		})
 	}
@@ -4286,24 +4313,34 @@ func TestS_checkAndUnzipContent_SizeLimit(t *testing.T) {
 
 	t.Run("within limit", func(t *testing.T) {
 		s := New().SetMaxResponseSize(64)
-		got := s.checkAndUnzipContent(url, gzipped)
+		got, ok := s.checkAndUnzipContent(url, gzipped)
+		mustEqual(t, "ok", ok, true)
 		mustEqual(t, "content", got, payload)
 		mustEqual(t, "errors", len(s.errs), 0)
 	})
 
 	t.Run("exceeds limit", func(t *testing.T) {
 		s := New().SetMaxResponseSize(63)
-		got := s.checkAndUnzipContent(url, gzipped)
-		if got != gzipped {
-			t.Errorf("expected the original content to be returned, got %d bytes", len(got))
-		}
+		got, ok := s.checkAndUnzipContent(url, gzipped)
+		mustEqual(t, "ok", ok, false)
+		mustEqual(t, "content", got, "")
 		mustEqual(t, "errors", len(s.errs), 1)
 		requireSizeLimitError(t, s.errs, url, 63)
 	})
 
+	t.Run("members exceed the limit together", func(t *testing.T) {
+		s := New().SetMaxResponseSize(127)
+		got, ok := s.checkAndUnzipContent(url, gzipped+gzipped)
+		mustEqual(t, "ok", ok, false)
+		mustEqual(t, "content", got, "")
+		mustEqual(t, "errors", len(s.errs), 1)
+		requireSizeLimitError(t, s.errs, url, 127)
+	})
+
 	t.Run("zero-value S falls back to the default limit", func(t *testing.T) {
 		s := &S{}
-		got := s.checkAndUnzipContent(url, gzipped)
+		got, ok := s.checkAndUnzipContent(url, gzipped)
+		mustEqual(t, "ok", ok, true)
 		mustEqual(t, "content", got, payload)
 		mustEqual(t, "errors", len(s.errs), 0)
 	})
@@ -4353,6 +4390,123 @@ func TestS_Parse_GzipSizeLimit(t *testing.T) {
 		requireSizeLimitError(t, s.GetErrors(), suppliedURL, limit)
 		requireSizeLimitError(t, []error{err}, suppliedURL, limit)
 	})
+}
+
+// gzipMembersOf returns content as gzip content of several members: content is cut every
+// size bytes, and each piece is compressed on its own.
+func gzipMembersOf(content string, size int) string {
+	var members strings.Builder
+	for len(content) > size {
+		members.Write(gzipByte(content[:size]))
+		content = content[size:]
+	}
+	members.Write(gzipByte(content))
+	return members.String()
+}
+
+// TestS_Parse_GzipMembers verifies that a gzip document is read to the end of its last
+// member, whatever its format and wherever its members end: every URL it lists is collected.
+func TestS_Parse_GzipMembers(t *testing.T) {
+	pages := []string{"https://example.com/page-1", "https://example.com/page-2", "https://example.com/page-3"}
+
+	for path, document := range documentsListing(pages) {
+		// Two members, one for about every URL, and one for every few bytes.
+		for _, size := range []int{len(document)/2 + 1, len(document) / 3, 16} {
+			for _, strict := range []bool{false, true} {
+				for name, trailing := range map[string]string{"nothing": "", "a newline": "\n"} {
+					t.Run(fmt.Sprintf("%s, members of %d bytes, strict=%v, %s after them", path, size, strict, name), func(t *testing.T) {
+						content := gzipMembersOf(document, size) + trailing
+						if members := strings.Count(content, gzipPrefix); members < 2 {
+							t.Fatalf("fixture must hold several members, got %d", members)
+						}
+
+						s := New().SetStrict(strict)
+						requireParse(t, s, "https://example.com"+path+".gz", &content)
+
+						assertStringSlice(t, "URLs", locsOf(s), pages)
+						assertStringSlice(t, "errors", errorsOf(s), []string{})
+					})
+				}
+			}
+		}
+	}
+}
+
+// TestS_Parse_GzipMembers_Fetched verifies the same for documents that are fetched, a
+// sitemap index and the sitemaps it lists, and that a document with a member that cannot be
+// read is reported once and yields nothing: neither is it parsed for what its other members
+// hold, nor reported a second time for not being a sitemap.
+func TestS_Parse_GzipMembers_Fetched(t *testing.T) {
+	const firstPages = `<urlset><url><loc>https://example.com/page-1</loc></url><url><loc>https://example.com/page-2</loc></url></urlset>`
+	// A file that was appended to: a member for every line.
+	lines := []string{"https://example.com/page-3\n", "https://example.com/page-4\n", "https://example.com/page-5\n"}
+	var appended strings.Builder
+	for _, line := range lines {
+		appended.Write(gzipByte(line))
+	}
+	damaged := gzipMembersOf(firstPages, len(firstPages)/2)
+	damaged = damaged[:len(damaged)-1]
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		index := func(paths ...string) string {
+			var sitemaps strings.Builder
+			for _, path := range paths {
+				_, _ = fmt.Fprintf(&sitemaps, "<sitemap><loc>http://%s%s</loc></sitemap>", r.Host, path)
+			}
+			return "<sitemapindex>" + sitemaps.String() + "</sitemapindex>"
+		}
+
+		switch r.URL.Path {
+		case "/index.xml.gz":
+			_, _ = fmt.Fprint(w, gzipMembersOf(index("/pages.xml.gz", "/appended.txt.gz"), 40))
+		case "/index-damaged.xml.gz":
+			_, _ = fmt.Fprint(w, gzipMembersOf(index("/damaged.xml.gz", "/appended.txt.gz"), 40))
+		case "/pages.xml.gz":
+			_, _ = fmt.Fprint(w, gzipMembersOf(firstPages, len(firstPages)/2))
+		case "/appended.txt.gz":
+			_, _ = fmt.Fprint(w, appended.String())
+		case "/damaged.xml.gz":
+			_, _ = fmt.Fprint(w, damaged)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	wantDamaged := fmt.Sprintf("parse %q: gzip decompression failed: unexpected EOF", server.URL+"/damaged.xml.gz")
+	appendedPages := []string{"https://example.com/page-3", "https://example.com/page-4", "https://example.com/page-5"}
+
+	for _, multiThread := range []bool{false, true} {
+		t.Run(fmt.Sprintf("every member of every document is read, multiThread=%v", multiThread), func(t *testing.T) {
+			s := New().SetMultiThread(multiThread)
+			requireParse(t, s, server.URL+"/index.xml.gz", nil)
+
+			assertStringSlice(t, "URLs", sortedCopy(locsOf(s)), append([]string{"https://example.com/page-1", "https://example.com/page-2"}, appendedPages...))
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+
+		t.Run(fmt.Sprintf("a damaged member fails the document, multiThread=%v", multiThread), func(t *testing.T) {
+			s := New().SetMultiThread(multiThread)
+			_, err := s.Parse(server.URL+"/damaged.xml.gz", nil)
+
+			var parseErr *ParseError
+			if !errors.As(err, &parseErr) {
+				t.Fatalf("expected a *ParseError to be returned, got %T: %v", err, err)
+			}
+			mustEqual(t, "error", err.Error(), wantDamaged)
+			// The first member holds a page, and could be read.
+			assertStringSlice(t, "URLs", locsOf(s), []string{})
+			assertStringSlice(t, "errors", errorsOf(s), []string{wantDamaged})
+		})
+
+		t.Run(fmt.Sprintf("a damaged member of a listed sitemap is reported once, multiThread=%v", multiThread), func(t *testing.T) {
+			s := New().SetMultiThread(multiThread)
+			requireParse(t, s, server.URL+"/index-damaged.xml.gz", nil)
+
+			assertStringSlice(t, "URLs", locsOf(s), appendedPages)
+			assertStringSlice(t, "errors", errorsOf(s), []string{wantDamaged})
+		})
+	}
 }
 
 func TestS_parseAndFetchUrlsMultiThread(t *testing.T) {
@@ -7322,36 +7476,73 @@ func TestS_parseAtom(t *testing.T) {
 	})
 }
 
+// flipByte returns s with the byte that is back bytes before its end inverted.
+func flipByte(s string, back int) string {
+	b := []byte(s)
+	b[len(b)-back] ^= 0xff
+	return string(b)
+}
+
+// TestUnzip verifies that gzip content is decompressed, and that content which cannot be
+// decompressed to its end is rejected with an error that says so, and without any data.
 func TestUnzip(t *testing.T) {
+	valid := string(gzipByte("hello world"))
+
 	tests := []struct {
-		name     string
-		input    string
-		output   string
-		hasError bool
+		name    string
+		input   string
+		output  string
+		wantErr string
 	}{
 		{
-			name:     "Valid content",
-			input:    string(gzipByte("hello world")),
-			output:   "hello world",
-			hasError: false,
+			name:   "Valid content",
+			input:  valid,
+			output: "hello world",
 		},
 		{
-			name:     "Invalid gzip content",
-			input:    "\x1f\x8b\x08" + "invalid",
-			output:   "\x1f\x8b\x08" + "invalid",
-			hasError: true,
+			name:   "Valid content that is empty",
+			input:  string(gzipByte("")),
+			output: "",
 		},
 		{
-			name:     "Invalid content",
-			input:    "invalid",
-			output:   "invalid",
-			hasError: true,
+			name:    "Invalid gzip content",
+			input:   "\x1f\x8b\x08" + "invalid",
+			wantErr: "gzip decompression failed: unexpected EOF",
 		},
 		{
-			name:     "Empty content",
-			input:    "",
-			output:   "",
-			hasError: true,
+			name:    "Invalid content",
+			input:   "invalid content",
+			wantErr: "gzip decompression failed: gzip: invalid header",
+		},
+		{
+			name:    "Empty content",
+			input:   "",
+			wantErr: "gzip decompression failed: EOF",
+		},
+		{
+			name:    "Content cut short in its header",
+			input:   valid[:3],
+			wantErr: "gzip decompression failed: unexpected EOF",
+		},
+		{
+			name:    "Content cut short in its data",
+			input:   valid[:len(valid)-10],
+			wantErr: "gzip decompression failed: unexpected EOF",
+		},
+		{
+			name:    "Content cut short in its trailer",
+			input:   valid[:len(valid)-1],
+			wantErr: "gzip decompression failed: unexpected EOF",
+		},
+		{
+			name:    "Content with a wrong checksum",
+			input:   flipByte(valid, 8),
+			wantErr: "gzip decompression failed: gzip: invalid checksum",
+		},
+		{
+			name:    "Content with a wrong size",
+			input:   flipByte(valid, 1),
+			wantErr: "gzip decompression failed: gzip: invalid checksum",
 		},
 	}
 
@@ -7359,14 +7550,102 @@ func TestUnzip(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			uncompressed, err := unzip(test.input, defaultMaxResponseSize)
 
-			if (err != nil) != test.hasError {
-				t.Errorf("expected %v, got %v", test.hasError, err)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+			} else if err == nil || err.Error() != test.wantErr {
+				t.Errorf("expected error %q, got %v", test.wantErr, err)
 			}
 
 			if uncompressed != test.output {
 				t.Errorf("expected %q, got %q", test.output, uncompressed)
 			}
 
+		})
+	}
+}
+
+// TestUnzip_Members verifies that gzip content is read to the end of its last member: a gzip
+// file is a series of members, and its content is that of all of them. What follows the last
+// member and is no member is not read, and a member that is cut short or damaged fails the
+// content whichever member it is.
+func TestUnzip_Members(t *testing.T) {
+	const first, second, third = "first member,", "second member,", "third member"
+	a, b, c := string(gzipByte(first)), string(gzipByte(second)), string(gzipByte(third))
+	empty := string(gzipByte(""))
+
+	// Members that do not fit the buffer the content is read through, so that a member ends
+	// in the middle of a read as well as at the end of one.
+	large := make([]string, 3)
+	for i := range large {
+		var lines strings.Builder
+		for line := 0; lines.Len() < 100_000; line++ {
+			_, _ = fmt.Fprintf(&lines, "https://example.com/member-%d/page-%d\n", i, line)
+		}
+		large[i] = lines.String()
+	}
+
+	tests := []struct {
+		name    string
+		input   string
+		output  string
+		wantErr string
+	}{
+		{name: "one member", input: a, output: first},
+		{name: "two members", input: a + b, output: first + second},
+		{name: "three members", input: a + b + c, output: first + second + third},
+		{name: "the same member twice", input: a + a, output: first + first},
+		{name: "an empty member first", input: empty + b, output: second},
+		{name: "an empty member in between", input: a + empty + c, output: first + third},
+		{name: "an empty member last", input: a + empty, output: first},
+		{name: "empty members only", input: empty + empty + empty, output: ""},
+		{name: "members of one byte", input: string(gzipByte("a")) + string(gzipByte("b")) + string(gzipByte("c")), output: "abc"},
+		{
+			name:   "members larger than the read buffer",
+			input:  string(gzipByte(large[0])) + string(gzipByte(large[1])) + string(gzipByte(large[2])),
+			output: large[0] + large[1] + large[2],
+		},
+
+		// What follows the last member and is no member is left unread.
+		{name: "a newline after the member", input: a + "\n", output: first},
+		{name: "a newline after the members", input: a + b + "\n", output: first + second},
+		{name: "zero padding after the members", input: a + b + strings.Repeat("\x00", 512), output: first + second},
+		{name: "text after the members", input: a + b + "what a server may send after the content", output: first + second},
+		{name: "the gzip identification alone after the members", input: a + b + "\x1f\x8b", output: first + second},
+		{name: "another compression method after the members", input: a + b + "\x1f\x8b\x07" + b[3:], output: first + second},
+		// A member that does not follow a member directly is not read either.
+		{name: "a member after a newline", input: a + "\n" + b, output: first},
+		{name: "a member after zero padding", input: a + "\x00\x00\x00\x00" + b, output: first},
+
+		// A member that is cut short or damaged fails the content.
+		{name: "second member cut short in its header", input: a + b[:5], wantErr: "gzip decompression failed: unexpected EOF"},
+		{name: "second member cut short after its header", input: a + b[:10], wantErr: "gzip decompression failed: unexpected EOF"},
+		{name: "second member cut short in its data", input: a + b[:len(b)-10], wantErr: "gzip decompression failed: unexpected EOF"},
+		{name: "second member cut short in its trailer", input: a + b[:len(b)-1], wantErr: "gzip decompression failed: unexpected EOF"},
+		{name: "second member with a wrong checksum", input: a + flipByte(b, 8), wantErr: "gzip decompression failed: gzip: invalid checksum"},
+		{name: "second member with a wrong size", input: a + flipByte(b, 1), wantErr: "gzip decompression failed: gzip: invalid checksum"},
+		{name: "third member cut short", input: a + b + c[:len(c)-1], wantErr: "gzip decompression failed: unexpected EOF"},
+		{name: "first member with a wrong checksum", input: flipByte(a, 8) + b, wantErr: "gzip decompression failed: gzip: invalid checksum"},
+		{name: "what begins like a member and is none", input: a + "\x1f\x8b\x08 not gzip", wantErr: "gzip decompression failed: unexpected EOF"},
+		{name: "nothing but the beginning of a member", input: a + "\x1f\x8b\x08", wantErr: "gzip decompression failed: unexpected EOF"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			uncompressed, err := unzip(test.input, defaultMaxResponseSize)
+
+			if test.wantErr == "" {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+			} else if err == nil || err.Error() != test.wantErr {
+				t.Errorf("expected error %q, got %v", test.wantErr, err)
+			}
+
+			if uncompressed != test.output {
+				t.Errorf("expected %d bytes, got %d: %.80q", len(test.output), len(uncompressed), uncompressed)
+			}
 		})
 	}
 }
@@ -7411,6 +7690,51 @@ func TestUnzip_SizeLimit(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("the limit is on all members together", func(t *testing.T) {
+		// Two members of 1,024 bytes each.
+		members := gzipped + gzipped
+
+		for _, maxSize := range []int64{1, 1023, 1024, 1025, 2047} {
+			uncompressed, err := unzip(members, maxSize)
+			if err == nil {
+				t.Fatalf("limit %d: expected a size limit error, got nil", maxSize)
+			}
+			mustEqual(t, "error", err.Error(), fmt.Sprintf("decompressed size exceeds limit of %d bytes", maxSize))
+			mustEqual(t, "content", uncompressed, "")
+		}
+		for _, maxSize := range []int64{2048, 2049, math.MaxInt64} {
+			uncompressed, err := unzip(members, maxSize)
+			if err != nil {
+				t.Fatalf("limit %d: expected no error, got %v", maxSize, err)
+			}
+			mustEqual(t, "content", uncompressed, payload+payload)
+		}
+	})
+
+	t.Run("no more is decompressed than one byte past the limit, however many members there are", func(t *testing.T) {
+		// A decompression bomb of 64 members: 1 MB each, a kilobyte compressed. The limit is
+		// reached in the second.
+		const members, memberSize = 64, 1024 * 1024
+		const limit = memberSize + 1024
+		bomb := strings.Repeat(string(gzipByte(strings.Repeat("A", memberSize))), members)
+
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		uncompressed, err := unzip(bomb, limit)
+		runtime.ReadMemStats(&after)
+
+		if err == nil {
+			t.Fatal("expected a size limit error, got nil")
+		}
+		mustEqual(t, "error", err.Error(), fmt.Sprintf("decompressed size exceeds limit of %d bytes", limit))
+		mustEqual(t, "content", uncompressed, "")
+		// What is read takes up the limit, and a few times as much while the string it is
+		// read into grows. All the members would take up 64 MB.
+		if allocated := after.TotalAlloc - before.TotalAlloc; allocated > members*memberSize/4 {
+			t.Errorf("%d bytes were allocated to decompress up to a limit of %d bytes", allocated, limit)
+		}
+	})
 
 	t.Run("no more is decompressed than one byte past the limit", func(t *testing.T) {
 		const limit = 1024
@@ -8371,10 +8695,7 @@ func TestS_Parse_Redirect(t *testing.T) {
 	movedHost, targetHost := strings.TrimPrefix(movedURL, "http://"), strings.TrimPrefix(targetURL, "http://")
 
 	noLoc := fmt.Sprintf(`validate "%s/no-loc.xml": <loc> of an entry is empty or missing`, targetURL)
-	corrupt := []string{
-		fmt.Sprintf(`parse "%s/corrupt.xml.gz": gzip decompression failed: unexpected EOF`, targetURL),
-		fmt.Sprintf(`parse "%s/corrupt.xml.gz": unrecognized sitemap format (root element: "")`, targetURL),
-	}
+	corrupt := fmt.Sprintf(`parse "%s/corrupt.xml.gz": gzip decompression failed: unexpected EOF`, targetURL)
 	otherHost := fmt.Sprintf(`validate "%s/page-2": strict mode: host %q does not match sitemap host %q`, movedURL, movedHost, targetHost)
 	relativeSitemap := `validate "/relative.xml": strict mode: unsupported scheme ""`
 
@@ -8441,13 +8762,13 @@ func TestS_Parse_Redirect(t *testing.T) {
 		{
 			name:     "error about the gzip content of a redirected sitemap",
 			url:      movedURL + "/corrupt.xml.gz",
-			wantErrs: corrupt,
-			wantErr:  corrupt[0],
+			wantErrs: []string{corrupt},
+			wantErr:  corrupt,
 		},
 		{
 			name:     "errors about the redirected sitemaps of a robots.txt",
 			url:      targetURL + "/faulty/robots.txt",
-			wantErrs: append([]string{noLoc}, corrupt...),
+			wantErrs: []string{noLoc, corrupt},
 		},
 	}
 
@@ -9211,8 +9532,8 @@ func TestS_ParseContext_CutShort_Redirect(t *testing.T) {
 
 // unparsableDocuments are documents that cannot be parsed, by the path they
 // are served at, and unparsableErrors the error each of them is reported with.
-// The gzip content that cannot be unzipped is not recognised as a sitemap
-// either, which is reported second.
+// Each one is reported once: gzip content that cannot be unzipped is not
+// parsed, so it is not reported for its format in addition.
 var (
 	unparsableDocuments = map[string]string{
 		"/page.html":            `<html><body>Not a sitemap</body></html>`,
@@ -9231,7 +9552,7 @@ var (
 		"/truncated-index.xml":  {`XML syntax error on line 1: unexpected EOF`},
 		"/truncated-rss.xml":    {`XML syntax error on line 1: unexpected EOF`},
 		"/truncated-atom.xml":   {`XML syntax error on line 1: unexpected EOF`},
-		"/corrupt.xml.gz":       {`gzip decompression failed: unexpected EOF`, `unrecognized sitemap format (root element: "")`},
+		"/corrupt.xml.gz":       {`gzip decompression failed: unexpected EOF`},
 		"/text-without-url.txt": {`unrecognized sitemap format (root element: "")`},
 	}
 )
