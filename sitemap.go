@@ -912,6 +912,8 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	return s, nil
 }
 
+// GetErrorsCount returns the number of errors GetErrors returns.
+// It returns 0 for a nil *S.
 func (s *S) GetErrorsCount() int64 {
 	if s == nil {
 		return 0
@@ -921,6 +923,25 @@ func (s *S) GetErrorsCount() int64 {
 	return int64(len(s.errs))
 }
 
+// GetErrors returns the errors of the most recent Parse or ParseContext call, together with
+// the configuration errors that are outstanding: those recorded by a Set method that was
+// called with a value it does not accept, and not again with a valid one since.
+// The errors of a call are discarded when the next call starts; configuration errors are kept
+// until the setting is corrected.
+//
+// Each error is a *ConfigError, a *NetworkError, a *ParseError or a *ValidationError, to be
+// told apart with errors.As. They are in the order they were recorded in. With multi-threading
+// on, see SetMultiThread, that order is not the same from one call to the next for the errors
+// of different sitemaps.
+//
+// The error Parse or ParseContext returned is among them, unless it tells that configuration
+// errors are outstanding: then the configuration errors are. A call that returns a nil error
+// may have recorded errors as well, about sitemaps and entries it had to skip and about limits
+// it reached.
+//
+// While a call is running, GetErrors returns the errors recorded so far; those recorded
+// afterwards are not added to the slice it returned.
+// The slice that is returned must not be modified. It is nil for a nil *S.
 func (s *S) GetErrors() []error {
 	if s == nil {
 		return nil

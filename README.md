@@ -753,6 +753,8 @@ All types implement `Unwrap()`, enabling `errors.Is` traversal to the root cause
 
 The error that `Parse()` / `ParseContext()` return is one of these as well, see [Parse](#parse).
 
+The slice returned is the one the instance keeps, so it must not be modified. It does not change afterwards: errors recorded later are in what a later `GetErrors()` call returns.
+
 ```go
 for _, err := range s.GetErrors() {
     var netErr *sitemap.NetworkError
@@ -772,7 +774,7 @@ See [`examples/errors`](examples/errors/main.go) for a runnable example.
 
 #### GetErrorsCount
 
-Returns the number of errors encountered during parsing.
+Returns the number of errors `GetErrors()` returns.
 
 ```go
 errCount := s.GetErrorsCount()

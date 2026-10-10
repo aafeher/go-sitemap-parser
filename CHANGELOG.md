@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Package documentation: an overview of what the package does, the formats it reads, how it is configured, how errors are reported and what is safe to do concurrently. `go doc` and pkg.go.dev had nothing to show for the package itself.
+- Documentation for `GetErrors()` and `GetErrorsCount()`, the two exported methods that had none: which errors are returned and for how long they are kept, their types and order, how they relate to the error `Parse()` / `ParseContext()` return, and that the slice returned must not be modified. The `Error()` methods of the four error types are documented with the message they return.
+
 ### Fixed
 - Tolerant mode no longer returns a URL that is none. `net/url` checks the host of a URL only when the URL names its scheme, so a relative location that begins with `//` and gives something else than a host after it, such as `//::` or `//example.com:80:80/page`, was read without complaint and resolved to `https://::` or `https://example.com:80:80/page`, which `net/url` itself cannot parse. In a `<urlset>`, an RSS or an Atom feed such a location was returned by `GetURLs()`; in a sitemap index or a `robots.txt` it was reported as the `*NetworkError` of a request that could not be built. It is now skipped and reported as a `*ValidationError` that wraps the error of `net/url`: `validate "//::": parse "https://::": invalid port "::" after host`
 - A location has to name a host in tolerant mode as well. `https:///page`, `https:page`, `https:` and `https://:8080/page`, which names a port but no host, passed for HTTP(S) URLs. A `<urlset>`, an RSS or an Atom feed returned them by `GetURLs()`, and so did a text sitemap, which takes a line that begins with `https://` for an entry. For a sitemap index or a `robots.txt` a request was attempted, see `Security` below for the one that names a port; the others were reported as the `*NetworkError` of the request (`http: no Host in request URL`). They are now skipped and reported as a `*ValidationError` (`validate "https:///page": missing host`) without a request

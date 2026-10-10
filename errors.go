@@ -18,6 +18,8 @@ type ConfigError struct {
 	Err error
 }
 
+// Error returns the message of the error, which names the configuration field and tells what
+// is wrong with the value it was given: `config "maxDepth": must be greater than 0, got 0`.
 func (e *ConfigError) Error() string {
 	return fmt.Sprintf("config %q: %s", e.Field, e.Err)
 }
@@ -43,6 +45,8 @@ type NetworkError struct {
 	Err error
 }
 
+// Error returns the message of the error, which names the URL and tells why it could not be
+// fetched: `fetch "https://example.com/sitemap.xml": received HTTP status 404`.
 func (e *NetworkError) Error() string {
 	return fmt.Sprintf("fetch %q: %s", e.URL, e.Err)
 }
@@ -79,6 +83,8 @@ type ParseError struct {
 	Err error
 }
 
+// Error returns the message of the error, which names the URL and tells why the parse failed
+// or was not carried through: `parse "https://example.com/sitemap.xml": sitemap content is empty`.
 func (e *ParseError) Error() string {
 	return fmt.Sprintf("parse %q: %s", e.URL, e.Err)
 }
@@ -108,6 +114,8 @@ type ValidationError struct {
 	Err error
 }
 
+// Error returns the message of the error, which names the URL and tells what is not valid:
+// `validate "ftp://example.com/page": unsupported scheme "ftp"`.
 func (e *ValidationError) Error() string {
 	return fmt.Sprintf("validate %q: %s", e.URL, e.Err)
 }
