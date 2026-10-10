@@ -23,7 +23,7 @@ func main() {
 	for i, u := range urls {
 		fmt.Printf("%d. url -> Loc: %s", i, u.Loc)
 		if u.ChangeFreq != nil {
-			fmt.Printf(", ChangeFreq: %v", u.ChangeFreq)
+			fmt.Printf(", ChangeFreq: %s", *u.ChangeFreq)
 		}
 		if u.Priority != nil {
 			fmt.Printf(", Priority: %.1f", *u.Priority)

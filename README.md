@@ -38,6 +38,11 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 
 XML documents do not have to be UTF-8 encoded, and a document may begin with a UTF-8 byte order mark, see [Character encoding](#character-encoding).
 
+Only the location of a page is taken from a feed or a text sitemap, so `LastMod`, `ChangeFreq` and `Priority` are `nil` for their URLs:
+- RSS: the `<link>` of every `<item>`, see [`examples/rss`](examples/rss/main.go)
+- Atom: for every `<entry>`, the first `<link>` with `rel="alternate"` or without a `rel` attribute, see [`examples/atom`](examples/atom/main.go)
+- Plain text: every line that begins with `http://` or `https://`; empty lines, lines that begin with `#` and every other line are skipped, see [`examples/text`](examples/text/main.go)
+
 ## Requirements
 
 Go 1.26 or later.
