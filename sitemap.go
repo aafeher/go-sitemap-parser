@@ -395,6 +395,8 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 // The default is 50 MB, matching the sitemaps.org protocol limit.
 // The value must be greater than 0; invalid values are ignored and a *ConfigError is recorded.
 // A later call with a valid value clears it.
+// Every value greater than 0 is a limit, math.MaxInt64 included: nothing can exceed that one,
+// so it is the way to have no limit in effect.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
 	s.mu.Lock()
@@ -1138,7 +1140,7 @@ func (s *S) fetch(ctx context.Context, url string) (string, string, error) {
 		return "", "", &NetworkError{URL: url, Err: fmt.Errorf("received HTTP status %d", response.StatusCode)}
 	}
 
-	body, err := readString(io.LimitReader(response.Body, maxResponseSize+1))
+	body, err := readAtMost(response.Body, maxResponseSize)
 	if err != nil {
 		return "", "", &NetworkError{URL: url, Err: err}
 	}
@@ -1171,6 +1173,18 @@ func readString(r io.Reader) (string, error) {
 	var content strings.Builder
 	_, err := io.CopyBuffer(&content, r, *buffer)
 	return content.String(), err
+}
+
+// readAtMost reads r like readString, but no further than one byte past limit. The one byte
+// tells content that exceeds the limit from content that fits it exactly: what is returned is
+// longer than limit then, while never more than limit+1 bytes are held in memory.
+// A limit of math.MaxInt64 has no byte past it, and nothing can exceed it: limit+1 would
+// overflow to a negative number, and a reader limited to that reads nothing at all.
+func readAtMost(r io.Reader, limit int64) (string, error) {
+	if limit < math.MaxInt64 {
+		limit++
+	}
+	return readString(io.LimitReader(r, limit))
 }
 
 // finalURL returns the URL the response to req was served from: url, the URL req was made for,
@@ -2499,14 +2513,7 @@ func unzip(content string, maxSize int64) (string, error) {
 		_ = reader.Close()
 	}(reader)
 
-	// Read one byte past the limit so that a payload exceeding it can be told apart from one
-	// that fits exactly, while never buffering more than maxSize+1 bytes.
-	readLimit := maxSize
-	if readLimit < math.MaxInt64 {
-		readLimit++
-	}
-
-	uncompressed, err := readString(io.LimitReader(reader, readLimit))
+	uncompressed, err := readAtMost(reader, maxSize)
 	if err != nil {
 		return uncompressed, fmt.Errorf("gzip decompression failed: %w", err)
 	}

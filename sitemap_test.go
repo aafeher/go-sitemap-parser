@@ -4073,31 +4073,106 @@ func TestS_fetch(t *testing.T) {
 	}
 }
 
+// TestS_fetch_ResponseSizeLimit verifies that a response is read up to the
+// limit set with SetMaxResponseSize and rejected beyond it, and that the largest
+// limit there is does not overflow: one byte past it there is no number, and a
+// read limited to a negative number of bytes reads nothing.
 func TestS_fetch_ResponseSizeLimit(t *testing.T) {
+	const size = 1024
+	body := strings.Repeat("A", size)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(bytes.Repeat([]byte("A"), 1024))
+		_, _ = fmt.Fprint(w, body)
 	}))
 	defer server.Close()
 
-	t.Run("within limit", func(t *testing.T) {
-		s := New().SetMaxResponseSize(2048)
-		_, _, err := s.fetch(context.Background(), server.URL)
-		if err != nil {
-			t.Errorf("expected no error, got %v", err)
-		}
-	})
+	tests := []struct {
+		name    string
+		limit   int64
+		wantErr bool
+	}{
+		{"limit above the response size", 2 * size, false},
+		{"limit equal to the response size", size, false},
+		{"limit one byte below the response size", size - 1, true},
+		{"limit far below the response size", 1, true},
+		{"limit one below the maximum", math.MaxInt64 - 1, false},
+		{"maximum limit does not overflow", math.MaxInt64, false},
+	}
 
-	t.Run("exceeds limit", func(t *testing.T) {
-		s := New().SetMaxResponseSize(512)
-		_, _, err := s.fetch(context.Background(), server.URL)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New().SetMaxResponseSize(tt.limit)
+			mustEqual(t, "errors", len(s.errs), 0)
+
+			content, _, err := s.fetch(context.Background(), server.URL)
+
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				if content != body {
+					t.Errorf("expected the %d bytes of the response, got %d bytes", size, len(content))
+				}
+				return
+			}
+			var netErr *NetworkError
+			if !errors.As(err, &netErr) {
+				t.Fatalf("expected *NetworkError, got %T: %v", err, err)
+			}
+			mustEqual(t, "error", err.Error(), fmt.Sprintf("fetch %q: response size exceeds limit of %d bytes", server.URL, tt.limit))
+			mustEqual(t, "content", content, "")
+		})
+	}
+
+	t.Run("response is read no further than one byte past the limit", func(t *testing.T) {
+		const url = "https://example.com/sitemap.xml"
+		const limit = 100 * 1024
+		// The response does not end where the limit is, nor anywhere near it.
+		source := &endless{}
+		client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(source), Request: req}, nil
+		})}
+		s := New().SetMaxResponseSize(limit).SetHTTPClient(client)
+
+		_, _, err := s.fetch(context.Background(), url)
+
 		if err == nil {
-			t.Error("expected error for oversized response, got nil")
+			t.Fatal("expected a size limit error, got nil")
 		}
-		if err != nil && !strings.Contains(err.Error(), "response size exceeds limit") {
-			t.Errorf("expected size limit error, got: %v", err)
-		}
+		mustEqual(t, "error", err.Error(), fmt.Sprintf("fetch %q: response size exceeds limit of %d bytes", url, limit))
+		mustEqual(t, "bytes read", source.read, int64(limit+1))
 	})
+}
+
+// TestS_Parse_MaxResponseSize_Maximum verifies that the largest limit that can
+// be set with SetMaxResponseSize lifts the limit rather than turning every
+// response into an empty one: the documents of a call are read in full,
+// compressed ones included.
+func TestS_Parse_MaxResponseSize_Maximum(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sitemap-index.xml":
+			_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>http://%[1]s/sitemap-1.xml</loc></sitemap><sitemap><loc>http://%[1]s/sitemap-2.xml.gz</loc></sitemap></sitemapindex>`, r.Host)
+		case "/sitemap-1.xml":
+			_, _ = fmt.Fprint(w, `<urlset><url><loc>https://example.com/page-1</loc></url></urlset>`)
+		case "/sitemap-2.xml.gz":
+			_, _ = w.Write(gzipByte(`<urlset><url><loc>https://example.com/page-2</loc></url></urlset>`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	for _, limit := range []int64{math.MaxInt64 - 1, math.MaxInt64} {
+		t.Run(fmt.Sprintf("limit of %d bytes", limit), func(t *testing.T) {
+			s := New().SetMultiThread(false).SetMaxResponseSize(limit)
+			mustEqual(t, "GetMaxResponseSize", s.GetMaxResponseSize(), limit)
+			requireParse(t, s, server.URL+"/sitemap-index.xml", nil)
+
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+			assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page-1", "https://example.com/page-2"})
+		})
+	}
 }
 
 func TestS_fetch_NewRequestError(t *testing.T) {
@@ -7336,6 +7411,28 @@ func TestUnzip_SizeLimit(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("no more is decompressed than one byte past the limit", func(t *testing.T) {
+		const limit = 1024
+		// A decompression bomb: 4 MB that compress to a few kilobytes.
+		const size = 4 * 1024 * 1024
+		bomb := string(gzipByte(strings.Repeat("A", size)))
+
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		uncompressed, err := unzip(bomb, limit)
+		runtime.ReadMemStats(&after)
+
+		if err == nil {
+			t.Fatal("expected a size limit error, got nil")
+		}
+		mustEqual(t, "error", err.Error(), fmt.Sprintf("decompressed size exceeds limit of %d bytes", limit))
+		mustEqual(t, "content", uncompressed, "")
+		// What is read takes up a kilobyte, the reader and its buffers some tens of them.
+		if allocated := after.TotalAlloc - before.TotalAlloc; allocated > size/8 {
+			t.Errorf("%d bytes were allocated to decompress up to a limit of %d bytes", allocated, limit)
+		}
+	})
 }
 
 func TestReadString(t *testing.T) {
@@ -7383,6 +7480,85 @@ func TestReadString(t *testing.T) {
 		if perRead := (after.TotalAlloc - before.TotalAlloc) / reads; perRead > 16*1024 {
 			t.Errorf("%d bytes are allocated for a read of 5 bytes", perRead)
 		}
+	})
+}
+
+// endless is a source that does not come to an end: it holds more than a read
+// with a limit may take from it. It counts the bytes that were read from it,
+// and fails the read that goes beyond endlessSize, so that a read without a
+// limit fails instead of taking up all the memory there is.
+type endless struct {
+	read int64
+}
+
+// endlessSize is far beyond every limit the tests set for a read from endless.
+const endlessSize = 16 * 1024 * 1024
+
+func (e *endless) Read(p []byte) (int, error) {
+	if e.read >= endlessSize {
+		return 0, errors.New("read far past the limit")
+	}
+	clear(p)
+	e.read += int64(len(p))
+	return len(p), nil
+}
+
+// TestReadAtMost verifies that a read goes one byte past its limit and no
+// further: the byte that tells content which exceeds the limit from content
+// that fits it exactly. The largest limit there is has no byte past it, and
+// reads everything.
+func TestReadAtMost(t *testing.T) {
+	const content = "0123456789"
+
+	tests := []struct {
+		name  string
+		limit int64
+		want  string
+	}{
+		{"limit above the size", 11, content},
+		{"limit equal to the size", 10, content},
+		{"limit one byte below the size", 9, content},
+		{"limit below the size", 4, "01234"},
+		{"limit of zero", 0, "0"},
+		{"limit one below the maximum", math.MaxInt64 - 1, content},
+		{"maximum limit", math.MaxInt64, content},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readAtMost(strings.NewReader(content), tt.limit)
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			mustEqual(t, "content", got, tt.want)
+		})
+	}
+
+	t.Run("no more is read than one byte past the limit", func(t *testing.T) {
+		// Limits around the size of the buffer the content is read through.
+		for _, limit := range []int64{0, 1, 32*1024 - 1, 32 * 1024, 32*1024 + 1, 200 * 1024} {
+			source := &endless{}
+
+			got, err := readAtMost(source, limit)
+
+			if err != nil {
+				t.Fatalf("limit of %d bytes: unexpected error: %v", limit, err)
+			}
+			mustEqual(t, "bytes returned", int64(len(got)), limit+1)
+			mustEqual(t, "bytes read", source.read, limit+1)
+		}
+	})
+
+	t.Run("what was read is returned with the error", func(t *testing.T) {
+		failure := errors.New("read failed")
+
+		got, err := readAtMost(io.MultiReader(strings.NewReader("read until then"), iotest.ErrReader(failure)), 1024)
+
+		if err != failure {
+			t.Errorf("expected %v, got %v", failure, err)
+		}
+		mustEqual(t, "content", got, "read until then")
 	})
 }
 

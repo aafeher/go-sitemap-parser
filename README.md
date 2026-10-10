@@ -108,6 +108,8 @@ To set the maximum allowed HTTP response size, use the `SetMaxResponseSize()` fu
 
 The same limit caps the **decompressed** size of gzip-compressed content, so a small `.gz` response cannot expand without bound in memory. This applies both to fetched content and to gzip content passed in through the `urlContent` argument of `Parse()`. Content that expands beyond the limit is rejected and reported via `GetErrors()` as a `*ParseError`. If it is the content of the URL passed to `Parse()`, the call fails with that error, see [Parse](#parse).
 
+The value must be greater than 0. Unlike with `SetMaxSitemaps()` and `SetMaxURLs()`, `0` does not lift the limit: it is rejected with a `*ConfigError` and the limit stays as it was. Every value above it is a limit, up to `math.MaxInt64`, which nothing can exceed.
+
 ```go
 s := sitemap.New()
 s = s.SetMaxResponseSize(10 * 1024 * 1024) // 10 MB
