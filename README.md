@@ -374,6 +374,20 @@ validate "https://example.com/sitemap.xml": <loc> of an entry is empty or missin
 
 An RSS `<item>` without a `<link>` and an Atom `<entry>` without a link are skipped without an error, since a feed item is not required to have one.
 
+A location has to name a host in both modes as well: a page is on one, and so is a sitemap. `https:///page`, `https:page` and `https://:8080/page`, which names a port but no host, are skipped and reported as a `*ValidationError`. A sitemap index entry or a `Sitemap:` line of a `robots.txt` with such a URL is not requested:
+
+```
+validate "https://:8080/page": missing host
+```
+
+In tolerant mode this goes for a relative URL too. One that begins with `//` gives the host itself and takes only the protocol from the sitemap: `//cdn.example.com/page` is `https://cdn.example.com/page` in a sitemap served over HTTPS. `//` and `///page` therefore name no host and are rejected the same way. A relative URL that does not resolve to a URL at all is rejected with the reason `net/url` gives:
+
+```
+validate "//::": parse "https://::": invalid port "::" after host
+```
+
+The `Loc` of every URL that `GetURLs()` returns is thus an HTTP or HTTPS URL that names a host and that `net/url` can parse, in both modes.
+
 The sitemaps a `robots.txt` names are checked before they are fetched as well. The value of a `Sitemap:` line has to be an HTTP or HTTPS URL of at most 2,048 characters. Tolerant mode resolves a relative one against the URL of the `robots.txt` and percent-encodes a space in it, strict mode requires an absolute one without a space. The sitemap may be on another host than the `robots.txt` in both modes, which the protocol allows. A value that is rejected is skipped and reported as a `*ValidationError`:
 
 ```
@@ -390,7 +404,7 @@ An empty date is no such value. A `<lastmod>`, `<news:publication_date>`, `<vide
 
 Whitespace around a value is no part of it, in both modes. The content of an element may be indented or stand on a line of its own, and an attribute may be padded: every text value of an entry is returned without the whitespace that surrounds it, those of the extensions included. A value that holds nothing but whitespace is therefore an empty one. A `<changefreq>` like that is read as if the element were not there, and a value an extension requires is missing then, see [GetURLs](#geturls).
 
-See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location among them, and [`examples/strict`](examples/strict/main.go) for one of what strict mode requires of a URL.
+See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location and a location without a host among them, and [`examples/strict`](examples/strict/main.go) for one of what strict mode requires of a URL.
 
 ```go
 s := sitemap.New()

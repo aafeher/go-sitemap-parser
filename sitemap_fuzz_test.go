@@ -44,9 +44,10 @@ func addFileSeeds(f *testing.F, pattern string, add func(*testing.F, []byte)) {
 }
 
 // assertLocInvariants checks the guarantees resolveAndValidateLoc is documented
-// to provide for every location that reaches the caller: the scheme is http or
-// https, the URL is within the sitemaps.org length limit, and it holds neither
-// a space nor a control character, so that it can be requested as it is.
+// to provide for every location that reaches the caller: it is a URL that can
+// be parsed, the scheme is http or https, it names a host, it is within the
+// sitemaps.org length limit, and it holds neither a space nor a control
+// character, so that it can be requested as it is.
 func assertLocInvariants(t *testing.T, mode string, locs []string) {
 	t.Helper()
 
@@ -61,6 +62,9 @@ func assertLocInvariants(t *testing.T, mode string, locs []string) {
 		}
 		if parsed.Scheme != "http" && parsed.Scheme != "https" {
 			t.Fatalf("%s mode: accepted URL with scheme %q: %q", mode, parsed.Scheme, loc)
+		}
+		if parsed.Hostname() == "" {
+			t.Fatalf("%s mode: accepted URL without a host: %q", mode, loc)
 		}
 		if strings.ContainsFunc(loc, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
 			t.Fatalf("%s mode: accepted URL with a space or a control character in it: %q", mode, loc)
@@ -253,6 +257,12 @@ func FuzzParse(f *testing.F) {
 		`<sitemapindex><sitemap><loc></loc></sitemap><sitemap></sitemap></sitemapindex>`,
 		`<rss><channel><item><title>no link</title></item><item><link> </link></item></channel></rss>`,
 		`<feed><entry><title>no link</title></entry><entry><link href=" "/></entry></feed>`,
+		`<urlset><url><loc>//cdn.example.net/host</loc></url><url><loc>//</loc></url><url><loc>//?no=host</loc></url><url><loc>///no-host</loc></url><url><loc>//:8080/port-only</loc></url><url><loc>//user@/user-only</loc></url><url><loc>//::</loc></url><url><loc>//example.com:80:80/two-ports</loc></url></urlset>`,
+		`<urlset><url><loc>https:///no-host</loc></url><url><loc>https://:8080/port-only</loc></url><url><loc>https://:</loc></url><url><loc>https:no-slash</loc></url><url><loc>https:/one-slash</loc></url><url><loc>https:</loc></url></urlset>`,
+		`<sitemapindex><sitemap><loc>//</loc></sitemap><sitemap><loc>//::1/sitemap.xml</loc></sitemap><sitemap><loc>https://:443/sitemap.xml</loc></sitemap><sitemap><loc>https:sitemap.xml</loc></sitemap></sitemapindex>`,
+		`<rss><channel><item><link>//</link></item><item><link>//::</link></item><item><link>https:///no-host</link></item></channel></rss>`,
+		`<feed><entry><link href="//"/></entry><entry><link href="//:8080/port-only"/></entry><entry><link href="https://:"/></entry></feed>`,
+		"https:///no-host\nhttps://:8080/port-only\nhttps://\nhttps://user@/user-only\nhttps://example.com/host\n",
 		`<sitemapindex><sitemap><loc>`,
 		"",
 		"not xml at all",
@@ -405,6 +415,8 @@ func FuzzParseRobotsTXT(f *testing.F) {
 		"Sitemap: https://example.com/" + strings.Repeat("a", maxLocLength+100) + "\n",
 		"Sitemap: https://example.com/%zz.xml\n",
 		"Sitemap: https://example.com/site map.xml?v=a b\nSitemap: https://EXAMPLE.com:8443/other-port.xml\n",
+		"Sitemap: //\nSitemap: ///no-host.xml\nSitemap: //:8080/port-only.xml\nSitemap: //::\nSitemap: //example.com:80:80/two-ports.xml\n",
+		"Sitemap: https:///no-host.xml\nSitemap: https://:8080/port-only.xml\nSitemap: https:no-slash.xml\nSitemap: https://user@/user-only.xml\n",
 		"",
 	}
 	for _, seed := range seeds {

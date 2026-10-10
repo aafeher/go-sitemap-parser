@@ -1763,6 +1763,298 @@ func TestS_resolveAndValidateLoc_EmptyLoc(t *testing.T) {
 	}
 }
 
+// TestS_resolveAndValidateLoc_Host verifies that a location has to name a host
+// and has to resolve to a URL that can be parsed. A reference that begins with
+// "//" gives the host itself: net/url resolves one without a host to the host
+// of the sitemap, "//" to the sitemap itself, and reads the host of one
+// leniently, so that the URL it resolves to may not be one.
+func TestS_resolveAndValidateLoc_Host(t *testing.T) {
+	const baseURL = "https://example.com/sitemaps/index.xml"
+	const noScheme = `strict mode: unsupported scheme ""`
+
+	tests := []struct {
+		name string
+		loc  string
+		// want is the URL tolerant mode resolves loc to, empty if it rejects loc.
+		want string
+		// wantErr is the error of tolerant mode, empty if it accepts loc. An error of
+		// net/url is given without its reason, which is worded by net/url.
+		wantErr string
+		// wantStrictErr is the error of strict mode, empty if it accepts loc.
+		wantStrictErr string
+	}{
+		{"URL with a host", "https://example.com/page", "https://example.com/page", "", ""},
+		{"URL with a host and a port", "https://example.com:443/page", "https://example.com:443/page", "", ""},
+		{"URL with an empty port", "https://example.com:/page", "https://example.com:/page", "", ""},
+		{"URL with a user", "https://user@example.com/page", "https://user@example.com/page", "", ""},
+		{"URL without a host", "https:///page", "", "missing host", "strict mode: missing host"},
+		{"URL with a port and no host", "https://:8080/page", "", "missing host", "strict mode: missing host"},
+		{"URL with an empty port and no host", "https://:", "", "missing host", "strict mode: missing host"},
+		{"URL with a user and no host", "https://user@/page", "", "missing host", "strict mode: missing host"},
+		{"URL with a user, a port and no host", "https://user@:8080/page", "", "missing host", "strict mode: missing host"},
+		{"URL with nothing after the slashes", "https://", "", "missing host", "strict mode: missing host"},
+		{"URL with a single slash", "https:/page", "", "missing host", "strict mode: missing host"},
+		{"URL without a slash", "https:page", "", "missing host", "strict mode: missing host"},
+		{"URL without a slash and with a space", "https:a page", "", "missing host", "strict mode: missing host"},
+		{"scheme alone", "http:", "", "missing host", "strict mode: missing host"},
+		{"scheme and a query", "https:?page=2", "", "missing host", "strict mode: missing host"},
+		{"reference with a host", "//cdn.example.net/page", "https://cdn.example.net/page", "", noScheme},
+		{"reference with a host and a port", "//cdn.example.net:8443/page", "https://cdn.example.net:8443/page", "", noScheme},
+		{"reference with an IPv6 host", "//[2001:db8::1]:8443/page", "https://[2001:db8::1]:8443/page", "", noScheme},
+		{"reference with a user and a host", "//user@cdn.example.net/page", "https://user@cdn.example.net/page", "", noScheme},
+		{"reference without a host", "//", "", "missing host", noScheme},
+		{"reference without a host, with a query", "//?page=2", "", "missing host", noScheme},
+		{"reference without a host, with a fragment", "//#top", "", "missing host", noScheme},
+		{"reference without a host, with a path", "///page", "", "missing host", noScheme},
+		{"reference with a port and no host", "//:8080/page", "", "missing host", noScheme},
+		{"reference with an empty port and no host", "//:", "", "missing host", noScheme},
+		{"reference with a user and no host", "//user@/page", "", "missing host", noScheme},
+		{"reference with an empty user and no host", "//@", "", "missing host", noScheme},
+		{"reference with colons for a host", "//::", "", `parse "https://::": `, noScheme},
+		{"reference with two ports", "//cdn.example.net:80:8080/page", "", `parse "https://cdn.example.net:80:8080/page": `, noScheme},
+		{"reference with an IPv6 host without brackets", "//::1/page", "", `parse "https://::1/page": `, noScheme},
+		{"path that begins with a slash", "/page", "https://example.com/page", "", noScheme},
+		{"path with two slashes in it", "/a//b", "https://example.com/a//b", "", noScheme},
+		{"query alone", "?page=2", "https://example.com/sitemaps/index.xml?page=2", "", noScheme},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+", tolerant mode", func(t *testing.T) {
+			resolved, err := New().resolveAndValidateLoc(tt.loc, baseURL)
+
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				mustEqual(t, "resolved", resolved, tt.want)
+				if _, err := neturl.Parse(resolved); err != nil {
+					t.Errorf("resolved to a URL that cannot be parsed: %v", err)
+				}
+				return
+			}
+			var valErr *ValidationError
+			if !errors.As(err, &valErr) {
+				t.Fatalf("expected *ValidationError, got %T: %v (resolved=%q)", err, err, resolved)
+			}
+			// The error names the location as the document gives it.
+			mustEqual(t, "error URL", valErr.URL, tt.loc)
+			mustEqual(t, "resolved", resolved, tt.loc)
+			want := fmt.Sprintf("validate %q: %s", tt.loc, tt.wantErr)
+			if !strings.HasSuffix(tt.wantErr, ": ") {
+				mustEqual(t, "error", err.Error(), want)
+				return
+			}
+			// What net/url has against the URL is its own wording, the URL it names is not.
+			var urlErr *neturl.Error
+			if !errors.As(err, &urlErr) {
+				t.Fatalf("expected the error of net/url to be wrapped, got %v", err)
+			}
+			if !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("error: %q does not begin with %q", err.Error(), want)
+			}
+		})
+
+		t.Run(tt.name+", strict mode", func(t *testing.T) {
+			resolved, err := New().SetStrict(true).resolveAndValidateLoc(tt.loc, baseURL)
+
+			mustEqual(t, "resolved", resolved, tt.loc)
+			if tt.wantStrictErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				return
+			}
+			var valErr *ValidationError
+			if !errors.As(err, &valErr) {
+				t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+			}
+			mustEqual(t, "error", err.Error(), fmt.Sprintf("validate %q: %s", tt.loc, tt.wantStrictErr))
+		})
+	}
+}
+
+// TestNamesNoHost verifies which references are taken for one that begins
+// with "//" and names no host after it.
+func TestNamesNoHost(t *testing.T) {
+	tests := []struct {
+		loc  string
+		want bool
+	}{
+		{"//", true},
+		{"//?page=2", true},
+		{"//#top", true},
+		{"///page", true},
+		{"////page", true},
+		{"//:8080/page", true},
+		{"//user@/page", true},
+		{"//@", true},
+		{"//cdn.example.net/page", false},
+		{"//cdn.example.net:8080/page", false},
+		{"//user@cdn.example.net/page", false},
+		{"/page", false},
+		{"/a//b", false},
+		{"page//", false},
+		{"?next=//", false},
+		{"https:///page", false},
+		{"https://example.com//", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.loc, func(t *testing.T) {
+			parsed, err := neturl.Parse(tt.loc)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			mustEqual(t, "namesNoHost", namesNoHost(tt.loc, parsed), tt.want)
+		})
+	}
+}
+
+// TestS_Parse_LocationWithoutHost verifies, for every format and in both
+// modes, that a location which names no host, or which does not resolve to a
+// URL, is skipped and reported: it is not returned as a page, and it is not
+// requested as a sitemap. The entries around it are kept.
+func TestS_Parse_LocationWithoutHost(t *testing.T) {
+	const noScheme = `strict mode: unsupported scheme ""`
+	// parseError returns what net/url has against rawURL, which is worded by net/url.
+	parseError := func(rawURL string) string {
+		_, err := neturl.Parse(rawURL)
+		if err == nil {
+			t.Fatalf("expected net/url to turn down %q", rawURL)
+		}
+		return err.Error()
+	}
+
+	// rejected holds the locations that are turned down, with the error of either mode.
+	rejected := []struct{ loc, err, strictErr string }{
+		{"https:///no-host", "missing host", "strict mode: missing host"},
+		{"https://:8080/port-only", "missing host", "strict mode: missing host"},
+		{"//", "missing host", noScheme},
+		{"///path-only", "missing host", noScheme},
+		{"//:8080/port-only", "missing host", noScheme},
+		{"//::", parseError("https://::"), noScheme},
+	}
+
+	// wrap returns the document that holds an entry for each location: before is what
+	// stands in front of a location, after is what follows it.
+	wrap := func(head, before, after, tail string) func(locs []string) string {
+		return func(locs []string) string {
+			var b strings.Builder
+			b.WriteString(head)
+			for _, loc := range locs {
+				b.WriteString(before + loc + after)
+			}
+			b.WriteString(tail)
+			return b.String()
+		}
+	}
+	formats := []struct {
+		name string
+		url  string
+		// document returns the document that lists locs.
+		document func(locs []string) string
+		// sitemaps tells whether the document lists sitemaps, which are requested, or pages.
+		sitemaps bool
+		// absoluteOnly tells whether the format takes nothing for an entry but an absolute URL.
+		absoluteOnly bool
+	}{
+		{name: "urlset", url: "https://example.com/sitemap.xml", document: wrap(`<urlset>`, `<url><loc>`, `</loc></url>`, `</urlset>`)},
+		{name: "sitemap index", url: "https://example.com/sitemap.xml", document: wrap(`<sitemapindex>`, `<sitemap><loc>`, `</loc></sitemap>`, `</sitemapindex>`), sitemaps: true},
+		{name: "RSS", url: "https://example.com/feed.xml", document: wrap(`<rss><channel>`, `<item><link>`, `</link></item>`, `</channel></rss>`)},
+		{name: "Atom", url: "https://example.com/feed.xml", document: wrap(`<feed>`, `<entry><link href="`, `"/></entry>`, `</feed>`)},
+		{name: "text", url: "https://example.com/sitemap.txt", document: wrap("", "", "\n", ""), absoluteOnly: true},
+		{name: "robots.txt", url: "https://example.com/robots.txt", document: wrap("User-agent: *\n", "Sitemap: ", "\n", ""), sitemaps: true},
+	}
+
+	for _, format := range formats {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", format.name, strict), func(t *testing.T) {
+				// The entries that are kept stand before and after the ones that are not.
+				locs := []string{"https://example.com/first"}
+				wantErrs := []string{}
+				for _, r := range rejected {
+					if format.absoluteOnly && !strings.HasPrefix(r.loc, "https://") {
+						continue
+					}
+					locs = append(locs, r.loc)
+					reason := r.err
+					if strict {
+						reason = r.strictErr
+					}
+					wantErrs = append(wantErrs, fmt.Sprintf("validate %q: %s", r.loc, reason))
+				}
+				locs = append(locs, "https://example.com/last")
+				content := format.document(locs)
+
+				requested := []string{}
+				client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					requested = append(requested, req.URL.String())
+					body := `<urlset><url><loc>https://example.com/page-of-` + strings.TrimPrefix(req.URL.Path, "/") + `</loc></url></urlset>`
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{},
+						Body:       io.NopCloser(strings.NewReader(body)),
+						Request:    req,
+					}, nil
+				})}
+				s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(client)
+				requireParse(t, s, format.url, &content)
+
+				if format.sitemaps {
+					assertStringSlice(t, "requests", requested, []string{"https://example.com/first", "https://example.com/last"})
+					assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page-of-first", "https://example.com/page-of-last"})
+				} else {
+					assertStringSlice(t, "requests", requested, []string{})
+					assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/first", "https://example.com/last"})
+				}
+				assertStringSlice(t, "errors", errorsOf(s), wantErrs)
+				for _, err := range s.GetErrors() {
+					var valErr *ValidationError
+					if !errors.As(err, &valErr) {
+						t.Errorf("expected *ValidationError, got %T: %v", err, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestS_Parse_URLWithoutHost verifies that Parse turns down a URL that names
+// no host before anything is requested, one that names a port alone included.
+func TestS_Parse_URLWithoutHost(t *testing.T) {
+	urls := []string{
+		"https:///sitemap.xml",
+		"https://:8080/sitemap.xml",
+		"https://:",
+		"http://:80",
+		"https://user@/sitemap.xml",
+		"https://user@:8080/sitemap.xml",
+	}
+
+	for _, url := range urls {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", url, strict), func(t *testing.T) {
+				requested := []string{}
+				client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					requested = append(requested, req.URL.String())
+					return nil, errors.New("offline")
+				})}
+				s := New().SetStrict(strict).SetHTTPClient(client)
+				_, err := s.Parse(url, nil)
+
+				var valErr *ValidationError
+				if !errors.As(err, &valErr) {
+					t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+				}
+				want := fmt.Sprintf("validate %q: missing host", url)
+				mustEqual(t, "error", err.Error(), want)
+				assertStringSlice(t, "errors", errorsOf(s), []string{want})
+				assertStringSlice(t, "requests", requested, []string{})
+			})
+		}
+	}
+}
+
 // TestS_Parse_EmptyLocationInIndex verifies that a sitemap index entry without
 // a location is not followed. Resolved like a relative URL it would be the URL
 // of the index, which would then be fetched once more.
@@ -6441,6 +6733,8 @@ func TestS_Parse_Strict_ExtensionURL(t *testing.T) {
 		{"no host", "https:///file", "strict mode: missing host"},
 		{"no host and no path", "https:file", "strict mode: missing host"},
 		{"no host and a space", "https:///a b", "strict mode: missing host"},
+		{"port and no host", "https://:8080/file", "strict mode: missing host"},
+		{"user and no host", "https://user@/file", "strict mode: missing host"},
 		{"relative URL", "/file", `strict mode: unsupported scheme ""`},
 		{"relative URL with a space", "/a b", `strict mode: unsupported scheme ""`},
 		{"other protocol", "ftp://cdn.example.net/file", `strict mode: unsupported scheme "ftp"`},
@@ -8084,10 +8378,26 @@ func TestS_robotsTXTSitemapLocations(t *testing.T) {
 			},
 		},
 		{
-			name:     "URL without a host, strict mode",
+			name:     "URLs without a host",
+			sitemaps: []string{"https:///sitemap.xml", "https://:8080/sitemap.xml", "//", "///sitemap.xml", "//:8080/sitemap.xml", "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml"},
+			wantErrs: []string{
+				`validate "https:///sitemap.xml": missing host`,
+				`validate "https://:8080/sitemap.xml": missing host`,
+				`validate "//": missing host`,
+				`validate "///sitemap.xml": missing host`,
+				`validate "//:8080/sitemap.xml": missing host`,
+			},
+		},
+		{
+			name:     "URLs without a host, strict mode",
 			strict:   true,
-			sitemaps: []string{"https:///sitemap.xml"},
-			wantErrs: []string{`validate "https:///sitemap.xml": strict mode: missing host`},
+			sitemaps: []string{"https:///sitemap.xml", "https://:8080/sitemap.xml", "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml"},
+			wantErrs: []string{
+				`validate "https:///sitemap.xml": strict mode: missing host`,
+				`validate "https://:8080/sitemap.xml": strict mode: missing host`,
+			},
 		},
 		{
 			name:     "URL with a space in it",

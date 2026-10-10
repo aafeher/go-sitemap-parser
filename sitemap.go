@@ -599,6 +599,7 @@ func (s *S) SetHTTPClient(client *http.Client) *S {
 // the same as no port.
 // In tolerant mode (default), relative URLs are resolved against the parent sitemap URL, and
 // a space in a URL is percent-encoded.
+// In both modes a URL has to name a host: one that names none is skipped and reported.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetStrict(strict bool) *S {
 	s.mu.Lock()
@@ -774,7 +775,8 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 	return s.ParseContext(context.Background(), url, urlContent)
 }
 
-// validateInputURL parses url and verifies it uses http or https and has a host.
+// validateInputURL parses url and verifies it uses http or https and names a host. A port is
+// no host: "https://:8080/sitemap.xml" names none.
 func (s *S) validateInputURL(url string) error {
 	parsedURL, parseErr := neturl.Parse(url)
 	if parseErr != nil {
@@ -783,7 +785,7 @@ func (s *S) validateInputURL(url string) error {
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
 		return &ValidationError{URL: url, Err: fmt.Errorf("invalid URL scheme %q: only http and https are supported", parsedURL.Scheme)}
 	}
-	if parsedURL.Host == "" {
+	if parsedURL.Hostname() == "" {
 		return &ValidationError{URL: url, Err: errors.New("missing host")}
 	}
 	return nil
@@ -2324,9 +2326,12 @@ func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, 
 // In both modes, an empty loc is rejected: it is a location that is missing, not a relative
 // URL, and resolved as one it would name the sitemap itself. The error names that sitemap,
 // there being no location to name.
-// In both modes, URLs must not exceed 2048 characters (sitemaps.org specification).
+// In both modes, URLs must not exceed 2048 characters (sitemaps.org specification) and have to
+// name a host: a page or a sitemap is on one, and a URL without one cannot be requested.
 // In tolerant mode (strict=false), relative URLs are resolved against baseURL and a space in
-// the URL is percent-encoded before the length check.
+// the URL is percent-encoded before the length check. A reference that begins with "//" names
+// its host itself, see namesNoHost. What is returned is a URL neturl.Parse accepts: a location
+// that does not resolve to one is rejected.
 // In strict mode (strict=true), URLs must additionally be absolute HTTP(S) URLs without a
 // space or a control character in them, see strictURLError, on the same host and protocol as
 // baseURL, see sameHost.
@@ -2377,6 +2382,9 @@ func (s *S) resolveAndValidate(loc string, baseURL string, onBaseHost bool) (str
 	if resolved.Scheme != "http" && resolved.Scheme != "https" {
 		return loc, &ValidationError{URL: resolved.String(), Err: fmt.Errorf("unsupported scheme %q", resolved.Scheme)}
 	}
+	if resolved.Hostname() == "" || namesNoHost(loc, parsed) {
+		return loc, &ValidationError{URL: loc, Err: errors.New("missing host")}
+	}
 	// A space is no part of a URL, and a request for a URL with one in it is malformed. Those
 	// of the path and the fragment are percent-encoded already; this takes care of the rest,
 	// the ones of the query.
@@ -2384,19 +2392,38 @@ func (s *S) resolveAndValidate(loc string, baseURL string, onBaseHost bool) (str
 	if len(resolvedStr) > maxLocLength {
 		return loc, &ValidationError{URL: resolvedStr, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(resolvedStr))}
 	}
+	// neturl.Parse checks the host of a URL only when the URL names its scheme, so a reference
+	// such as "//::" is read without complaint and resolves to "https://::", which is no URL.
+	// Hence no URL is returned that has not been parsed the way it is returned: loc has been
+	// above, whatever differs from it is here.
+	if resolvedStr != loc {
+		if _, err := neturl.Parse(resolvedStr); err != nil {
+			return loc, &ValidationError{URL: loc, Err: err}
+		}
+	}
 
 	return resolvedStr, nil
 }
 
+// namesNoHost tells whether loc is a reference that begins with "//" and names no host after
+// it, such as "//", "//?page=2", "///page" or "//:8080/page". A reference that begins with
+// "//" gives the host itself and takes only the scheme from the URL it is resolved against, so
+// one that gives none has none. neturl resolves the first three to the host of the base URL
+// nevertheless, "//" to the base URL itself. parsed is loc as neturl.Parse reads it.
+func namesNoHost(loc string, parsed *neturl.URL) bool {
+	return strings.HasPrefix(loc, "//") && parsed.Hostname() == ""
+}
+
 // strictURLError tells what keeps rawURL from being a URL strict mode accepts: an absolute
 // HTTP or HTTPS URL that names a host and has neither a space nor a control character in it.
-// A URL has to give these percent-encoded, a space as "%20". parsed is rawURL as neturl.Parse
-// reads it. It returns nil for a URL that is one.
+// A URL has to give these percent-encoded, a space as "%20". A port is no host:
+// "https://:8080/" names none. parsed is rawURL as neturl.Parse reads it. It returns nil for a
+// URL that is one.
 func strictURLError(rawURL string, parsed *neturl.URL) error {
 	switch {
 	case parsed.Scheme != "http" && parsed.Scheme != "https":
 		return fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)
-	case parsed.Host == "":
+	case parsed.Hostname() == "":
 		return errors.New("strict mode: missing host")
 	case strings.Contains(rawURL, " "):
 		return errors.New("strict mode: URL contains a space")

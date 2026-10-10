@@ -30,6 +30,11 @@ import (
 // An entry without a location names no page. It is skipped and reported in
 // both modes; the error names the sitemap, the entry having no URL of its own.
 //
+// A location that names no host names no page either, and is skipped and
+// reported in both modes as well. In tolerant mode this goes for a relative
+// URL that begins with "//" too: such a URL gives the host itself, and takes
+// only the protocol from the sitemap.
+//
 // Tolerant mode also reads past the XML mistakes that can be read past, such
 // as an unescaped "&" in a URL. Strict mode requires well-formed XML and
 // rejects such a document as a whole. Parse() fails then, as the document it
@@ -87,6 +92,16 @@ func main() {
   <url><loc></loc></url>
 </urlset>`
 
+	// The host is missing from the URL of the second and of the third entry. The
+	// third one is a relative URL, as is the last one, which names its host.
+	missingHost := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/</loc></url>
+  <url><loc>https:///about</loc></url>
+  <url><loc>///contact</loc></url>
+  <url><loc>//example.com/blog</loc></url>
+</urlset>`
+
 	// The "&" of the query string is not escaped as "&amp;", which makes the
 	// document malformed XML.
 	malformedXML := `<?xml version="1.0" encoding="UTF-8"?>
@@ -106,6 +121,12 @@ func main() {
 
 	fmt.Println("\n=== Missing location, strict mode ===")
 	parse(sitemap.New().SetStrict(true), missingLocation)
+
+	fmt.Println("\n=== Missing host, tolerant mode ===")
+	parse(sitemap.New(), missingHost)
+
+	fmt.Println("\n=== Missing host, strict mode ===")
+	parse(sitemap.New().SetStrict(true), missingHost)
 
 	fmt.Println("\n=== Malformed XML, tolerant mode ===")
 	parse(sitemap.New(), malformedXML)
