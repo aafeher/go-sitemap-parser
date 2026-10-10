@@ -82,7 +82,7 @@ func TestTestServer(t *testing.T) {
 
 	t.Run("unzip error should be handled", func(t *testing.T) {
 		_, body := mustGetBody(t, ts.URL+"/corrupted.gz")
-		mustEqual(t, "body", string(body), "error: gzip: invalid header\n")
+		mustEqual(t, "body", string(body), "error: gzip decompression failed: gzip: invalid header\n")
 	})
 
 	t.Run("handle zip error", func(t *testing.T) {

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `examples/gzip`: runnable example of parsing gzip compressed sitemaps: a file of one member, one of two, one with a newline after its last member, and one that is cut short. `README.md` describes the same under `Formats supported` and links the example
+
+### Fixed
+- A gzip file is read to the end of its last member. A gzip file is a series of members, each of them compressed on its own: a file that was appended to (`gzip -c more.txt >> sitemap.txt.gz`) or put together from several (`cat a.gz b.gz > sitemap.xml.gz`) holds more than one. Only the first member was read, and the rest was dropped without an error: a text sitemap lost the URLs of every further member, and an XML document that went on in the next member was reported as broken (`XML syntax error on line 1: unexpected EOF`). The members are now read one after the other and parsed as one document, and the limit set with `SetMaxResponseSize()` is on all of them together. What follows the last member and is no member, such as the newline or the padding some servers send, is ignored as before
+- A member that is cut short or damaged fails the document, whichever member it is, with the error a file of one member already had (`gzip decompression failed: unexpected EOF`, `gzip decompression failed: gzip: invalid checksum`). As the members after the first were not read, a download that broke off in one of them went unnoticed, and the file passed for the content of its first member
+- Gzip content that cannot be decompressed is reported once. It was reported twice, as `gzip decompression failed: ...` and as `unrecognized sitemap format (root element: "")`: after the failure the compressed bytes were parsed as if they were a sitemap. `GetErrorsCount()` therefore counted two errors for one document
+- The error about gzip content whose header is cut short or not valid begins with `gzip decompression failed:` like every other error about gzip content. It was the bare error of the header (`parse "https://example.com/sitemap.xml.gz": unexpected EOF`), which did not tell what could not be read
+
 ## [1.2.1] - 2026-10-10
 
 ### Added

@@ -38,6 +38,8 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 
 XML documents do not have to be UTF-8 encoded, and a document may begin with a UTF-8 byte order mark, see [Character encoding](#character-encoding).
 
+A document of any of these formats may be gzip compressed. A gzip file is read to the end of its last member: a file that was appended to, or put together from several (`cat a.gz b.gz`), holds a member for each part, and its content is that of all of them. What follows the last member and is no member, such as a newline, is ignored. Content that cannot be decompressed to its end is not parsed, and is reported once, as a `*ParseError` (`gzip decompression failed: unexpected EOF`). See [`examples/gzip`](examples/gzip/main.go) for a runnable example.
+
 Only the location of a page is taken from a feed or a text sitemap, so `LastMod`, `ChangeFreq` and `Priority` are `nil` for their URLs:
 - RSS: the `<link>` of every `<item>`, see [`examples/rss`](examples/rss/main.go)
 - Atom: for every `<entry>`, the first `<link>` with `rel="alternate"` or without a `rel` attribute, see [`examples/atom`](examples/atom/main.go)
@@ -111,7 +113,7 @@ s := sitemap.New().SetFetchTimeout(10)
 
 To set the maximum allowed HTTP response size, use the `SetMaxResponseSize()` function. It should be specified in bytes as an **int64** value. The default is 50 MB, matching the [sitemaps.org protocol](http://www.sitemaps.org/protocol.html) limit. Responses exceeding this limit will result in an error.
 
-The same limit caps the **decompressed** size of gzip-compressed content, so a small `.gz` response cannot expand without bound in memory. This applies both to fetched content and to gzip content passed in through the `urlContent` argument of `Parse()`. Content that expands beyond the limit is rejected and reported via `GetErrors()` as a `*ParseError`. If it is the content of the URL passed to `Parse()`, the call fails with that error, see [Parse](#parse).
+The same limit caps the **decompressed** size of gzip-compressed content, of all the members of a gzip file together, so a small `.gz` response cannot expand without bound in memory. This applies both to fetched content and to gzip content passed in through the `urlContent` argument of `Parse()`. Content that expands beyond the limit is rejected and reported via `GetErrors()` as a `*ParseError`. If it is the content of the URL passed to `Parse()`, the call fails with that error, see [Parse](#parse).
 
 The value must be greater than 0. Unlike with `SetMaxSitemaps()` and `SetMaxURLs()`, `0` does not lift the limit: it is rejected with a `*ConfigError` and the limit stays as it was. Every value above it is a limit, up to `math.MaxInt64`, which nothing can exceed.
 

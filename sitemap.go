@@ -389,9 +389,9 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 
 // SetMaxResponseSize sets the maximum allowed HTTP response size in bytes.
 // Responses exceeding this limit are rejected with a *NetworkError.
-// The same limit caps the decompressed size of gzip-compressed content, whether it was
-// fetched or supplied through the urlContent argument of Parse; content that expands
-// beyond it is rejected with a *ParseError.
+// The same limit caps the decompressed size of gzip-compressed content, of all the members
+// of a gzip file together, whether it was fetched or supplied through the urlContent argument
+// of Parse; content that expands beyond it is rejected with a *ParseError.
 // The default is 50 MB, matching the sitemaps.org protocol limit.
 // The value must be greater than 0; invalid values are ignored and a *ConfigError is recorded.
 // A later call with a valid value clears it.
@@ -1228,33 +1228,35 @@ func finalURL(url string, req *http.Request, response *http.Response) string {
 }
 
 // checkAndUnzipContent checks if the content is a gzip file and unzips it if necessary.
-// If the content is a gzip file, it returns the uncompressed content.
+// If the content is a gzip file, it returns the uncompressed content, and the content as it is
+// otherwise.
 // The decompressed size is capped at cfg.maxResponseSize, so a small compressed payload
 // cannot expand without bound.
 // If an error occurs during unzipping, or the decompressed size exceeds the cap, it appends
-// a *ParseError (with the provided url) and returns the original content.
+// a *ParseError (with the provided url) and returns ok as false. There is nothing to parse
+// then: content that begins like a gzip file is no sitemap of any other format, so parsing it
+// as it is would only report the same document a second time.
 //
 // Param url: The URL the content was fetched from (used for error context)
 // Param content: The content to be checked and possibly unzipped
 // Return string: The checked and possibly uncompressed content
-func (s *S) checkAndUnzipContent(url string, content string) string {
-	const gzipPrefix = "\x1f\x8b\x08"
-	if strings.HasPrefix(content, gzipPrefix) {
-		maxSize := s.cfg.maxResponseSize
-		if maxSize <= 0 {
-			// A zero-value S (one not created via New) has no configured limit.
-			// Fall back to the default rather than leaving decompression unbounded.
-			maxSize = defaultMaxResponseSize
-		}
-		uncompressed, err := unzip(content, maxSize)
-		if err != nil {
-			s.errs = append(s.errs, &ParseError{URL: url, Err: err})
-			// return the original content if error
-			return content
-		}
-		content = uncompressed
+// Return ok: Whether there is content to parse
+func (s *S) checkAndUnzipContent(url string, content string) (unzipped string, ok bool) {
+	if !strings.HasPrefix(content, gzipPrefix) {
+		return content, true
 	}
-	return content
+	maxSize := s.cfg.maxResponseSize
+	if maxSize <= 0 {
+		// A zero-value S (one not created via New) has no configured limit.
+		// Fall back to the default rather than leaving decompression unbounded.
+		maxSize = defaultMaxResponseSize
+	}
+	uncompressed, err := unzip(content, maxSize)
+	if err != nil {
+		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+		return "", false
+	}
+	return uncompressed, true
 }
 
 // claimSitemap decides whether the sitemap at url is to be fetched, and counts it as fetched
@@ -1436,7 +1438,8 @@ func (s *S) fetchAndParse(ctx context.Context, url string) (string, []string, er
 	return servedFrom, locations, nil
 }
 
-// parseDocument unzips the content served from url if it is gzip content, and parses it.
+// parseDocument unzips the content served from url if it is gzip content, and parses it. Gzip
+// content that cannot be unzipped is not parsed.
 // It returns the sitemaps the document lists, and the error that tells the document could not
 // be parsed if it could not. Like everything else that is wrong with the document, that error
 // is added to the error list too.
@@ -1459,7 +1462,10 @@ func (s *S) parseDocument(url string, content string) ([]string, error) {
 		return nil, nil
 	}
 
-	locations := document.parse(url, document.checkAndUnzipContent(url, content))
+	var locations []string
+	if unzipped, ok := document.checkAndUnzipContent(url, content); ok {
+		locations = document.parse(url, unzipped)
+	}
 	s.addDocument(document)
 
 	return locations, documentError(document.errs)
@@ -1517,8 +1523,7 @@ func (s *S) addDocument(document *S) {
 // documentError returns the error that tells a document could not be parsed, out of errs, the
 // errors the document yielded. It returns nil if the document was parsed.
 // A document that cannot be parsed is reported as a *ParseError, what is wrong with one of its
-// entries as a *ValidationError. Of several, the first is returned: content that cannot be
-// unzipped is not recognised as a sitemap either, and it is the former that tells why.
+// entries as a *ValidationError. Of several, the first is returned.
 func documentError(errs []error) error {
 	for _, err := range errs {
 		var parseErr *ParseError
@@ -2509,34 +2514,86 @@ func portOf(u *neturl.URL) string {
 	return defaultPorts[u.Scheme]
 }
 
-// unzip decompresses the given content using gzip compression.
-// It returns the uncompressed content and any error encountered during decompression.
-// At most maxSize bytes are decompressed. If the payload is larger, decompression stops and
-// an error is returned without any data, so a small compressed input cannot exhaust memory
-// (decompression bomb).
-// If the gzip header is invalid, the original content is returned together with the error.
-// If decompression fails mid-stream (e.g. truncated/corrupted gzip data), the partially
-// decompressed content is returned together with the error so the caller can decide how to react.
-// In all error cases a non-nil error is returned; callers must not silently use the data.
-func unzip(content string, maxSize int64) (string, error) {
-	reader, err := gzip.NewReader(strings.NewReader(content))
+// gzipPrefix is what gzip content begins with, and every member of it: the two bytes that
+// identify gzip, and the one that names deflate, the only compression method there is.
+const gzipPrefix = "\x1f\x8b\x08"
+
+// gzipMembers reads the members of gzip content one after the other, as one stream.
+//
+// A gzip file is a series of members, each of them compressed on its own (RFC 1952, section
+// 2.2): what "cat a.gz b.gz" writes holds two of them, and so does a file that was appended
+// to. The content of the file is that of its members together.
+//
+// gzip.Reader reads a series of members by itself, but fails on whatever follows the last
+// one, and servers send a newline or padding after it often enough. The members are therefore
+// read one at a time here: what follows a member is taken for another member if it begins the
+// way gzip content does, and is left unread otherwise, the way gzip(1) ignores trailing
+// garbage.
+type gzipMembers struct {
+	content string
+	// src reads content. It is an io.ByteReader, so member reads from it no further than its
+	// member goes, and what src has left is what follows the member.
+	src    *strings.Reader
+	member *gzip.Reader
+}
+
+// newGzipMembers returns a reader of the members of content. It fails if content does not
+// begin with the header of a member.
+func newGzipMembers(content string) (*gzipMembers, error) {
+	src := strings.NewReader(content)
+	member, err := gzip.NewReader(src)
 	if err != nil {
-		return content, err
+		return nil, err
 	}
-	// Disable multistream support: many real-world sitemap servers (and the test
-	// harness in this package) append a trailing newline or other padding after
-	// the gzip footer. Without this, gzip.Reader would try to parse a second
-	// member and fail with io.ErrUnexpectedEOF, even though the actual payload
-	// was decompressed correctly.
-	reader.Multistream(false)
+	member.Multistream(false)
+	return &gzipMembers{content: content, src: src, member: member}, nil
+}
 
-	defer func(reader *gzip.Reader) {
-		_ = reader.Close()
-	}(reader)
+// Read reads from the current member, and from the next one once that is read to its end. It
+// returns io.EOF when the last member is read. A member that is cut short or damaged fails
+// the read, whichever member it is.
+func (m *gzipMembers) Read(p []byte) (int, error) {
+	for {
+		n, err := m.member.Read(p)
+		if err != io.EOF {
+			return n, err
+		}
+		if !strings.HasPrefix(m.content[len(m.content)-m.src.Len():], gzipPrefix) {
+			return n, io.EOF
+		}
+		if err := m.member.Reset(m.src); err != nil {
+			return n, err
+		}
+		m.member.Multistream(false)
+		if n > 0 {
+			return n, nil
+		}
+	}
+}
 
-	uncompressed, err := readAtMost(reader, maxSize)
+// Close closes the reader of the members. It does not have to be read to its end for that.
+func (m *gzipMembers) Close() error {
+	return m.member.Close()
+}
+
+// unzip decompresses the given gzip content: all of its members, see gzipMembers.
+// It returns the uncompressed content, or the error that kept the content from being
+// decompressed. No content is returned together with an error.
+// At most maxSize bytes are decompressed, for all members together. If the payload is larger,
+// decompression stops and an error is returned, so a small compressed input cannot exhaust
+// memory (decompression bomb).
+func unzip(content string, maxSize int64) (string, error) {
+	members, err := newGzipMembers(content)
 	if err != nil {
-		return uncompressed, fmt.Errorf("gzip decompression failed: %w", err)
+		return "", fmt.Errorf("gzip decompression failed: %w", err)
+	}
+	defer func() {
+		_ = members.Close()
+	}()
+
+	uncompressed, err := readAtMost(members, maxSize)
+	if err != nil {
+		return "", fmt.Errorf("gzip decompression failed: %w", err)
 	}
 
 	if int64(len(uncompressed)) > maxSize {
