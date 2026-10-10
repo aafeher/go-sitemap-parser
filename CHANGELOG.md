@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-10
+
 ### Added
 - Package documentation: an overview of what the package does, the formats it reads, how it is configured, how errors are reported and what is safe to do concurrently. `go doc` and pkg.go.dev had nothing to show for the package itself.
 - Documentation for `GetErrors()` and `GetErrorsCount()`, the two exported methods that had none: which errors are returned and for how long they are kept, their types and order, how they relate to the error `Parse()` / `ParseContext()` return, and that the slice returned must not be modified. The `Error()` methods of the four error types are documented with the message they return.
@@ -306,7 +308,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each parsed `URL` exposes `Loc`, `LastMod`, `ChangeFreq`, and `Priority`
 - Method chaining (fluent interface) on all setters
 
-[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/aafeher/go-sitemap-parser/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/aafeher/go-sitemap-parser/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.1...v1.0.2
