@@ -38,6 +38,11 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 
 XML documents do not have to be UTF-8 encoded, and a document may begin with a UTF-8 byte order mark, see [Character encoding](#character-encoding).
 
+Only the location of a page is taken from a feed or a text sitemap, so `LastMod`, `ChangeFreq` and `Priority` are `nil` for their URLs:
+- RSS: the `<link>` of every `<item>`, see [`examples/rss`](examples/rss/main.go)
+- Atom: for every `<entry>`, the first `<link>` with `rel="alternate"` or without a `rel` attribute, see [`examples/atom`](examples/atom/main.go)
+- Plain text: every line that begins with `http://` or `https://`; empty lines, lines that begin with `#` and every other line are skipped, see [`examples/text`](examples/text/main.go)
+
 ## Requirements
 
 Go 1.26 or later.
@@ -107,6 +112,8 @@ s := sitemap.New().SetFetchTimeout(10)
 To set the maximum allowed HTTP response size, use the `SetMaxResponseSize()` function. It should be specified in bytes as an **int64** value. The default is 50 MB, matching the [sitemaps.org protocol](http://www.sitemaps.org/protocol.html) limit. Responses exceeding this limit will result in an error.
 
 The same limit caps the **decompressed** size of gzip-compressed content, so a small `.gz` response cannot expand without bound in memory. This applies both to fetched content and to gzip content passed in through the `urlContent` argument of `Parse()`. Content that expands beyond the limit is rejected and reported via `GetErrors()` as a `*ParseError`. If it is the content of the URL passed to `Parse()`, the call fails with that error, see [Parse](#parse).
+
+The value must be greater than 0. Unlike with `SetMaxSitemaps()` and `SetMaxURLs()`, `0` does not lift the limit: it is rejected with a `*ConfigError` and the limit stays as it was. Every value above it is a limit, up to `math.MaxInt64`, which nothing can exceed.
 
 ```go
 s := sitemap.New()
@@ -374,6 +381,20 @@ validate "https://example.com/sitemap.xml": <loc> of an entry is empty or missin
 
 An RSS `<item>` without a `<link>` and an Atom `<entry>` without a link are skipped without an error, since a feed item is not required to have one.
 
+A location has to name a host in both modes as well: a page is on one, and so is a sitemap. `https:///page`, `https:page` and `https://:8080/page`, which names a port but no host, are skipped and reported as a `*ValidationError`. A sitemap index entry or a `Sitemap:` line of a `robots.txt` with such a URL is not requested:
+
+```
+validate "https://:8080/page": missing host
+```
+
+In tolerant mode this goes for a relative URL too. One that begins with `//` gives the host itself and takes only the protocol from the sitemap: `//cdn.example.com/page` is `https://cdn.example.com/page` in a sitemap served over HTTPS. `//` and `///page` therefore name no host and are rejected the same way. A relative URL that does not resolve to a URL at all is rejected with the reason `net/url` gives:
+
+```
+validate "//::": parse "https://::": invalid port "::" after host
+```
+
+The `Loc` of every URL that `GetURLs()` returns is thus an HTTP or HTTPS URL that names a host and that `net/url` can parse, in both modes.
+
 The sitemaps a `robots.txt` names are checked before they are fetched as well. The value of a `Sitemap:` line has to be an HTTP or HTTPS URL of at most 2,048 characters. Tolerant mode resolves a relative one against the URL of the `robots.txt` and percent-encodes a space in it, strict mode requires an absolute one without a space. The sitemap may be on another host than the `robots.txt` in both modes, which the protocol allows. A value that is rejected is skipped and reported as a `*ValidationError`:
 
 ```
@@ -390,7 +411,7 @@ An empty date is no such value. A `<lastmod>`, `<news:publication_date>`, `<vide
 
 Whitespace around a value is no part of it, in both modes. The content of an element may be indented or stand on a line of its own, and an attribute may be padded: every text value of an entry is returned without the whitespace that surrounds it, those of the extensions included. A value that holds nothing but whitespace is therefore an empty one. A `<changefreq>` like that is read as if the element were not there, and a value an extension requires is missing then, see [GetURLs](#geturls).
 
-See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location among them, and [`examples/strict`](examples/strict/main.go) for one of what strict mode requires of a URL.
+See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location and a location without a host among them, and [`examples/strict`](examples/strict/main.go) for one of what strict mode requires of a URL.
 
 ```go
 s := sitemap.New()
@@ -732,6 +753,8 @@ All types implement `Unwrap()`, enabling `errors.Is` traversal to the root cause
 
 The error that `Parse()` / `ParseContext()` return is one of these as well, see [Parse](#parse).
 
+The slice returned is the one the instance keeps, so it must not be modified. It does not change afterwards: errors recorded later are in what a later `GetErrors()` call returns.
+
 ```go
 for _, err := range s.GetErrors() {
     var netErr *sitemap.NetworkError
@@ -751,7 +774,7 @@ See [`examples/errors`](examples/errors/main.go) for a runnable example.
 
 #### GetErrorsCount
 
-Returns the number of errors encountered during parsing.
+Returns the number of errors `GetErrors()` returns.
 
 ```go
 errCount := s.GetErrorsCount()

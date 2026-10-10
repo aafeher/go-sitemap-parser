@@ -39,7 +39,7 @@ If a fix is warranted, a patched release will be published and you will be credi
 - Use `SetMaxSitemaps()` to limit the number of requests a document can make the parser send (default: 50,000 sitemaps per call).
 - Use `SetMaxConcurrency()` to limit the number of concurrent outbound connections (default: 16).
 
-A URL found in a document is requested only if it is an `http` or `https` URL of at most 2,048 characters.
+A URL found in a document is requested only if it is an `http` or `https` URL of at most 2,048 characters that names a host. Versions up to and including v1.2.0 also requested a URL that names a port but no host, such as `http://:8080/sitemap.xml`; Go's HTTP client sends the request for such a URL to the machine the parser runs on. The URL a request is redirected to is not checked by the parser, see above.
 
 ### Resource exhaustion
 

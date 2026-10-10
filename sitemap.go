@@ -395,6 +395,8 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 // The default is 50 MB, matching the sitemaps.org protocol limit.
 // The value must be greater than 0; invalid values are ignored and a *ConfigError is recorded.
 // A later call with a valid value clears it.
+// Every value greater than 0 is a limit, math.MaxInt64 included: nothing can exceed that one,
+// so it is the way to have no limit in effect.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
 	s.mu.Lock()
@@ -599,6 +601,7 @@ func (s *S) SetHTTPClient(client *http.Client) *S {
 // the same as no port.
 // In tolerant mode (default), relative URLs are resolved against the parent sitemap URL, and
 // a space in a URL is percent-encoded.
+// In both modes a URL has to name a host: one that names none is skipped and reported.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetStrict(strict bool) *S {
 	s.mu.Lock()
@@ -774,7 +777,8 @@ func (s *S) Parse(url string, urlContent *string) (*S, error) {
 	return s.ParseContext(context.Background(), url, urlContent)
 }
 
-// validateInputURL parses url and verifies it uses http or https and has a host.
+// validateInputURL parses url and verifies it uses http or https and names a host. A port is
+// no host: "https://:8080/sitemap.xml" names none.
 func (s *S) validateInputURL(url string) error {
 	parsedURL, parseErr := neturl.Parse(url)
 	if parseErr != nil {
@@ -783,7 +787,7 @@ func (s *S) validateInputURL(url string) error {
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
 		return &ValidationError{URL: url, Err: fmt.Errorf("invalid URL scheme %q: only http and https are supported", parsedURL.Scheme)}
 	}
-	if parsedURL.Host == "" {
+	if parsedURL.Hostname() == "" {
 		return &ValidationError{URL: url, Err: errors.New("missing host")}
 	}
 	return nil
@@ -908,6 +912,8 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	return s, nil
 }
 
+// GetErrorsCount returns the number of errors GetErrors returns.
+// It returns 0 for a nil *S.
 func (s *S) GetErrorsCount() int64 {
 	if s == nil {
 		return 0
@@ -917,6 +923,25 @@ func (s *S) GetErrorsCount() int64 {
 	return int64(len(s.errs))
 }
 
+// GetErrors returns the errors of the most recent Parse or ParseContext call, together with
+// the configuration errors that are outstanding: those recorded by a Set method that was
+// called with a value it does not accept, and not again with a valid one since.
+// The errors of a call are discarded when the next call starts; configuration errors are kept
+// until the setting is corrected.
+//
+// Each error is a *ConfigError, a *NetworkError, a *ParseError or a *ValidationError, to be
+// told apart with errors.As. They are in the order they were recorded in. With multi-threading
+// on, see SetMultiThread, that order is not the same from one call to the next for the errors
+// of different sitemaps.
+//
+// The error Parse or ParseContext returned is among them, unless it tells that configuration
+// errors are outstanding: then the configuration errors are. A call that returns a nil error
+// may have recorded errors as well, about sitemaps and entries it had to skip and about limits
+// it reached.
+//
+// While a call is running, GetErrors returns the errors recorded so far; those recorded
+// afterwards are not added to the slice it returned.
+// The slice that is returned must not be modified. It is nil for a nil *S.
 func (s *S) GetErrors() []error {
 	if s == nil {
 		return nil
@@ -1136,7 +1161,7 @@ func (s *S) fetch(ctx context.Context, url string) (string, string, error) {
 		return "", "", &NetworkError{URL: url, Err: fmt.Errorf("received HTTP status %d", response.StatusCode)}
 	}
 
-	body, err := readString(io.LimitReader(response.Body, maxResponseSize+1))
+	body, err := readAtMost(response.Body, maxResponseSize)
 	if err != nil {
 		return "", "", &NetworkError{URL: url, Err: err}
 	}
@@ -1169,6 +1194,18 @@ func readString(r io.Reader) (string, error) {
 	var content strings.Builder
 	_, err := io.CopyBuffer(&content, r, *buffer)
 	return content.String(), err
+}
+
+// readAtMost reads r like readString, but no further than one byte past limit. The one byte
+// tells content that exceeds the limit from content that fits it exactly: what is returned is
+// longer than limit then, while never more than limit+1 bytes are held in memory.
+// A limit of math.MaxInt64 has no byte past it, and nothing can exceed it: limit+1 would
+// overflow to a negative number, and a reader limited to that reads nothing at all.
+func readAtMost(r io.Reader, limit int64) (string, error) {
+	if limit < math.MaxInt64 {
+		limit++
+	}
+	return readString(io.LimitReader(r, limit))
 }
 
 // finalURL returns the URL the response to req was served from: url, the URL req was made for,
@@ -2324,9 +2361,12 @@ func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, 
 // In both modes, an empty loc is rejected: it is a location that is missing, not a relative
 // URL, and resolved as one it would name the sitemap itself. The error names that sitemap,
 // there being no location to name.
-// In both modes, URLs must not exceed 2048 characters (sitemaps.org specification).
+// In both modes, URLs must not exceed 2048 characters (sitemaps.org specification) and have to
+// name a host: a page or a sitemap is on one, and a URL without one cannot be requested.
 // In tolerant mode (strict=false), relative URLs are resolved against baseURL and a space in
-// the URL is percent-encoded before the length check.
+// the URL is percent-encoded before the length check. A reference that begins with "//" names
+// its host itself, see namesNoHost. What is returned is a URL neturl.Parse accepts: a location
+// that does not resolve to one is rejected.
 // In strict mode (strict=true), URLs must additionally be absolute HTTP(S) URLs without a
 // space or a control character in them, see strictURLError, on the same host and protocol as
 // baseURL, see sameHost.
@@ -2377,6 +2417,9 @@ func (s *S) resolveAndValidate(loc string, baseURL string, onBaseHost bool) (str
 	if resolved.Scheme != "http" && resolved.Scheme != "https" {
 		return loc, &ValidationError{URL: resolved.String(), Err: fmt.Errorf("unsupported scheme %q", resolved.Scheme)}
 	}
+	if resolved.Hostname() == "" || namesNoHost(loc, parsed) {
+		return loc, &ValidationError{URL: loc, Err: errors.New("missing host")}
+	}
 	// A space is no part of a URL, and a request for a URL with one in it is malformed. Those
 	// of the path and the fragment are percent-encoded already; this takes care of the rest,
 	// the ones of the query.
@@ -2384,19 +2427,38 @@ func (s *S) resolveAndValidate(loc string, baseURL string, onBaseHost bool) (str
 	if len(resolvedStr) > maxLocLength {
 		return loc, &ValidationError{URL: resolvedStr, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(resolvedStr))}
 	}
+	// neturl.Parse checks the host of a URL only when the URL names its scheme, so a reference
+	// such as "//::" is read without complaint and resolves to "https://::", which is no URL.
+	// Hence no URL is returned that has not been parsed the way it is returned: loc has been
+	// above, whatever differs from it is here.
+	if resolvedStr != loc {
+		if _, err := neturl.Parse(resolvedStr); err != nil {
+			return loc, &ValidationError{URL: loc, Err: err}
+		}
+	}
 
 	return resolvedStr, nil
 }
 
+// namesNoHost tells whether loc is a reference that begins with "//" and names no host after
+// it, such as "//", "//?page=2", "///page" or "//:8080/page". A reference that begins with
+// "//" gives the host itself and takes only the scheme from the URL it is resolved against, so
+// one that gives none has none. neturl resolves the first three to the host of the base URL
+// nevertheless, "//" to the base URL itself. parsed is loc as neturl.Parse reads it.
+func namesNoHost(loc string, parsed *neturl.URL) bool {
+	return strings.HasPrefix(loc, "//") && parsed.Hostname() == ""
+}
+
 // strictURLError tells what keeps rawURL from being a URL strict mode accepts: an absolute
 // HTTP or HTTPS URL that names a host and has neither a space nor a control character in it.
-// A URL has to give these percent-encoded, a space as "%20". parsed is rawURL as neturl.Parse
-// reads it. It returns nil for a URL that is one.
+// A URL has to give these percent-encoded, a space as "%20". A port is no host:
+// "https://:8080/" names none. parsed is rawURL as neturl.Parse reads it. It returns nil for a
+// URL that is one.
 func strictURLError(rawURL string, parsed *neturl.URL) error {
 	switch {
 	case parsed.Scheme != "http" && parsed.Scheme != "https":
 		return fmt.Errorf("strict mode: unsupported scheme %q", parsed.Scheme)
-	case parsed.Host == "":
+	case parsed.Hostname() == "":
 		return errors.New("strict mode: missing host")
 	case strings.Contains(rawURL, " "):
 		return errors.New("strict mode: URL contains a space")
@@ -2472,14 +2534,7 @@ func unzip(content string, maxSize int64) (string, error) {
 		_ = reader.Close()
 	}(reader)
 
-	// Read one byte past the limit so that a payload exceeding it can be told apart from one
-	// that fits exactly, while never buffering more than maxSize+1 bytes.
-	readLimit := maxSize
-	if readLimit < math.MaxInt64 {
-		readLimit++
-	}
-
-	uncompressed, err := readString(io.LimitReader(reader, readLimit))
+	uncompressed, err := readAtMost(reader, maxSize)
 	if err != nil {
 		return uncompressed, fmt.Errorf("gzip decompression failed: %w", err)
 	}

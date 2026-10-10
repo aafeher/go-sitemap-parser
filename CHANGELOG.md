@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-10
+
+### Added
+- Package documentation: an overview of what the package does, the formats it reads, how it is configured, how errors are reported and what is safe to do concurrently. `go doc` and pkg.go.dev had nothing to show for the package itself.
+- Documentation for `GetErrors()` and `GetErrorsCount()`, the two exported methods that had none: which errors are returned and for how long they are kept, their types and order, how they relate to the error `Parse()` / `ParseContext()` return, and that the slice returned must not be modified. The `Error()` methods of the four error types are documented with the message they return.
+
+### Fixed
+- Tolerant mode no longer returns a URL that is none. `net/url` checks the host of a URL only when the URL names its scheme, so a relative location that begins with `//` and gives something else than a host after it, such as `//::` or `//example.com:80:80/page`, was read without complaint and resolved to `https://::` or `https://example.com:80:80/page`, which `net/url` itself cannot parse. In a `<urlset>`, an RSS or an Atom feed such a location was returned by `GetURLs()`; in a sitemap index or a `robots.txt` it was reported as the `*NetworkError` of a request that could not be built. It is now skipped and reported as a `*ValidationError` that wraps the error of `net/url`: `validate "//::": parse "https://::": invalid port "::" after host`
+- A location has to name a host in tolerant mode as well. `https:///page`, `https:page`, `https:` and `https://:8080/page`, which names a port but no host, passed for HTTP(S) URLs. A `<urlset>`, an RSS or an Atom feed returned them by `GetURLs()`, and so did a text sitemap, which takes a line that begins with `https://` for an entry. For a sitemap index or a `robots.txt` a request was attempted, see `Security` below for the one that names a port; the others were reported as the `*NetworkError` of the request (`http: no Host in request URL`). They are now skipped and reported as a `*ValidationError` (`validate "https:///page": missing host`) without a request
+- A relative location that begins with `//` and names no host after it (`//`, `//?page=2`, `///page`) is rejected in tolerant mode with the same error. It was resolved to the host of the sitemap, and `//` to the URL of the sitemap itself: the sitemap was returned as one of its own pages, and a sitemap index or a `robots.txt` with such an entry was fetched a second time
+- A port is no longer taken for a host. `https://:8080/sitemap.xml` names no host, but passed the check for one in three places: passed to `Parse()` / `ParseContext()` it was requested instead of being turned down with a `*ValidationError`, as the value of a `Sitemap:` line of a `robots.txt` it was requested in strict mode, and as the URL of an image, of a video thumbnail or of an alternate link it was accepted in strict mode. All three report `missing host` now. As the `<loc>` of an entry strict mode rejected it before as well, for not being on the host of the sitemap; that error reads `strict mode: missing host` now
+- `SetMaxResponseSize(math.MaxInt64)` no longer makes every response an empty one. A response is read one byte past the limit, the byte that tells whether it exceeds the limit. For the largest `int64` there is that sum overflowed to a negative number, and a read limited to a negative number of bytes reads nothing: every sitemap that was fetched was reported as `sitemap content is empty`, and `Parse()` failed with that `*ParseError` for the URL passed to it. The largest limit is now read without the extra byte, as it already was when gzip content is decompressed
+- `examples/rss`, `examples/atom` and `examples/text` work again. They requested files of this repository that do not exist, and printed the `*NetworkError` of the `404` response. Each one now parses a document that is passed in directly, so it runs without network access, and shows which links of a feed and which lines of a text sitemap are taken for pages. `README.md` describes the same under `Formats supported` and links the three examples
+- `examples/geturls`, `examples/getrandomurls`, `examples/rules` and `examples/advanced` print the value of `ChangeFreq` (`daily`) instead of the address of the pointer to it (`0xc000012345`)
+
+### Security
+- A URL that names a port but no host, such as `http://:8080/sitemap.xml`, is no longer requested. Go's HTTP client sends the request for such a URL to the machine the parser runs on. A sitemap index in tolerant mode, and a `robots.txt` in both modes, could therefore make the parser fetch from a local port without naming `localhost` or a loopback address, which a check of the host name in a custom `*http.Client` may not reckon with. The URL is rejected as a `*ValidationError` (`missing host`) before anything is requested, see `Fixed` above. `SECURITY.md` names the host among the conditions for a URL to be requested
+
 ## [1.2.0] - 2026-10-10
 
 ### Added
@@ -290,7 +308,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each parsed `URL` exposes `Loc`, `LastMod`, `ChangeFreq`, and `Priority`
 - Method chaining (fluent interface) on all setters
 
-[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/aafeher/go-sitemap-parser/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/aafeher/go-sitemap-parser/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.1...v1.0.2
