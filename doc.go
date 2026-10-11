@@ -18,7 +18,8 @@
 //
 // The sitemaps the call found on its way, the ones a robots.txt names and a
 // sitemap index lists, are returned by [S.GetSitemaps], whether or not they
-// were fetched, see [Sitemap].
+// were fetched, and with the date a sitemap index gives for them, see
+// [Sitemap].
 //
 // # Formats
 //
@@ -26,8 +27,10 @@
 // Atom 1.0 feed, or a plain text file with a URL on a line. A sitemap and a
 // sitemap index may be gzip compressed. An entry of a <urlset> is returned
 // with its <lastmod>, <changefreq> and <priority>, and with what the image,
-// news, video and hreflang extensions say about the page, see [URL]. Nothing
-// but the location of a page is taken from a feed or a text file.
+// news, video and hreflang extensions say about the page, see [URL]. Of a feed,
+// the location of a page and the date it was last modified are taken: the
+// <pubDate> of an RSS item and the <updated> of an Atom entry. A text file
+// gives nothing but the location.
 //
 // # Configuration
 //

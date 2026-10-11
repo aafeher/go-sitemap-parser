@@ -12834,6 +12834,593 @@ func TestS_listSitemap(t *testing.T) {
 	})
 }
 
+// dateText returns date in UTC and in the format of RFC 3339, and "-" for no
+// date.
+func dateText(date *LastModTime) string {
+	if date == nil {
+		return "-"
+	}
+	return date.UTC().Format(time.RFC3339Nano)
+}
+
+// datedLocs returns the locations of the URLs s has collected, each followed
+// by the date of the URL, in a slice that is never nil.
+func datedLocs(s *S) []string {
+	list := []string{}
+	for _, u := range s.GetURLs() {
+		list = append(list, u.Loc+" "+dateText(u.LastMod))
+	}
+	return list
+}
+
+// datedSitemaps returns the locations of the sitemaps s has listed, each
+// followed by the date of the sitemap, in a slice that is never nil.
+func datedSitemaps(s *S) []string {
+	list := []string{}
+	for _, sitemap := range s.GetSitemaps() {
+		list = append(list, sitemap.Loc+" "+dateText(sitemap.LastMod))
+	}
+	return list
+}
+
+// requireValidationError verifies that err is a *ValidationError for url with
+// the given reason.
+func requireValidationError(t *testing.T, err error, url, reason string) {
+	t.Helper()
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("got %T (%v), want a *ValidationError", err, err)
+	}
+	mustEqual(t, "URL of the error", validationErr.URL, url)
+	mustEqual(t, "reason of the error", validationErr.Err.Error(), reason)
+}
+
+// TestParseRFC822Time verifies the format the <pubDate> of an RSS item is read
+// in, the date and time of RFC 822: with and without the day of the week and
+// the seconds, with a day of one digit and a year of two, and with the time
+// zone given as an offset or by one of the names the RFC knows. A name is the
+// zone the RFC says it is, whatever the time zone of the machine.
+func TestParseRFC822Time(t *testing.T) {
+	at := func(year, day, hour, minute, second int) time.Time {
+		return time.Date(year, 1, day, hour, minute, second, 0, time.UTC)
+	}
+	valid := []struct {
+		text string
+		want time.Time
+	}{
+		{"Mon, 15 Jan 2024 10:30:45 GMT", at(2024, 15, 10, 30, 45)},
+		{"Mon, 15 Jan 2024 10:30 GMT", at(2024, 15, 10, 30, 0)},
+		{"15 Jan 2024 10:30:45 GMT", at(2024, 15, 10, 30, 45)},
+		{"15 Jan 2024 10:30 GMT", at(2024, 15, 10, 30, 0)},
+		{"Mon, 15 Jan 24 10:30:45 GMT", at(2024, 15, 10, 30, 45)},
+		{"Mon, 15 Jan 24 10:30 GMT", at(2024, 15, 10, 30, 0)},
+		{"15 Jan 24 10:30:45 GMT", at(2024, 15, 10, 30, 45)},
+		{"15 Jan 24 10:30 GMT", at(2024, 15, 10, 30, 0)},
+		// A day of one digit, written either way.
+		{"Fri, 5 Jan 2024 10:30:45 GMT", at(2024, 5, 10, 30, 45)},
+		{"Fri, 05 Jan 2024 10:30:45 GMT", at(2024, 5, 10, 30, 45)},
+		{"5 Jan 24 10:30 GMT", at(2024, 5, 10, 30, 0)},
+		// A year of two digits is one of 1969 to 2068.
+		{"15 Jan 68 10:30 GMT", at(2068, 15, 10, 30, 0)},
+		{"15 Jan 69 10:30 GMT", at(1969, 15, 10, 30, 0)},
+		{"15 Jan 99 10:30 GMT", at(1999, 15, 10, 30, 0)},
+		{"15 Jan 00 10:30 GMT", at(2000, 15, 10, 30, 0)},
+		// The offset of the time zone.
+		{"Mon, 15 Jan 2024 10:30:45 +0000", at(2024, 15, 10, 30, 45)},
+		{"Mon, 15 Jan 2024 10:30:45 -0000", at(2024, 15, 10, 30, 45)},
+		{"Mon, 15 Jan 2024 10:30:45 +0100", at(2024, 15, 9, 30, 45)},
+		{"Mon, 15 Jan 2024 10:30:45 -0830", at(2024, 15, 19, 0, 45)},
+		{"Mon, 15 Jan 2024 23:30:45 -0100", at(2024, 16, 0, 30, 45)},
+		// The letter case of the names and the whitespace between the parts.
+		{"mon, 15 jan 2024 10:30:45 gmt", at(2024, 15, 10, 30, 45)},
+		{"MON, 15 JAN 2024 10:30:45 Gmt", at(2024, 15, 10, 30, 45)},
+		{"  Mon,   15 Jan\t2024\n    10:30:45   GMT\n", at(2024, 15, 10, 30, 45)},
+		// The day of the week is not checked against the date.
+		{"Sun, 15 Jan 2024 10:30:45 GMT", at(2024, 15, 10, 30, 45)},
+	}
+	for _, test := range valid {
+		t.Run(fmt.Sprintf("%q", test.text), func(t *testing.T) {
+			got, err := parseRFC822Time(test.text)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !got.Equal(test.want) {
+				t.Errorf("got %v, want %v", got.Time, test.want)
+			}
+		})
+	}
+
+	// The names of the time zones, and how many hours each is ahead of UTC.
+	zones := map[string]int{
+		"UT": 0, "GMT": 0, "UTC": 0, "Z": 0,
+		"EST": -5, "EDT": -4, "CST": -6, "CDT": -5, "MST": -7, "MDT": -6, "PST": -8, "PDT": -7,
+	}
+	mustEqual(t, "number of zones", len(rfc822Zones), len(zones))
+	for name, hours := range zones {
+		for _, written := range []string{name, strings.ToLower(name)} {
+			t.Run("zone "+written, func(t *testing.T) {
+				got, err := parseRFC822Time("Mon, 15 Jan 2024 10:30:45 " + written)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if want := at(2024, 15, 10-hours, 30, 45); !got.Equal(want) {
+					t.Errorf("got %v, want %v", got.Time, want)
+				}
+				_, offset := got.Zone()
+				mustEqual(t, "offset of the zone", offset, hours*3600)
+			})
+		}
+	}
+
+	invalid := []string{
+		"",
+		" \t\n",
+		"GMT",
+		"yesterday",
+		// No time zone, one the RFC does not know, and the ones it got wrong.
+		"Mon, 15 Jan 2024 10:30:45",
+		"Mon, 15 Jan 2024 10:30:45 CET",
+		"Mon, 15 Jan 2024 10:30:45 A",
+		"Mon, 15 Jan 2024 10:30:45 N",
+		"Mon, 15 Jan 2024 10:30:45 eſt",
+		"Mon, 15 Jan 2024 10:30:45 +01:00",
+		"Mon, 15 Jan 2024 10:30:45 +01",
+		"Mon, 15 Jan 2024 10:30:45 GMT GMT",
+		"Mon, 15 Jan 2024 10:30:45GMT",
+		// The names written out, and other formats.
+		"Monday, 15 Jan 2024 10:30:45 GMT",
+		"Mon, 15 January 2024 10:30:45 GMT",
+		"Mon 15 Jan 2024 10:30:45 GMT",
+		"2024-01-15T10:30:45Z",
+		"2024-01-15",
+		// Parts that are missing or out of range.
+		"Mon, 15 Jan 2024 GMT",
+		"Mon, 15 Jan 10:30:45 GMT",
+		"Mon, 15 Jan 124 10:30:45 GMT",
+		"Mon, 30 Feb 2024 10:30:45 GMT",
+		"Mon, 15 Jan 2024 24:30:45 GMT",
+		"Mon, 15 Jan 2024 10:60:45 GMT",
+	}
+	for _, text := range invalid {
+		t.Run(fmt.Sprintf("%q", text), func(t *testing.T) {
+			got, err := parseRFC822Time(text)
+			if err == nil {
+				t.Fatalf("got %v, want an error", got.Time)
+			}
+			mustEqual(t, "error", err.Error(), fmt.Sprintf("unsupported date format of RFC 822: %q", strings.TrimSpace(text)))
+			mustEqual(t, "date", got.IsZero(), true)
+		})
+	}
+}
+
+// TestS_lastMod verifies how an optional date element is read: one that is
+// absent or empty holds no date and is no mistake, and one that cannot be
+// parsed holds no date either and is reported for the URL it belongs to.
+func TestS_lastMod(t *testing.T) {
+	const loc = "https://example.com/page"
+	date := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	parse := func(text string) (LastModTime, error) {
+		if text != " valid " {
+			return LastModTime{}, errors.New("not valid")
+		}
+		return LastModTime{date}, nil
+	}
+
+	for _, element := range []dateElement{
+		{},
+		{name: "<when>", parse: parse},
+		{name: "<when>", text: pointerOfString(""), parse: parse},
+		{name: "<when>", text: pointerOfString(" \t\r\n"), parse: parse},
+	} {
+		s := New()
+		if got := s.lastMod(loc, element); got != nil {
+			t.Errorf("%+v: got %v, want no date", element, got.Time)
+		}
+		mustEqual(t, "errors", len(s.errs), 0)
+	}
+
+	s := New()
+	got := s.lastMod(loc, dateElement{name: "<when>", text: pointerOfString(" valid "), parse: parse})
+	if got == nil || !got.Equal(date) {
+		t.Errorf("got %v, want %v", got, date)
+	}
+	mustEqual(t, "errors", len(s.errs), 0)
+
+	if got := s.lastMod(loc, dateElement{name: "<when>", text: pointerOfString("\n  some day\n"), parse: parse}); got != nil {
+		t.Errorf("got %v, want no date", got.Time)
+	}
+	mustEqual(t, "errors", len(s.errs), 1)
+	requireValidationError(t, s.errs[0], loc, `invalid <when> value "some day"`)
+}
+
+// TestS_Parse_RSS_PubDate verifies that the <pubDate> of an RSS item is
+// returned as the date of its URL, in both modes: the date of the item itself
+// and not one of the channel, nil where the item has none or an empty one, and
+// nil with an error where it cannot be parsed. Such a date costs only itself.
+// An item that is not returned is not reported for its date.
+func TestS_Parse_RSS_PubDate(t *testing.T) {
+	const url = "https://example.com/feed.xml"
+	content := `<rss version="2.0"><channel>
+<pubDate>Sat, 13 Jan 2024 08:00:00 GMT</pubDate>
+<lastBuildDate>Sun, 14 Jan 2024 08:00:00 GMT</lastBuildDate>
+<item><link>https://example.com/dated</link><pubDate>Mon, 15 Jan 2024 10:30:00 +0100</pubDate></item>
+<item><link>https://example.com/undated</link></item>
+<item><link>https://example.com/empty</link><pubDate></pubDate></item>
+<item><link>https://example.com/blank</link><pubDate>
+  </pubDate></item>
+<item><link>https://example.com/padded</link><pubDate>
+    Tue, 16 Jan 2024 08:00:00 EST
+</pubDate></item>
+<item><link>https://example.com/invalid</link><pubDate> 2024-01-15T10:30:00Z </pubDate></item>
+<item><pubDate>not a date</pubDate></item>
+<item><link>ftp://example.com/rejected</link><pubDate>not a date either</pubDate></item>
+</channel></rss>`
+	all := []string{
+		"https://example.com/dated 2024-01-15T09:30:00Z",
+		"https://example.com/undated -",
+		"https://example.com/empty -",
+		"https://example.com/blank -",
+		"https://example.com/padded 2024-01-16T13:00:00Z",
+		"https://example.com/invalid -",
+	}
+
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			s := New().SetStrict(strict)
+			requireParse(t, s, url, &content)
+
+			assertStringSlice(t, "URLs", datedLocs(s), all)
+			errs := s.GetErrors()
+			mustEqual(t, "errors", len(errs), 2)
+			requireValidationError(t, errs[0], "https://example.com/invalid", `invalid <pubDate> value "2024-01-15T10:30:00Z"`)
+			mustEqual(t, "error", errs[0].Error(), `validate "https://example.com/invalid": invalid <pubDate> value "2024-01-15T10:30:00Z"`)
+			var rejected *ValidationError
+			if !errors.As(errs[1], &rejected) || rejected.URL != "ftp://example.com/rejected" {
+				t.Errorf("got %v, want the error of the location that is rejected", errs[1])
+			}
+			for _, u := range s.GetURLs() {
+				if u.ChangeFreq != nil || u.Priority != nil {
+					t.Errorf("%s: got a change frequency or a priority, want none", u.Loc)
+				}
+			}
+		})
+
+		t.Run(fmt.Sprintf("strict=%v, rules", strict), func(t *testing.T) {
+			s := New().SetStrict(strict).SetRules([]string{`/dated$`})
+			requireParse(t, s, url, &content)
+
+			// The date is reported whether or not the rules take the URL.
+			assertStringSlice(t, "URLs", datedLocs(s), all[:1])
+			mustEqual(t, "errors", s.GetErrorsCount(), 2)
+		})
+
+		t.Run(fmt.Sprintf("strict=%v, limit", strict), func(t *testing.T) {
+			s := New().SetStrict(strict).SetMaxURLs(5)
+			requireParse(t, s, url, &content)
+
+			// The items there is no room for are left out unread.
+			assertStringSlice(t, "URLs", datedLocs(s), all[:5])
+			limits, others := limitErrors(t, s, url)
+			mustEqual(t, "limit errors", len(limits), 1)
+			assertStringSlice(t, "other errors", others, []string{})
+		})
+	}
+}
+
+// TestS_Parse_Atom_Updated verifies that the <updated> of an Atom entry is
+// returned as the date of its URL, in both modes: the date of the entry itself
+// and neither that of the feed nor that of the source of the entry, in each of
+// the formats a <lastmod> may be in, nil where the entry has none or an empty
+// one, and nil with an error where it cannot be parsed.
+func TestS_Parse_Atom_Updated(t *testing.T) {
+	const url = "https://example.com/feed.xml"
+	content := `<feed xmlns="http://www.w3.org/2005/Atom">
+<updated>2024-01-13T08:00:00Z</updated>
+<entry><link href="https://example.com/dated"/><updated>2024-01-15T10:30:00+01:00</updated><published>2023-01-01T00:00:00Z</published></entry>
+<entry><link href="https://example.com/undated"/><published>2023-01-01T00:00:00Z</published><source><updated>2024-01-14T08:00:00Z</updated></source></entry>
+<entry><link href="https://example.com/empty"/><updated/></entry>
+<entry><link href="https://example.com/blank"/><updated>
+  </updated></entry>
+<entry><link href="https://example.com/padded"/><updated>
+    2024-01-16T08:00:00.5Z
+</updated></entry>
+<entry><link href="https://example.com/day"/><updated>2024-01-17</updated></entry>
+<entry><link href="https://example.com/invalid"/><updated> Mon, 15 Jan 2024 10:30:00 GMT </updated></entry>
+<entry><updated>not a date</updated></entry>
+<entry><link href="ftp://example.com/rejected"/><updated>not a date either</updated></entry>
+</feed>`
+	all := []string{
+		"https://example.com/dated 2024-01-15T09:30:00Z",
+		"https://example.com/undated -",
+		"https://example.com/empty -",
+		"https://example.com/blank -",
+		"https://example.com/padded 2024-01-16T08:00:00.5Z",
+		"https://example.com/day 2024-01-17T00:00:00Z",
+		"https://example.com/invalid -",
+	}
+
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			s := New().SetStrict(strict)
+			requireParse(t, s, url, &content)
+
+			assertStringSlice(t, "URLs", datedLocs(s), all)
+			errs := s.GetErrors()
+			mustEqual(t, "errors", len(errs), 2)
+			requireValidationError(t, errs[0], "https://example.com/invalid", `invalid <updated> value "Mon, 15 Jan 2024 10:30:00 GMT"`)
+			var rejected *ValidationError
+			if !errors.As(errs[1], &rejected) || rejected.URL != "ftp://example.com/rejected" {
+				t.Errorf("got %v, want the error of the location that is rejected", errs[1])
+			}
+		})
+
+		t.Run(fmt.Sprintf("strict=%v, rules", strict), func(t *testing.T) {
+			s := New().SetStrict(strict).SetRules([]string{`/day$`})
+			requireParse(t, s, url, &content)
+
+			assertStringSlice(t, "URLs", datedLocs(s), all[5:6])
+			mustEqual(t, "errors", s.GetErrorsCount(), 2)
+		})
+	}
+}
+
+// TestS_Parse_Text_NoDate verifies that a URL of a text sitemap, which gives
+// no date, has none.
+func TestS_Parse_Text_NoDate(t *testing.T) {
+	content := "https://example.com/a\nhttps://example.com/b\n"
+	s := New()
+	requireParse(t, s, "https://example.com/sitemap.txt", &content)
+
+	assertStringSlice(t, "URLs", datedLocs(s), []string{"https://example.com/a -", "https://example.com/b -"})
+	mustEqual(t, "errors", s.GetErrorsCount(), 0)
+}
+
+// TestS_GetSitemaps_LastMod verifies that the <lastmod> of an entry of a
+// sitemap index is returned as the date of the sitemap, in both modes: nil
+// where the entry has none or an empty one, and nil with an error where it
+// cannot be parsed. Such a date costs only itself: the sitemap is listed, and
+// it is among the ones to fetch. An entry that is not listed is not reported
+// for its date.
+func TestS_GetSitemaps_LastMod(t *testing.T) {
+	const url = "https://example.com/index.xml"
+	content := `<sitemapindex>
+<sitemap><loc>https://example.com/dated.xml</loc><lastmod>2024-01-15T10:30:00+01:00</lastmod></sitemap>
+<sitemap><loc>https://example.com/undated.xml</loc></sitemap>
+<sitemap><loc>https://example.com/empty.xml</loc><lastmod></lastmod></sitemap>
+<sitemap><loc>https://example.com/blank.xml</loc><lastmod>
+  </lastmod></sitemap>
+<sitemap><loc>https://example.com/day.xml</loc><lastmod>
+    2024-01-17
+</lastmod></sitemap>
+<sitemap><loc>https://example.com/invalid.xml</loc><lastmod> 2024-01-15 10:30:00 </lastmod></sitemap>
+<sitemap><lastmod>not a date</lastmod></sitemap>
+<sitemap><loc>ftp://example.com/rejected.xml</loc><lastmod>not a date either</lastmod></sitemap>
+</sitemapindex>`
+	listed := []string{
+		"https://example.com/dated.xml 2024-01-15T09:30:00Z",
+		"https://example.com/undated.xml -",
+		"https://example.com/empty.xml -",
+		"https://example.com/blank.xml -",
+		"https://example.com/day.xml 2024-01-17T00:00:00Z",
+		"https://example.com/invalid.xml -",
+	}
+	locs := []string{
+		"https://example.com/dated.xml",
+		"https://example.com/undated.xml",
+		"https://example.com/empty.xml",
+		"https://example.com/blank.xml",
+		"https://example.com/day.xml",
+		"https://example.com/invalid.xml",
+	}
+
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			s := New().SetStrict(strict)
+			followNone(s)
+			requireParse(t, s, url, &content)
+
+			assertStringSlice(t, "sitemaps listed", datedSitemaps(s), listed)
+			mustEqual(t, "GetSitemapCount", s.GetSitemapCount(), int64(len(listed)))
+			errs := s.GetErrors()
+			mustEqual(t, "errors", len(errs), 3)
+			requireValidationError(t, errs[0], "https://example.com/invalid.xml", `invalid <lastmod> value "2024-01-15 10:30:00"`)
+			mustEqual(t, "error", errs[0].Error(), `validate "https://example.com/invalid.xml": invalid <lastmod> value "2024-01-15 10:30:00"`)
+			requireValidationError(t, errs[1], url, "<loc> of an entry is empty or missing")
+			var rejected *ValidationError
+			if !errors.As(errs[2], &rejected) || rejected.URL != "ftp://example.com/rejected.xml" {
+				t.Errorf("got %v, want the error of the location that is rejected", errs[2])
+			}
+		})
+
+		t.Run(fmt.Sprintf("strict=%v, sitemaps to fetch", strict), func(t *testing.T) {
+			s := New().SetStrict(strict)
+			assertStringSlice(t, "sitemaps to fetch", s.parse(url, content), locs)
+		})
+	}
+}
+
+// TestS_GetSitemaps_LastMod_Fetched verifies on a site that a sitemap whose
+// date cannot be parsed is fetched like any other, in both modes, and that a
+// sitemap which a robots.txt names and a sitemap index lists has the date the
+// index gives for it, whichever of the two is read first.
+func TestS_GetSitemaps_LastMod_Fetched(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/robots.txt":
+			_, _ = fmt.Fprintf(w, "Sitemap: %[1]s/b.xml\nSitemap: %[1]s/index.xml\nSitemap: %[1]s/c.xml\n", server.URL)
+		case "/index.xml":
+			_, _ = fmt.Fprintf(w, `<sitemapindex>
+<sitemap><loc>%[1]s/a.xml</loc><lastmod>yesterday</lastmod></sitemap>
+<sitemap><loc>%[1]s/b.xml</loc><lastmod>2024-01-15</lastmod></sitemap>
+<sitemap><loc>%[1]s/c.xml</loc><lastmod>2024-01-16</lastmod></sitemap>
+</sitemapindex>`, server.URL)
+		default:
+			_, _ = fmt.Fprintf(w, `<urlset><url><loc>%s%s/page</loc></url></urlset>`, server.URL, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	for _, strict := range []bool{false, true} {
+		for _, multiThread := range []bool{false, true} {
+			t.Run(fmt.Sprintf("strict=%v, multiThread=%v", strict, multiThread), func(t *testing.T) {
+				s := New().SetStrict(strict).SetMultiThread(multiThread)
+				requireParse(t, s, server.URL+"/robots.txt", nil)
+
+				assertStringSlice(t, "sitemaps listed", sortedCopy(datedSitemaps(s)), []string{
+					server.URL + "/a.xml -",
+					server.URL + "/b.xml 2024-01-15T00:00:00Z",
+					server.URL + "/c.xml 2024-01-16T00:00:00Z",
+					server.URL + "/index.xml -",
+				})
+				assertStringSlice(t, "URLs", sortedCopy(locsOf(s)), []string{
+					server.URL + "/a.xml/page",
+					server.URL + "/b.xml/page",
+					server.URL + "/c.xml/page",
+				})
+				errs := s.GetErrors()
+				mustEqual(t, "errors", len(errs), 1)
+				requireValidationError(t, errs[0], server.URL+"/a.xml", `invalid <lastmod> value "yesterday"`)
+			})
+		}
+	}
+}
+
+// TestS_listSitemap_LastMod verifies which date a sitemap has that is listed
+// more than once: the latest of the dates it is listed with, and a date where
+// one of the listings has none. Neither the order of the listings nor the
+// limit on the sitemaps of the call makes a difference, and the sitemap stays
+// where it was listed first.
+func TestS_listSitemap_LastMod(t *testing.T) {
+	const loc = "https://example.com/sitemap.xml"
+	earlier := &LastModTime{time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)}
+	later := &LastModTime{time.Date(2024, 1, 15, 10, 30, 1, 0, time.UTC)}
+	// The same time as earlier, in another time zone.
+	same := &LastModTime{time.Date(2024, 1, 15, 11, 30, 0, 0, time.FixedZone("", 3600))}
+
+	tests := []struct {
+		name  string
+		dates []*LastModTime
+		want  *LastModTime
+	}{
+		{"no date", []*LastModTime{nil, nil}, nil},
+		{"date after none", []*LastModTime{nil, earlier}, earlier},
+		{"none after a date", []*LastModTime{earlier, nil}, earlier},
+		{"later date after earlier", []*LastModTime{earlier, later}, later},
+		{"earlier date after later", []*LastModTime{later, earlier}, later},
+		{"same date again", []*LastModTime{earlier, same}, earlier},
+		{"same date again, the other way round", []*LastModTime{same, earlier}, same},
+		{"several", []*LastModTime{nil, earlier, nil, later, same, nil}, later},
+	}
+	for _, test := range tests {
+		for _, maxSitemaps := range []int{0, 1} {
+			t.Run(fmt.Sprintf("%s, limit of %d", test.name, maxSitemaps), func(t *testing.T) {
+				s := New()
+				s.limits.maxSitemaps = maxSitemaps
+				for _, date := range test.dates {
+					s.listSitemap(Sitemap{Loc: loc, LastMod: date})
+				}
+
+				mustEqual(t, "sitemaps listed", len(s.sitemaps), 1)
+				mustEqual(t, "location", s.sitemaps[0].Loc, loc)
+				mustEqual(t, "date", s.sitemaps[0].LastMod, test.want)
+				mustEqual(t, "sitemaps left out", s.limits.sitemapsLeftOut, false)
+			})
+		}
+	}
+
+	t.Run("the sitemap the date is of", func(t *testing.T) {
+		s := New()
+		for _, name := range []string{"a", "b", "c"} {
+			s.listSitemap(Sitemap{Loc: name})
+		}
+		s.listSitemap(Sitemap{Loc: "b", LastMod: earlier})
+		s.listSitemap(Sitemap{Loc: "c", LastMod: later})
+		s.listSitemap(Sitemap{Loc: "a"})
+
+		assertStringSlice(t, "sitemaps listed", datedSitemaps(s), []string{"a -", "b 2024-01-15T10:30:00Z", "c 2024-01-15T10:30:01Z"})
+	})
+
+	t.Run("sitemap left out", func(t *testing.T) {
+		s := New()
+		s.limits.maxSitemaps = 1
+		s.listSitemap(Sitemap{Loc: "a"})
+		s.listSitemap(Sitemap{Loc: "b", LastMod: later})
+		s.listSitemap(Sitemap{Loc: "a", LastMod: earlier})
+
+		assertStringSlice(t, "sitemaps listed", datedSitemaps(s), []string{"a 2024-01-15T10:30:00Z"})
+		mustEqual(t, "sitemaps left out", s.limits.sitemapsLeftOut, true)
+	})
+
+	t.Run("documents", func(t *testing.T) {
+		const url = "https://example.com/index.xml"
+		index := func(lastMod string) string {
+			return `<sitemapindex><sitemap><loc>` + loc + `</loc>` + lastMod + `</sitemap></sitemapindex>`
+		}
+		contents := []string{
+			index(``),
+			index(`<lastmod>2024-01-15</lastmod>`),
+			index(`<lastmod>2024-01-17</lastmod>`),
+			index(`<lastmod>2024-01-16</lastmod>`),
+			index(`<lastmod>some day</lastmod>`),
+		}
+
+		s := New()
+		for _, content := range contents {
+			document := s.newDocument()
+			document.parse(url, content)
+			s.addDocument(document)
+		}
+		assertStringSlice(t, "sitemaps listed", datedSitemaps(s), []string{loc + " 2024-01-17T00:00:00Z"})
+		mustEqual(t, "errors", len(s.errs), 1)
+
+		// The other way round.
+		s = New()
+		for i := len(contents) - 1; i >= 0; i-- {
+			document := s.newDocument()
+			document.parse(url, contents[i])
+			s.addDocument(document)
+		}
+		assertStringSlice(t, "sitemaps listed", datedSitemaps(s), []string{loc + " 2024-01-17T00:00:00Z"})
+	})
+}
+
+// TestS_GetSitemaps_LastMod_Copy verifies that the dates of the sitemaps
+// GetSitemaps returns are copies as the slice is: a caller that changes one
+// changes neither what the instance keeps nor what another caller is given.
+func TestS_GetSitemaps_LastMod_Copy(t *testing.T) {
+	content := `<sitemapindex>
+<sitemap><loc>https://example.com/a.xml</loc><lastmod>2024-01-15</lastmod></sitemap>
+<sitemap><loc>https://example.com/b.xml</loc></sitemap>
+<sitemap><loc>https://example.com/c.xml</loc><lastmod>2024-01-17</lastmod></sitemap>
+</sitemapindex>`
+	want := []string{
+		"https://example.com/a.xml 2024-01-15T00:00:00Z",
+		"https://example.com/b.xml -",
+		"https://example.com/c.xml 2024-01-17T00:00:00Z",
+	}
+	s := New()
+	followNone(s)
+	requireParse(t, s, "https://example.com/index.xml", &content)
+
+	first, second := s.GetSitemaps(), s.GetSitemaps()
+	assertStringSlice(t, "sitemaps listed", datedSitemaps(s), want)
+	for i := range first {
+		if first[i].LastMod != nil && first[i].LastMod == second[i].LastMod {
+			t.Errorf("%s: two calls return the same date, want a copy for each", first[i].Loc)
+		}
+	}
+
+	*first[0].LastMod = LastModTime{time.Date(1999, 12, 31, 0, 0, 0, 0, time.UTC)}
+	first[2].LastMod = nil
+	first[1].LastMod = &LastModTime{time.Date(1999, 12, 31, 0, 0, 0, 0, time.UTC)}
+
+	assertStringSlice(t, "sitemaps listed", datedSitemaps(s), want)
+	mustEqual(t, "date of the other caller", dateText(second[0].LastMod), "2024-01-15T00:00:00Z")
+	mustEqual(t, "date of the other caller", dateText(second[2].LastMod), "2024-01-17T00:00:00Z")
+}
+
 func configsEqual(c1, c2 config) bool {
 	return c1.fetchTimeout == c2.fetchTimeout &&
 		c1.userAgent == c2.userAgent &&

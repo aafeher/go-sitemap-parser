@@ -105,9 +105,10 @@ func (e *ParseError) Unwrap() error {
 //	}
 type ValidationError struct {
 	// URL is the URL value being validated. When it is not a URL that was rejected, it is the
-	// URL the rejected value belongs to: the page for a value of a <url> entry, the sitemap
-	// for an entry without a location. For a sitemap reached through a redirect that is the
-	// URL the sitemap was served from.
+	// URL the rejected value belongs to: the page for a value of a <url> entry and for the
+	// date of an entry of a feed, the sitemap a sitemap index lists for the date the index
+	// gives for it, and the sitemap an entry stands in for an entry without a location. For
+	// a sitemap reached through a redirect the latter is the URL the sitemap was served from.
 	// May be empty for field-level errors where no specific URL is available.
 	URL string
 	// Err is the underlying validation error.
