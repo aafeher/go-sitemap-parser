@@ -43,11 +43,11 @@ type (
 		// from multiple sitemap indexes or robots.txt directives.
 		fetchedURLs map[string]struct{}
 		// sitemaps are the sitemaps the documents of the current Parse call list, each of
-		// them once and in the order they were found, and listedURLs holds the URL of each
-		// of them. There are no more of them than the limit set with SetMaxSitemaps allows:
-		// how many sitemaps the documents list is up to the server.
+		// them once and in the order they were found, and listedURLs tells where in them the
+		// sitemap of a URL is. There are no more of them than the limit set with
+		// SetMaxSitemaps allows: how many sitemaps the documents list is up to the server.
 		sitemaps   []Sitemap
-		listedURLs map[string]struct{}
+		listedURLs map[string]int
 		urls       []URL
 		errs       []error
 		// sem is a per-Parse-call semaphore that bounds the number of
@@ -99,7 +99,8 @@ type (
 		rulesRegexes    []*regexp.Regexp
 	}
 
-	// sitemapIndex is a structure of <sitemapindex>
+	// sitemapIndex is a structure of <sitemapindex>. The <lastmod> of an entry is read as
+	// text, so that one that cannot be parsed costs only itself, see urlEntry.
 	sitemapIndex struct {
 		XMLName xml.Name `xml:"sitemapindex"`
 		Sitemap []struct {
@@ -149,17 +150,31 @@ type (
 		text    string
 	}
 
-	// rss is a structure of <rss> for RSS 2.0 feeds.
+	// dateElement is an optional element that holds a date, as it was read from a document.
+	// Its zero value stands for a date that the document has no element for.
+	dateElement struct {
+		// name names the element the way error messages do, e.g. "<pubDate>".
+		name string
+		// text is the content of the element. It is nil if the element is absent.
+		text *string
+		// parse parses the content, in the format the element has to be in.
+		parse func(text string) (LastModTime, error)
+	}
+
+	// rss is a structure of <rss> for RSS 2.0 feeds. The <pubDate> of an item is read as
+	// text, so that one that cannot be parsed costs only itself, see urlEntry.
 	rss struct {
 		XMLName xml.Name `xml:"rss"`
 		Channel struct {
 			Item []struct {
-				Link string `xml:"link"`
+				Link    string  `xml:"link"`
+				PubDate *string `xml:"pubDate"`
 			} `xml:"item"`
 		} `xml:"channel"`
 	}
 
-	// atom is a structure of <feed> for Atom 1.0 feeds.
+	// atom is a structure of <feed> for Atom 1.0 feeds. The <updated> of an entry is read as
+	// text, like the <pubDate> of an RSS item.
 	atom struct {
 		XMLName xml.Name `xml:"feed"`
 		Entry   []struct {
@@ -167,6 +182,7 @@ type (
 				Href string `xml:"href,attr"`
 				Rel  string `xml:"rel,attr"`
 			} `xml:"link"`
+			Updated *string `xml:"updated"`
 		} `xml:"entry"`
 	}
 
@@ -246,7 +262,13 @@ type (
 		Href     string `xml:"href,attr"`
 	}
 
-	// URL is a structure of <url> in <urlset>.
+	// URL is a structure of <url> in <urlset>. It is also what a page of a sitemap in another
+	// format is returned as: an item of an RSS feed, an entry of an Atom feed, a line of a
+	// text sitemap.
+	//
+	// LastMod is the date the page was last modified: the <lastmod> of a <url>, the <pubDate>
+	// of an RSS item and the <updated> of an Atom entry. A text sitemap gives no date. No
+	// other field but Loc is set for a page of a feed or of a text sitemap.
 	//
 	// In the URLs that Parse and ParseContext collect, no text value has whitespace around it:
 	// the whitespace that surrounds the content of an element or the value of an attribute is
@@ -279,17 +301,27 @@ type (
 	// internationalised host name is in its Punycode form. Strict mode returns it as the
 	// document gives it. A sitemap that is reached through a redirect is served from another
 	// URL than this one.
+	//
+	// LastMod is the date the sitemap was last modified, as the sitemap index that lists it
+	// gives it: the <lastmod> of its entry. It is nil if the entry has none, if the element is
+	// empty, and if what it holds cannot be parsed, which is reported in GetErrors. It is nil
+	// for a sitemap that only a robots.txt names as well, which gives no date. If the
+	// documents of a call give more than one date for a sitemap, it is the latest of them.
 	Sitemap struct {
 		// Loc is the URL the sitemap is requested by. It is never empty.
 		Loc string
+		// LastMod is the date the sitemap was last modified according to the sitemap index
+		// that lists it. It is nil if no date is given, or none that can be parsed.
+		LastMod *LastModTime
 	}
 
-	// LastModTime is the date, or the date and time, that a <lastmod> element or a date
-	// element of an extension holds. It embeds time.Time.
+	// LastModTime is the date, or the date and time, that an element of a document holds: a
+	// <lastmod> of a sitemap or of a sitemap index, a date element of an extension, the
+	// <pubDate> of an RSS item or the <updated> of an Atom entry. It embeds time.Time.
 	//
-	// In the URLs that Parse and ParseContext collect, a field of this type is nil when the
-	// element is absent, when it is empty, and when what it holds cannot be parsed. A field
-	// that is set therefore holds the date the document gives.
+	// In the URLs and the sitemaps that Parse and ParseContext collect, a field of this type
+	// is nil when the element is absent, when it is empty, and when what it holds cannot be
+	// parsed. A field that is set therefore holds the date the document gives.
 	LastModTime struct {
 		time.Time
 	}
@@ -1018,9 +1050,12 @@ func (s *S) GetErrors() []error {
 // the limit was reached is recorded. The sitemaps that are listed and the ones that are
 // fetched are counted apart, so the ones returned then need not be the ones that were fetched.
 //
+// A sitemap that a sitemap index lists comes with the date the index gives for it, see
+// Sitemap.LastMod.
+//
 // While a call is running, GetSitemaps returns the sitemaps found so far.
-// The slice that is returned is a copy the caller may modify. It is never nil, and empty for
-// a nil *S.
+// The slice that is returned is a copy the caller may modify, the dates in it included. It is
+// never nil, and empty for a nil *S.
 func (s *S) GetSitemaps() []Sitemap {
 	if s == nil {
 		return []Sitemap{}
@@ -1028,7 +1063,15 @@ func (s *S) GetSitemaps() []Sitemap {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sitemaps := make([]Sitemap, len(s.sitemaps))
-	copy(sitemaps, s.sitemaps)
+	for i, sitemap := range s.sitemaps {
+		if sitemap.LastMod != nil {
+			// The date is copied too: left as it is, it would be the one s keeps, and a caller
+			// that changes it would change what the next caller is given.
+			lastMod := *sitemap.LastMod
+			sitemap.LastMod = &lastMod
+		}
+		sitemaps[i] = sitemap
+	}
 	return sitemaps
 }
 
@@ -1412,13 +1455,21 @@ func (s *S) claimSitemap(url string) (fetch, limited bool) {
 // listSitemap adds sitemap to the sitemaps the call found, unless it is among them already:
 // a sitemap is listed once in a call, however many documents list it.
 //
+// Of the dates the documents give for a sitemap, the latest is kept, and a date takes the
+// place of none. Which document is read first is a matter of timing when the documents are
+// read side by side, and a robots.txt that names a sitemap gives no date for it; this way the
+// date depends on neither.
+//
 // If there are as many of them as the limit set with SetMaxSitemaps allows, the sitemap is
 // left out, and it is noted that one had to be. The limit is the one on the sitemaps the call
 // fetches, but the two are counted apart: a sitemap that is listed need not be fetched.
 //
 // Must be called with s.mu held, unless no other goroutine has access to s.
 func (s *S) listSitemap(sitemap Sitemap) {
-	if _, listed := s.listedURLs[sitemap.Loc]; listed {
+	if i, listed := s.listedURLs[sitemap.Loc]; listed {
+		if isLater(sitemap.LastMod, s.sitemaps[i].LastMod) {
+			s.sitemaps[i].LastMod = sitemap.LastMod
+		}
 		return
 	}
 	if s.limits.maxSitemaps > 0 && len(s.sitemaps) >= s.limits.maxSitemaps {
@@ -1426,10 +1477,16 @@ func (s *S) listSitemap(sitemap Sitemap) {
 		return
 	}
 	if s.listedURLs == nil {
-		s.listedURLs = make(map[string]struct{})
+		s.listedURLs = make(map[string]int)
 	}
-	s.listedURLs[sitemap.Loc] = struct{}{}
+	s.listedURLs[sitemap.Loc] = len(s.sitemaps)
 	s.sitemaps = append(s.sitemaps, sitemap)
+}
+
+// isLater reports whether date is a later date than other. Nil stands for no date, and a date
+// is later than none.
+func isLater(date, other *LastModTime) bool {
+	return date != nil && (other == nil || date.After(other.Time))
 }
 
 // hasRoomForURL reports whether s may collect another URL. If the limit set with SetMaxURLs
@@ -1789,7 +1846,8 @@ func (s *S) parseSitemapIndexContent(url, content string) []string {
 			continue
 		}
 		sm.Loc = resolvedLoc
-		s.listSitemap(Sitemap{Loc: sm.Loc})
+		lastMod := s.lastMod(sm.Loc, dateElement{name: "<lastmod>", text: sm.LastMod, parse: parseLastModTime})
+		s.listSitemap(Sitemap{Loc: sm.Loc, LastMod: lastMod})
 		if !s.matchesFollowFilter(sm.Loc) {
 			continue
 		}
@@ -1885,7 +1943,7 @@ func (s *S) parseRSSContent(url, content string) {
 		return
 	}
 	for _, item := range rssFeed.Channel.Item {
-		s.addURL(item.Link, url)
+		s.addURL(item.Link, url, dateElement{name: "<pubDate>", text: item.PubDate, parse: parseRFC822Time})
 	}
 }
 
@@ -1904,7 +1962,7 @@ func (s *S) parseFeedContent(url, content string) {
 				break
 			}
 		}
-		s.addURL(loc, url)
+		s.addURL(loc, url, dateElement{name: "<updated>", text: entry.Updated, parse: parseLastModTime})
 	}
 }
 
@@ -1931,7 +1989,7 @@ func (s *S) parseTextContent(url, rootElement, content string) {
 			found = true
 			// The line is copied: as a part of the content it would keep the whole document
 			// in memory for as long as the URL or an error about it is kept.
-			s.addURL(strings.Clone(line), url)
+			s.addURL(strings.Clone(line), url, dateElement{})
 		}
 	}
 	if found {
@@ -1968,12 +2026,13 @@ func (s *S) matchesRulesFilter(loc string) bool {
 	return false
 }
 
-// addURL resolves, validates, filters, and appends a single location to s.urls.
+// addURL resolves, validates, filters, and appends a single location to s.urls, with the date
+// the document gives for it, see lastMod.
 // Used by RSS, Atom, and Text parsers.
 // An empty location is skipped without an error: the link of a feed item is optional, so an
 // item without one is not a mistake, it merely names no page.
 // Once s has no room for another URL, the locations are left out as they come, see addURLEntry.
-func (s *S) addURL(loc string, baseURL string) {
+func (s *S) addURL(loc string, baseURL string, date dateElement) {
 	loc = strings.TrimSpace(loc)
 	if loc == "" || !s.hasRoomForURL() {
 		return
@@ -1983,9 +2042,33 @@ func (s *S) addURL(loc string, baseURL string) {
 		s.errs = append(s.errs, err)
 		return
 	}
+	// A date that cannot be parsed is reported whether or not the rules take the URL, as the
+	// values of a <url> entry are.
+	lastMod := s.lastMod(resolvedLoc, date)
 	if s.matchesRulesFilter(resolvedLoc) {
-		s.urls = append(s.urls, URL{Loc: resolvedLoc})
+		s.urls = append(s.urls, URL{Loc: resolvedLoc, LastMod: lastMod})
 	}
+}
+
+// lastMod returns the date that the element date holds for the page or the sitemap at loc. It
+// returns nil for an element that is absent, and for one that is empty: such an element names
+// no date, see parseDate.
+//
+// It returns nil for a date that cannot be parsed as well, and adds a *ValidationError for
+// loc to s.errs. Such a date costs only itself, in strict mode too, which skips a <url> for a
+// <lastmod> like that: the page is returned, and the sitemap is listed and fetched. A sitemap
+// would be lost with all of its pages for the date of its entry, and the protocol does not
+// say how the date of a feed is written.
+func (s *S) lastMod(loc string, date dateElement) *LastModTime {
+	if date.text == nil || emptyElement(date.text) {
+		return nil
+	}
+	parsed, err := date.parse(*date.text)
+	if err != nil {
+		s.errs = append(s.errs, &ValidationError{URL: loc, Err: invalidValue{element: date.name, text: *date.text}.err()})
+		return nil
+	}
+	return &parsed
 }
 
 // parseSitemapIndex parses the sitemap index data and returns a sitemapIndex object and an error.
@@ -2990,6 +3073,69 @@ var lastModFormats = []string{
 	"2006-01-02T15:04:05.999999999Z",
 	time.RFC3339,
 	time.RFC3339Nano,
+}
+
+// rfc822Layouts are the layouts of a date and time of RFC 822 whose time zone is given as an
+// offset: the day of the week and the seconds are optional, the day of the month has one
+// digit or two, and the year two digits or four, which RSS 2.0 adds to the RFC.
+var rfc822Layouts = []string{
+	"Mon, 2 Jan 2006 15:04:05 -0700",
+	"Mon, 2 Jan 2006 15:04 -0700",
+	"2 Jan 2006 15:04:05 -0700",
+	"2 Jan 2006 15:04 -0700",
+	"Mon, 2 Jan 06 15:04:05 -0700",
+	"Mon, 2 Jan 06 15:04 -0700",
+	"2 Jan 06 15:04:05 -0700",
+	"2 Jan 06 15:04 -0700",
+}
+
+// rfc822Zones are the offsets of the time zones a date and time of RFC 822 may name: the ones
+// the RFC defines, and "UTC", which it does not, but which stands for nothing else.
+//
+// Of the military zones, the single letters of the RFC, only "Z" is among them. The RFC
+// defined the others with the wrong sign, so nothing tells which way a document means them.
+var rfc822Zones = map[string]string{
+	"UT":  "+0000",
+	"GMT": "+0000",
+	"UTC": "+0000",
+	"Z":   "+0000",
+	"EST": "-0500",
+	"EDT": "-0400",
+	"CST": "-0600",
+	"CDT": "-0500",
+	"MST": "-0700",
+	"MDT": "-0600",
+	"PST": "-0800",
+	"PDT": "-0700",
+}
+
+// parseRFC822Time parses a date and time in the format of RFC 822, which is what the <pubDate>
+// of an RSS item holds: "Mon, 15 Jan 2024 10:30:00 GMT". The whitespace around the text is
+// ignored, and so is how much of it stands between its parts. A year of two digits is one of
+// the years 1969 to 2068.
+//
+// A time zone that is given by its name is replaced by its offset before the text is parsed.
+// The time package would take the name for a zone of the local time zone of the process, and
+// for UTC if there is none of that name: "CST" would be eight hours ahead of UTC on a machine
+// in China, and UTC itself on one in Europe. A name that is not in rfc822Zones is not a date
+// that can be told, and fails like any other text that is none.
+func parseRFC822Time(text string) (LastModTime, error) {
+	fields := strings.Fields(text)
+	// The name of a zone is written in the letters of ASCII, in whichever case. Other letters
+	// are not put in upper case: "ſ", the long s, would come out as the S of "EST".
+	if last := len(fields) - 1; last >= 0 && isASCII(fields[last]) {
+		if offset, named := rfc822Zones[strings.ToUpper(fields[last])]; named {
+			fields[last] = offset
+		}
+	}
+	normalized := strings.Join(fields, " ")
+	for _, layout := range rfc822Layouts {
+		if parsedTime, err := time.Parse(layout, normalized); err == nil {
+			return LastModTime{parsedTime}, nil
+		}
+	}
+
+	return LastModTime{}, fmt.Errorf("unsupported date format of RFC 822: %q", strings.TrimSpace(text))
 }
 
 // UnmarshalXML implements xml.Unmarshaler, for code that decodes sitemap XML with encoding/xml

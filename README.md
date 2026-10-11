@@ -12,7 +12,8 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 
 ## Features
 - Recursive parsing (sitemap index → sitemaps → URLs)
-- The sitemaps a call finds can be queried, whether or not they were fetched
+- The sitemaps a call finds can be queried, whether or not they were fetched, with the date a sitemap index gives for each
+- The date a page was last modified is returned for the pages of RSS and Atom feeds as well (`<pubDate>`, `<updated>`)
 - Concurrent (multi-threaded) fetching and parsing
 - Configurable follow rules to filter which sitemaps to parse
 - Configurable URL rules to filter which URLs to include
@@ -45,10 +46,16 @@ A `robots.txt` is recognised by the URL passed to `Parse()`: the document is rea
 
 Of a `robots.txt` only the `Sitemap:` lines are read. The name of the directive is not case-sensitive, the line may be indented, and what follows a `#` is a comment. The sitemaps the lines name are fetched and parsed; how their URLs are checked is described under [Strict mode](#strict-mode). See [`examples/robots`](examples/robots/main.go) for a runnable example.
 
-Only the location of a page is taken from a feed or a text sitemap, so `LastMod`, `ChangeFreq` and `Priority` are `nil` for their URLs:
-- RSS: the `<link>` of every `<item>`, see [`examples/rss`](examples/rss/main.go)
-- Atom: for every `<entry>`, the first `<link>` with `rel="alternate"` or without a `rel` attribute, see [`examples/atom`](examples/atom/main.go)
-- Plain text: every line that begins with `http://` or `https://`; empty lines, lines that begin with `#` and every other line are skipped, see [`examples/text`](examples/text/main.go)
+Of a feed, the location of a page and the date it was last modified are taken, of a text sitemap the location only. `ChangeFreq` and `Priority` are `nil` for their URLs, and they have nothing of the extensions:
+- RSS: the `<link>` of every `<item>`, and the `<pubDate>` of the item as `LastMod`, see [`examples/rss`](examples/rss/main.go)
+- Atom: for every `<entry>`, the first `<link>` with `rel="alternate"` or without a `rel` attribute, and the `<updated>` of the entry as `LastMod`, see [`examples/atom`](examples/atom/main.go)
+- Plain text: every line that begins with `http://` or `https://`; empty lines, lines that begin with `#` and every other line are skipped, see [`examples/text`](examples/text/main.go). `LastMod` is `nil`
+
+The date of a feed entry is read in the format its feed prescribes:
+- `<pubDate>` holds a date and time of [RFC 822](https://www.rfc-editor.org/rfc/rfc822#section-5), such as `Mon, 15 Jan 2024 10:30:00 GMT`. The day of the week and the seconds may be left out, the year has four digits or two (`24` is 2024, `69` to `99` are 1969 to 1999), and the time zone is an offset (`+0100`) or one of the names `UT`, `GMT`, `UTC`, `Z`, `EST`, `EDT`, `CST`, `CDT`, `MST`, `MDT`, `PST` and `PDT`. A name stands for the zone the RFC says it does, whatever the time zone of the machine is. Another name (`CET`) is not known, and the date is not read
+- `<updated>` holds a date in one of the formats of a `<lastmod>`, among them the one Atom prescribes ([RFC 3339](https://www.rfc-editor.org/rfc/rfc3339), `2024-01-15T10:30:00Z`)
+
+An entry without a date has none, and so has one whose date is empty. A date in another format is left unset (`nil`) and reported as a `*ValidationError`, and the page is returned all the same, in both modes, see [Strict mode](#strict-mode). Only the date of the entry itself is read: neither the dates of the feed (`<lastBuildDate>` and the `<pubDate>` of an RSS channel, the `<updated>` of an Atom feed) nor the `<published>` of an Atom entry are.
 
 ## Requirements
 
@@ -363,7 +370,7 @@ To enable **strict mode**, use the `SetStrict()` function. In strict mode, all U
 - `<loc>` must not exceed 2,048 characters
 - `<changefreq>` must be one of the values of the protocol, written as the protocol writes them: `always`, `hourly`, `daily`, `weekly`, `monthly`, `yearly` or `never` (if present)
 - `<priority>` must be between `0.0` and `1.0` inclusive (if present)
-- `<lastmod>` and `<priority>` must hold a value that can be parsed (if present)
+- `<lastmod>` and `<priority>` of a `<url>` must hold a value that can be parsed (if present)
 - The document must be well-formed XML, otherwise it is rejected as a whole and reported as a `*ParseError`
 
 In **tolerant mode** (the default):
@@ -430,7 +437,14 @@ A value that cannot be parsed never costs more than its own entry. The numbers a
 validate "https://example.com/page": invalid <lastmod> value "2024-01-15 10:30:00"
 ```
 
-An empty date is no such value. A `<lastmod>`, `<news:publication_date>`, `<video:expiration_date>` or `<video:publication_date>` that is empty or holds only whitespace is read as if the element were not there: the field is `nil`, not the zero time, and nothing is reported in either mode. The exception is the publication date of a news entry, which strict mode requires, see [GetURLs](#geturls). An empty number (`<priority>`, `<video:duration>`, `<video:rating>`, `<video:view_count>`) reads as `0`.
+The dates that are not those of a `<url>` are treated that way in both modes as well: the `<lastmod>` of an entry of a sitemap index, the `<pubDate>` of an RSS item and the `<updated>` of an Atom entry. One that cannot be parsed is left unset and reported, and that is all it costs, in strict mode too: the sitemap is listed and fetched, and the page is returned. The error names the sitemap or the page the date belongs to:
+
+```
+validate "https://example.com/sitemap-1.xml": invalid <lastmod> value "2024-01-15 10:30:00"
+validate "https://example.com/blog/post": invalid <pubDate> value "2024-01-15T10:30:00Z"
+```
+
+An empty date is no such value. A `<lastmod>`, `<pubDate>`, `<updated>`, `<news:publication_date>`, `<video:expiration_date>` or `<video:publication_date>` that is empty or holds only whitespace is read as if the element were not there: the field is `nil`, not the zero time, and nothing is reported in either mode. The exception is the publication date of a news entry, which strict mode requires, see [GetURLs](#geturls). An empty number (`<priority>`, `<video:duration>`, `<video:rating>`, `<video:view_count>`) reads as `0`.
 
 Whitespace around a value is no part of it, in both modes. The content of an element may be indented or stand on a line of its own, and an attribute may be padded: every text value of an entry is returned without the whitespace that surrounds it, those of the extensions included. A value that holds nothing but whitespace is therefore an empty one. A `<changefreq>` like that is read as if the element were not there, and a value an extension requires is missing then, see [GetURLs](#geturls).
 
@@ -690,7 +704,7 @@ urls := s.GetURLs()
 
 Each `URL` struct contains the following fields:
 - `Loc` (`string`) — the URL location; never empty, an entry without a `<loc>` is skipped
-- `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`; also `nil` when the element is empty or the value cannot be parsed, see [Strict mode](#strict-mode)
+- `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`; also `nil` when the element is empty or the value cannot be parsed, see [Strict mode](#strict-mode). It is the `<lastmod>` of a `<url>`, the `<pubDate>` of an RSS item and the `<updated>` of an Atom entry, see [Formats supported](#formats-supported); a text sitemap gives no date
 - `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`; also `nil` when the element is empty. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`. Tolerant mode reads one of them in whatever letter case it is written and keeps a value that is none of them as the document gives it; strict mode skips an entry with either, so a field that is set equals one of the constants there, see [Strict mode](#strict-mode)
 - `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`; also `nil` when the value cannot be parsed
 - `Images` (`[]Image`) — images associated with this URL via the Google Image Sitemap extension, may be `nil`
@@ -813,8 +827,9 @@ for _, sm := range s.GetSitemaps() {
 }
 ```
 
-Each `Sitemap` struct contains the following field:
+Each `Sitemap` struct contains the following fields:
 - `Loc` (`string`) — the URL the sitemap is requested by, never empty. In tolerant mode it can be requested as it is: a relative URL is resolved against the URL of the document that lists it, a space or a character that is not in ASCII is percent-encoded, and an [internationalised host name](#internationalised-host-names) is in its Punycode form. Strict mode returns it as the document gives it. A sitemap that is reached through a [redirect](#redirects) is listed by the URL the document gives, not by the one it was served from
+- `LastMod` (`*LastModTime`) — the date the sitemap was last modified according to the sitemap index that lists it, the `<lastmod>` of its entry (embeds `time.Time`). It is `nil` when the entry has none, when the element is empty, and when the value cannot be parsed, which is reported via [`GetErrors()`](#geterrors) and costs the sitemap nothing else, see [Strict mode](#strict-mode). It is `nil` for a sitemap that only a `robots.txt` names as well, which gives no date. When the documents of a call give more than one date for a sitemap, it is the latest of them
 
 What is among them, and what is not:
 - A sitemap is listed **whether or not it was fetched**: one that the [follow rules](#follow-rules) leave out, one that could not be fetched, and one that a limit of the call kept from being fetched (see [Max depth](#max-depth), [Max sitemaps](#max-sitemaps) and [Max URLs](#max-urls)) are all listed. What a sitemap index lists is known only if the index itself was fetched.
@@ -826,7 +841,7 @@ The sitemaps of a document are in the order the document lists them. With multi-
 
 No more sitemaps are returned than [`SetMaxSitemaps()`](#max-sitemaps) allows (default: 50,000). If the documents list more, the first ones the call found are returned, and the error `limit of N sitemaps reached` is recorded. The sitemaps listed and the sitemaps fetched are counted apart, so when the limit is reached the ones that are returned need not be the ones that were fetched.
 
-The slice returned is a copy: it may be modified, and it does not change afterwards. It is never `nil`.
+The slice returned is a copy, the dates in it included: it may be modified, and it does not change afterwards. It is never `nil`.
 
 To find out which sitemaps a sitemap index lists without fetching any of them, set a follow rule that no URL matches:
 
@@ -840,7 +855,17 @@ for _, sm := range s.GetSitemaps() {
 }
 ```
 
-See [`examples/sitemaps`](examples/sitemaps/main.go) for a runnable example.
+With the dates, the sitemaps that were modified since an earlier visit can be told from the rest, and parsed on their own. A sitemap without a date may have been modified as well:
+
+```go
+for _, sm := range s.GetSitemaps() {
+    if sm.LastMod == nil || sm.LastMod.After(lastVisit) {
+        // parse sm.Loc
+    }
+}
+```
+
+See [`examples/sitemaps`](examples/sitemaps/main.go) for a runnable example of the sitemaps a call lists, and [`examples/lastmod`](examples/lastmod/main.go) for one of their dates.
 
 #### GetSitemapCount
 

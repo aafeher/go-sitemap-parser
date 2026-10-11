@@ -289,6 +289,40 @@ func assertSitemapsListed(t *testing.T, mode string, strict bool, content string
 	}
 }
 
+// assertInvalidDates checks that a date which cannot be parsed costs nothing
+// but itself where it is the date of an entry of a feed or of a sitemap index,
+// in either mode: the page of the entry is returned, without a date, and the
+// sitemap of the entry is listed and is one of those to fetch.
+func assertInvalidDates(t *testing.T, mode string, strict bool, content string) {
+	t.Helper()
+
+	root := detectRootElement(content)
+	if root != "rss" && root != "feed" && root != "sitemapindex" {
+		return
+	}
+
+	s := New().SetStrict(strict)
+	toFetch := s.parse(fuzzBaseURL, content)
+	listed := listedLocs(s)
+	for _, err := range s.errs {
+		// In these documents nothing but a date is reported as an invalid value.
+		var validationErr *ValidationError
+		if !errors.As(err, &validationErr) || !strings.HasPrefix(validationErr.Err.Error(), "invalid <") {
+			continue
+		}
+		loc := validationErr.URL
+		if root == "sitemapindex" {
+			if !slices.Contains(listed, loc) || !slices.Contains(toFetch, loc) {
+				t.Fatalf("%s mode: %v, and the sitemap is not among the ones listed, %q, or the ones to fetch, %q", mode, err, listed, toFetch)
+			}
+			continue
+		}
+		if !slices.ContainsFunc(s.urls, func(u URL) bool { return u.Loc == loc && u.LastMod == nil }) {
+			t.Fatalf("%s mode: %v, and the page is not returned without a date: %v", mode, err, s.urls)
+		}
+	}
+}
+
 // assertTextValues checks the text values of the URLs collected from content:
 // none of them has whitespace around it, a change frequency that is set names
 // one, tolerant mode holds a change frequency of the protocol the way its
@@ -422,8 +456,9 @@ func assertStrictExtensionURLs(t *testing.T, content string) {
 // tolerant mode must percent-encode the URLs of the extensions that it can,
 // strict mode must accept or report each of them,
 // the call must fail exactly when the document cannot be parsed, a limit
-// on the URLs must leave the first ones as they are, and the sitemaps the call
-// lists must be the ones it is to fetch, up to the limit on them.
+// on the URLs must leave the first ones as they are, the sitemaps the call
+// lists must be the ones it is to fetch, up to the limit on them, and a date of
+// a feed or of a sitemap index that cannot be parsed must cost only itself.
 func FuzzParse(f *testing.F) {
 	seeds := []string{
 		`<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://example.com/sitemap-1.xml</loc><lastmod>2024-01-01</lastmod></sitemap></sitemapindex>`,
@@ -477,6 +512,9 @@ func FuzzParse(f *testing.F) {
 		"https://example.com/text|one\nhttps://example.com/text?q=^two\nhttps://exa\"mple.com/three\nhttps://example.com/four#`\n",
 		`<sitemapindex><sitemap><loc>https://example.com/sitemap|1.xml</loc></sitemap><sitemap><loc>https://example.com/sitemap.xml?tags=a|b</loc></sitemap></sitemapindex>`,
 		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://example.com/p</loc><image:image><image:loc>https://cdn.example.net/a|b.jpg</image:loc></image:image><image:image><image:loc>https://cdn.example.net/c.jpg</image:loc><image:license>CC BY 4.0</image:license></image:image><video:video><video:thumbnail_loc>https://cdn.example.net/t.jpg</video:thumbnail_loc><video:content_loc>ftp://cdn.example.net/v.mp4</video:content_loc><video:player_loc>/player?v={id}</video:player_loc><video:uploader info="uploaders/u">u</video:uploader></video:video><video:video><video:thumbnail_loc>https://cdn.example.net/{t}.jpg</video:thumbnail_loc></video:video><xhtml:link rel="alternate" hreflang="de" href="https://example.com/de/^"/></url></urlset>`,
+		`<rss><channel><pubDate>Sat, 13 Jan 2024 08:00:00 GMT</pubDate><item><link>https://example.com/a</link><pubDate>Mon, 15 Jan 2024 10:30:00 +0100</pubDate></item><item><link>https://example.com/b</link><pubDate> 5 Jan 24 10:30 est </pubDate></item><item><link>https://example.com/c</link><pubDate>2024-01-15T10:30:00Z</pubDate></item><item><link>https://example.com/c</link><pubDate/></item><item><link>https://www.example.com/d</link><pubDate>yesterday</pubDate></item><item><pubDate>no link</pubDate></item></channel></rss>`,
+		`<feed><updated>2024-01-13T08:00:00Z</updated><entry><link href="https://example.com/a"/><updated>2024-01-15T10:30:00+01:00</updated></entry><entry><link href="https://example.com/b"/><updated> 2024-01 </updated></entry><entry><link href="https://example.com/c"/><updated>Mon, 15 Jan 2024 10:30:00 GMT</updated></entry><entry><link href="https://example.com/c"/><updated/></entry><entry><link href="https://www.example.com/d"/><updated>yesterday</updated></entry><entry><updated>no link</updated></entry></feed>`,
+		`<sitemapindex><sitemap><loc>https://example.com/a.xml</loc><lastmod>2024-01-15T10:30:00+01:00</lastmod></sitemap><sitemap><loc>https://example.com/b.xml</loc><lastmod>2024-01-15 10:30:00</lastmod></sitemap><sitemap><loc>https://example.com/a.xml</loc><lastmod>2024-01-16</lastmod></sitemap><sitemap><loc>https://example.com/b.xml</loc><lastmod/></sitemap><sitemap><loc>https://www.example.com/c.xml</loc><lastmod>yesterday</lastmod></sitemap><sitemap><lastmod>no location</lastmod></sitemap></sitemapindex>`,
 		`<sitemapindex><sitemap><loc>`,
 		"",
 		"not xml at all",
@@ -526,6 +564,7 @@ func FuzzParse(f *testing.F) {
 			assertReturnedError(t, mode, strict, content)
 			assertURLLimit(t, mode, strict, content)
 			assertSitemapsListed(t, mode, strict, content)
+			assertInvalidDates(t, mode, strict, content)
 		}
 	})
 }
@@ -781,6 +820,64 @@ func FuzzNamesRobotsTXT(f *testing.F) {
 		}
 		if got := namesRobotsTXT(string(upper)); got != want {
 			t.Fatalf("namesRobotsTXT(%q) = %v, but namesRobotsTXT(%q) = %v", upper, got, path, want)
+		}
+	})
+}
+
+// FuzzParseRFC822Time checks the parser of the date of an RSS item against
+// arbitrary text. A text that is read as a date is one: written out in the
+// format of the RFC, it is read as the same time again. Neither the whitespace
+// around a text nor the case of its letters makes it a date or keeps it from
+// being one, and a text that is none yields no date.
+func FuzzParseRFC822Time(f *testing.F) {
+	seeds := []string{
+		"Mon, 15 Jan 2024 10:30:45 GMT",
+		"Mon, 15 Jan 2024 10:30 +0100",
+		"15 Jan 24 10:30:45 est",
+		"5 Jan 69 10:30 Z",
+		"Mon, 15 Jan 2024 10:30:45.5 -0830",
+		"Mon, 31 Dec 9999 23:59:59 -0100",
+		"Sat, 1 Jan 0000 00:00:00 +0100",
+		"Mon, 15 Jan 2024 10:30:45 CET",
+		"Mon, 15 Jan 2024 10:30:45 e\xc5\xbft",
+		"Mon,\t15 Jan  2024\n10:30:45 PDT",
+		"2024-01-15T10:30:45Z",
+		"",
+	}
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, text string) {
+		got, err := parseRFC822Time(text)
+		if err != nil && !got.IsZero() {
+			t.Fatalf("parseRFC822Time(%q) fails with %v and returns the date %v", text, err, got.Time)
+		}
+		if err == nil {
+			written := got.Format("Mon, 02 Jan 2006 15:04:05 -0700")
+			again, err := parseRFC822Time(written)
+			if err != nil {
+				t.Fatalf("parseRFC822Time(%q) = %v, but %q, the same time written out, is not read: %v", text, got.Time, written, err)
+			}
+			if again.Unix() != got.Unix() {
+				t.Fatalf("parseRFC822Time(%q) = %v, but %q, the same time written out, is read as %v", text, got.Time, written, again.Time)
+			}
+		}
+
+		upper := []byte(text)
+		for i, c := range upper {
+			if 'a' <= c && c <= 'z' {
+				upper[i] = c - 'a' + 'A'
+			}
+		}
+		for _, other := range []string{" \t" + text + "\n", string(upper)} {
+			same, otherErr := parseRFC822Time(other)
+			if (otherErr == nil) != (err == nil) {
+				t.Fatalf("parseRFC822Time(%q) fails with %v, but parseRFC822Time(%q) with %v", text, err, other, otherErr)
+			}
+			if !same.Equal(got.Time) {
+				t.Fatalf("parseRFC822Time(%q) = %v, but parseRFC822Time(%q) = %v", text, got.Time, other, same.Time)
+			}
 		}
 	})
 }
