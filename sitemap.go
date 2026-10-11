@@ -1670,21 +1670,24 @@ func (s *S) fetch(ctx context.Context, url string) (string, string, error) {
 		return "", "", &NetworkError{URL: url, Err: fmt.Errorf("received HTTP status %d", response.StatusCode)}
 	}
 
-	body, err := readAtMost(response.Body, maxResponseSize)
+	// The length the response says its body has is what the body is read with, see readAtMost.
+	// It is -1 if the response says none.
+	body, exceeded, err := readAtMost(response.Body, maxResponseSize, response.ContentLength)
 	if err != nil {
 		return "", "", &NetworkError{URL: url, Err: err}
 	}
 
-	if int64(len(body)) > maxResponseSize {
+	if exceeded {
 		return "", "", &NetworkError{URL: url, Err: limitErrorf(ErrMaxResponseSize, "response size exceeds limit of %d bytes", maxResponseSize)}
 	}
 
 	return body, finalURL(url, req, response), nil
 }
 
-// readBuffers holds the buffers readString reads through. A read needs one for as long as it
-// lasts. Allocated for every read, the buffers of a call that fetches many small sitemaps would
-// take up more memory than the sitemaps themselves.
+// readBuffers holds the buffers readAtMost reads through, and reads content of unknown size
+// into. A read needs them for as long as it lasts. Allocated for every read, the buffers of a
+// call that fetches many small sitemaps would take up more memory than the sitemaps themselves,
+// and those of a large sitemap of unknown size as much memory again as the sitemap.
 var readBuffers = sync.Pool{
 	New: func() any {
 		buffer := make([]byte, 32*1024)
@@ -1692,29 +1695,153 @@ var readBuffers = sync.Pool{
 	},
 }
 
-// readString reads r to its end and returns what it read.
-// The content is read into the string that is returned, so that it does not have to be copied
-// to become one, and is not copied again on its way through the parser.
-// If reading fails, what was read until then is returned together with the error.
-func readString(r io.Reader) (string, error) {
-	buffer := readBuffers.Get().(*[]byte)
-	defer readBuffers.Put(buffer)
-
-	var content strings.Builder
-	_, err := io.CopyBuffer(&content, r, *buffer)
-	return content.String(), err
+// chunks is content in the buffers it was read into, in the order it was read: buffers of
+// readBuffers, each of them full but the last.
+//
+// This is how content of unknown size is read. Read into a string, it has the string allocated
+// anew and copied every time the string turns out too small for what follows, which allocates
+// five times the memory of the content by the time all of it is read. Read into buffers, it is
+// copied once, into a string of its size, when the size is known.
+type chunks struct {
+	// buffers is never empty.
+	buffers []*[]byte
+	// filled is the number of bytes in the last buffer.
+	filled int
 }
 
-// readAtMost reads r like readString, but no further than one byte past limit. The one byte
-// tells content that exceeds the limit from content that fits it exactly: what is returned is
-// longer than limit then, while never more than limit+1 bytes are held in memory.
+// newChunks returns chunks without content. They have to be released once they are not needed.
+func newChunks() chunks {
+	return chunks{buffers: []*[]byte{readBuffers.Get().(*[]byte)}}
+}
+
+// last returns the buffer that is being read into.
+func (c *chunks) last() []byte {
+	return *c.buffers[len(c.buffers)-1]
+}
+
+// readFrom reads r to its end, and adds what it read to the content.
+func (c *chunks) readFrom(r io.Reader) error {
+	for {
+		if c.filled == len(c.last()) {
+			c.buffers = append(c.buffers, readBuffers.Get().(*[]byte))
+			c.filled = 0
+		}
+		n, err := r.Read(c.last()[c.filled:])
+		c.filled += n
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// len returns the number of bytes of the content.
+func (c *chunks) len() int {
+	return (len(c.buffers)-1)*len(c.last()) + c.filled
+}
+
+// appendTo appends the content to content.
+func (c *chunks) appendTo(content *strings.Builder) {
+	for _, buffer := range c.buffers[:len(c.buffers)-1] {
+		content.Write(*buffer)
+	}
+	content.Write(c.last()[:c.filled])
+}
+
+// release gives the buffers back for other reads to use. The chunks must not be used after it.
+func (c *chunks) release() {
+	for _, buffer := range c.buffers {
+		readBuffers.Put(buffer)
+	}
+}
+
+// fill reads r into content, through buffer, until content is size bytes long or r comes to its
+// end. It reports whether r came to its end, and is not to be read any further.
+func fill(content *strings.Builder, size int, r io.Reader, buffer []byte) (bool, error) {
+	for content.Len() < size {
+		n, err := r.Read(buffer[:min(len(buffer), size-content.Len())])
+		content.Write(buffer[:n])
+		if err == io.EOF {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// presizeLimit is the largest size a string is allocated in before there is content to fill it:
+// the size of the largest sitemap the protocol allows. The size is the word of whoever sends
+// the content, and a string is allocated on it at once. Content that is said to be larger is
+// read like content of unknown size, so that what a response says of itself cannot have more
+// memory allocated than this, however high the limit on the size of a response is set.
+const presizeLimit = defaultMaxResponseSize
+
+// readAtMost reads r to its end and returns what it read, if that is no more than limit bytes.
+// If it is more, exceeded is true and no content is returned: r is read one byte past the limit
+// then, and no further. The one byte tells content that exceeds the limit from content that
+// fits it exactly.
 // A limit of math.MaxInt64 has no byte past it, and nothing can exceed it: limit+1 would
 // overflow to a negative number, and a reader limited to that reads nothing at all.
-func readAtMost(r io.Reader, limit int64) (string, error) {
+// If reading fails, the error is returned, and no content with it.
+//
+// size is the number of bytes r is said to hold, and is not positive if that is not known. It
+// decides how the content is read and never what is returned, as it need not be true:
+//   - Content of the size it is said to have is read into the string that is returned, which
+//     is allocated once, in that size. Reading it takes up no more memory than the content.
+//   - Content of unknown size is read into buffers, and copied into a string of its size once
+//     that is known, see chunks. Reading it takes up twice the memory of the content, half of
+//     it buffers that the next read uses again. What follows content that turns out longer
+//     than it is said to be is read the same way.
+//   - Content that turns out shorter than it is said to be is copied into a string of its own
+//     size, so that the memory allocated for the rest is not kept for as long as the content is.
+//   - A size above limit or presizeLimit is taken for unknown.
+//
+// The content is copied once, into the string that is returned, and is not copied again on its
+// way through the parser. Content that exceeds the limit, or that fails to be read, is not
+// copied at all.
+func readAtMost(r io.Reader, limit, size int64) (content string, exceeded bool, err error) {
 	if limit < math.MaxInt64 {
-		limit++
+		r = io.LimitReader(r, limit+1)
 	}
-	return readString(io.LimitReader(r, limit))
+
+	rest := newChunks()
+	defer rest.release()
+
+	// What r is said to hold is read into head, through the buffer of rest, which is not in
+	// use until then. What follows it is read into rest: everything if no size is given,
+	// and nothing if r came to its end already.
+	var head strings.Builder
+	sized := 0
+	if 0 < size && size <= min(limit, presizeLimit) {
+		sized = int(size)
+		head.Grow(sized)
+	}
+	ended, err := fill(&head, sized, r, rest.last())
+	if err == nil && !ended {
+		err = rest.readFrom(r)
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	total := head.Len() + rest.len()
+	if int64(total) > limit {
+		return "", true, nil
+	}
+	// Content of the size it is said to have is all in head, which is as large as the content.
+	if total == sized {
+		return head.String(), false, nil
+	}
+
+	var whole strings.Builder
+	whole.Grow(total)
+	whole.WriteString(head.String())
+	rest.appendTo(&whole)
+	return whole.String(), false, nil
 }
 
 // finalURL returns the URL the response to req was served from: url, the URL req was made for,
@@ -3414,12 +3541,41 @@ func (m *gzipMembers) Close() error {
 	return m.member.Close()
 }
 
+// maxDeflateRatio is how many times its own size compressed content can be decompressed to at
+// most: deflate, the compression method of gzip, writes up to 258 bytes with two bits.
+const maxDeflateRatio = 1032
+
+// gzipSize returns the size gzip content says its uncompressed content has, or -1 if it says
+// none that can be true. A member ends with the size of what it holds, modulo 2^32 (RFC 1952,
+// section 2.3.1, ISIZE), so the last four bytes of the content are the size of what its last
+// member holds.
+//
+// That is the size of the content if the content is a single member of less than 4 GB with
+// nothing after it, which is what a compressed sitemap is as a rule. It is a size to read the
+// content with and nothing more, see readAtMost: content of several members is longer, so is
+// content of 4 GB and more, and bytes that follow the last member are no size at all.
+// A size that content of this length cannot be decompressed to is not returned, so that the
+// memory allocated on the word of the content is never more than content of its length could
+// take up anyway.
+func gzipSize(content string) int64 {
+	if len(content) < 4 {
+		return -1
+	}
+	trailer := content[len(content)-4:]
+	size := int64(trailer[0]) | int64(trailer[1])<<8 | int64(trailer[2])<<16 | int64(trailer[3])<<24
+	if size > int64(len(content))*maxDeflateRatio {
+		return -1
+	}
+	return size
+}
+
 // unzip decompresses the given gzip content: all of its members, see gzipMembers.
 // It returns the uncompressed content, or the error that kept the content from being
 // decompressed. No content is returned together with an error.
 // At most maxSize bytes are decompressed, for all members together. If the payload is larger,
 // decompression stops and an error that wraps ErrMaxResponseSize is returned, so a small
 // compressed input cannot exhaust memory (decompression bomb).
+// The size the content says it has is what it is read with, see gzipSize and readAtMost.
 func unzip(content string, maxSize int64) (string, error) {
 	members, err := newGzipMembers(content)
 	if err != nil {
@@ -3429,12 +3585,12 @@ func unzip(content string, maxSize int64) (string, error) {
 		_ = members.Close()
 	}()
 
-	uncompressed, err := readAtMost(members, maxSize)
+	uncompressed, exceeded, err := readAtMost(members, maxSize, gzipSize(content))
 	if err != nil {
 		return "", fmt.Errorf("gzip decompression failed: %w", err)
 	}
 
-	if int64(len(uncompressed)) > maxSize {
+	if exceeded {
 		return "", limitErrorf(ErrMaxResponseSize, "decompressed size exceeds limit of %d bytes", maxSize)
 	}
 

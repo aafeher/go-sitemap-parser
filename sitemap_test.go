@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -4159,6 +4160,126 @@ func TestS_fetch_ResponseSizeLimit(t *testing.T) {
 		mustEqual(t, "error", err.Error(), fmt.Sprintf("fetch %q: response size exceeds limit of %d bytes", url, limit))
 		assertStringSlice(t, "limits the error matches", limitsMatched(err), []string{"ErrMaxResponseSize"})
 		mustEqual(t, "bytes read", source.read, int64(limit+1))
+	})
+}
+
+// TestS_fetch_ContentLength verifies that the size a response says its body has
+// decides how much memory reading the body takes, and nothing else: the body is
+// returned as it is, and held to the limit, whatever the response says.
+func TestS_fetch_ContentLength(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+
+	// respond returns a client whose responses have the given body, and say that it has the
+	// given length.
+	respond := func(body io.Reader, contentLength int64) *http.Client {
+		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(body), ContentLength: contentLength, Request: req}, nil
+		})}
+	}
+
+	t.Run("body is returned whatever length it is said to have", func(t *testing.T) {
+		for _, size := range []int{0, 1, readBufferSize, 100 * 1024} {
+			body := readContent(size)
+
+			for _, said := range sizesSaid(size) {
+				s := New().SetHTTPClient(respond(strings.NewReader(body), said))
+
+				content, _, err := s.fetch(context.Background(), url)
+
+				if err != nil {
+					t.Fatalf("%d bytes said to be %d: unexpected error: %v", size, said, err)
+				}
+				if content != body {
+					t.Errorf("%d bytes said to be %d: got %d bytes that differ from the body", size, said, len(content))
+				}
+			}
+		}
+	})
+
+	t.Run("limit is on the body whatever length it is said to have", func(t *testing.T) {
+		const limit = 100 * 1024
+
+		for _, said := range append(sizesSaid(limit), limit+2) {
+			source := &endless{}
+			s := New().SetMaxResponseSize(limit).SetHTTPClient(respond(source, said))
+
+			content, _, err := s.fetch(context.Background(), url)
+
+			if err == nil {
+				t.Fatalf("said to be %d bytes: expected a size limit error, got nil", said)
+			}
+			mustEqual(t, "error", err.Error(), fmt.Sprintf("fetch %q: response size exceeds limit of %d bytes", url, limit))
+			assertStringSlice(t, "limits the error matches", limitsMatched(err), []string{"ErrMaxResponseSize"})
+			mustEqual(t, "content", content, "")
+			mustEqual(t, "bytes read", source.read, int64(limit+1))
+		}
+	})
+
+	t.Run("failure of the body is returned whatever length it is said to have", func(t *testing.T) {
+		failure := errors.New("read failed")
+		const read = "read until then"
+
+		for _, said := range sizesSaid(len(read)) {
+			s := New().SetHTTPClient(respond(io.MultiReader(strings.NewReader(read), &failsOnce{failure: failure}), said))
+
+			content, _, err := s.fetch(context.Background(), url)
+
+			var netErr *NetworkError
+			if !errors.As(err, &netErr) {
+				t.Fatalf("said to be %d bytes: expected *NetworkError, got %T: %v", said, err, err)
+			}
+			if netErr.Err != failure {
+				t.Errorf("said to be %d bytes: expected %v, got %v", said, failure, netErr.Err)
+			}
+			mustEqual(t, "content", content, "")
+		}
+	})
+
+	t.Run("memory", func(t *testing.T) {
+		const size = 8 * 1024 * 1024
+		body := strings.Repeat("0123456789abcdef", size/16)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/length" {
+				w.Header().Set("Content-Length", fmt.Sprint(size))
+			} else {
+				// A response that is sent before its handler is done cannot say how long it is.
+				w.(http.Flusher).Flush()
+			}
+			_, _ = io.WriteString(w, body)
+		}))
+		defer server.Close()
+
+		tests := []struct {
+			name string
+			path string
+			// atMost is what may be allocated, in quarters of the size of the body.
+			atMost uint64
+		}{
+			{"response that says how long it is", "/length", 6},
+			{"response that does not say how long it is", "/chunked", 10},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				s := New()
+				var content string
+				var err error
+				allocated := allocatedBy(func() {
+					content, _, err = s.fetch(context.Background(), server.URL+tt.path)
+				})
+
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if content != body {
+					t.Errorf("got %d bytes that differ from the body", len(content))
+				}
+				// What the client and the server of the test allocate is counted as well.
+				if allocated > tt.atMost*size/4 {
+					t.Errorf("%d bytes were allocated to fetch %d bytes", allocated, size)
+				}
+			})
+		}
 	})
 }
 
@@ -9216,9 +9337,9 @@ func TestUnzip_SizeLimit(t *testing.T) {
 		}
 		mustEqual(t, "error", err.Error(), fmt.Sprintf("decompressed size exceeds limit of %d bytes", limit))
 		mustEqual(t, "content", uncompressed, "")
-		// What is read takes up the limit, and a few times as much while the string it is
-		// read into grows. All the members would take up 64 MB.
-		if allocated := after.TotalAlloc - before.TotalAlloc; allocated > members*memberSize/4 {
+		// What is read takes up the limit, and is not copied to be thrown away. All the
+		// members would take up 64 MB.
+		if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 2*limit {
 			t.Errorf("%d bytes were allocated to decompress up to a limit of %d bytes", allocated, limit)
 		}
 	})
@@ -9246,52 +9367,139 @@ func TestUnzip_SizeLimit(t *testing.T) {
 	})
 }
 
-func TestReadString(t *testing.T) {
-	t.Run("content is returned as it was read", func(t *testing.T) {
-		// Sizes around that of the buffer the content is read through.
-		for _, size := range []int{0, 1, 32*1024 - 1, 32 * 1024, 32*1024 + 1, 200 * 1024} {
-			want := strings.Repeat("0123456789", size/10+1)[:size]
+// TestUnzip_Memory verifies what decompressing takes up in memory: as much as
+// the content if the content is one member, which says how large it is, and
+// twice as much if it is several members, of which only the last one is known
+// to say that. A size that cannot be true has no memory allocated for it, and
+// whatever a size says, the content is decompressed as it is.
+func TestUnzip_Memory(t *testing.T) {
+	const size = 4 * 1024 * 1024
+	var lines strings.Builder
+	for line := 0; lines.Len() < size; line++ {
+		_, _ = fmt.Fprintf(&lines, "https://example.com/page-%d\n", line)
+	}
+	content := lines.String()[:size]
+	gzipped := string(gzipByte(content))
+	half := string(gzipByte(content[:size/2])) + string(gzipByte(content[size/2:]))
 
-			got, err := readString(strings.NewReader(want))
+	// sized returns the content of one member with the size it says replaced.
+	sized := func(member string, size uint32) string {
+		return member[:len(member)-4] + string([]byte{byte(size), byte(size >> 8), byte(size >> 16), byte(size >> 24)})
+	}
+
+	tests := []struct {
+		name  string
+		input string
+		// atMost is what may be allocated, in quarters of the size of the content.
+		atMost uint64
+	}{
+		{"one member", gzipped, 5},
+		{"two members", half, 9},
+		{"one member and a newline", gzipped + "\n", 9},
+		// Twice the size of the content, and a quarter of it.
+		{"one member and what makes for a larger size", gzipped + "\x00\x00\x80\x00", 13},
+		{"one member and what makes for a smaller size", gzipped + "\x00\x00\x10\x00", 9},
+		{"one member and what makes for no size", gzipped + "\x00\x00\x00\x00", 9},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			var err error
+			allocated := allocatedBy(func() {
+				got, err = unzip(tt.input, defaultMaxResponseSize)
+			})
 
 			if err != nil {
-				t.Fatalf("%d bytes: unexpected error: %v", size, err)
-			}
-			if got != want {
-				t.Errorf("%d bytes: got %d bytes that differ from what was read", size, len(got))
-			}
-		}
-	})
-
-	t.Run("what was read is returned with the error", func(t *testing.T) {
-		failure := errors.New("read failed")
-
-		got, err := readString(io.MultiReader(strings.NewReader("read until then"), iotest.ErrReader(failure)))
-
-		if err != failure {
-			t.Errorf("expected %v, got %v", failure, err)
-		}
-		mustEqual(t, "content", got, "read until then")
-	})
-
-	t.Run("buffer is not allocated for every read", func(t *testing.T) {
-		const reads = 1000
-
-		var before, after runtime.MemStats
-		runtime.ReadMemStats(&before)
-		for i := 0; i < reads; i++ {
-			if _, err := readString(strings.NewReader("small")); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-		}
-		runtime.ReadMemStats(&after)
+			if got != content {
+				t.Errorf("got %d bytes that differ from the content", len(got))
+			}
+			if allocated > tt.atMost*size/4 {
+				t.Errorf("%d bytes were allocated to decompress %d bytes", allocated, size)
+			}
+		})
+	}
 
-		// A buffer is 32 KB. The race detector has a pool drop some of what is put back
-		// into it, so a read is not required to allocate nothing at all.
-		if perRead := (after.TotalAlloc - before.TotalAlloc) / reads; perRead > 16*1024 {
-			t.Errorf("%d bytes are allocated for a read of 5 bytes", perRead)
+	t.Run("a member that says a size it does not have", func(t *testing.T) {
+		const few = "few bytes"
+		member := string(gzipByte(few))
+
+		// Sizes the member could have, and sizes that nothing of its length decompresses to.
+		for _, said := range []uint32{0, 1, uint32(len(few)) - 1, uint32(len(few)) + 1, 1024, uint32(len(member)) * maxDeflateRatio, uint32(len(member))*maxDeflateRatio + 1, size, math.MaxUint32} {
+			var got string
+			var err error
+			allocated := allocatedBy(func() {
+				got, err = unzip(sized(member, said), defaultMaxResponseSize)
+			})
+
+			if !errors.Is(err, gzip.ErrChecksum) {
+				t.Errorf("said to be %d bytes: expected %v, got %v", said, gzip.ErrChecksum, err)
+			}
+			mustEqual(t, "content", got, "")
+			// The decompressor and its buffers take some tens of kilobytes.
+			if allocated > 1024*1024 {
+				t.Errorf("said to be %d bytes: %d bytes were allocated to decompress %d bytes", said, allocated, len(few))
+			}
 		}
 	})
+
+	t.Run("a member that says it is larger than the limit", func(t *testing.T) {
+		// What is decompressed takes up the limit, and is not copied to be thrown away.
+		var got string
+		var err error
+		allocated := allocatedBy(func() {
+			got, err = unzip(gzipped, size-1)
+		})
+
+		if err == nil {
+			t.Fatal("expected a size limit error, got nil")
+		}
+		mustEqual(t, "error", err.Error(), fmt.Sprintf("decompressed size exceeds limit of %d bytes", size-1))
+		mustEqual(t, "content", got, "")
+		if allocated > size*5/4 {
+			t.Errorf("%d bytes were allocated to decompress up to a limit of %d bytes", allocated, size-1)
+		}
+	})
+}
+
+// TestGzipSize verifies the size that is read from the end of gzip content: the
+// four bytes a member ends with, the least significant first, unless they make
+// for a size that content of this length cannot be decompressed to.
+func TestGzipSize(t *testing.T) {
+	// Content that is long enough for every size four bytes can make for.
+	long := strings.Repeat("\x00", math.MaxUint32/maxDeflateRatio+1)
+
+	tests := []struct {
+		name    string
+		content string
+		want    int64
+	}{
+		{"no content", "", -1},
+		{"one byte", "\x01", -1},
+		{"three bytes", "\x01\x00\x00", -1},
+		{"four bytes", "\x01\x00\x00\x00", 1},
+		{"size of zero", "\x00\x00\x00\x00", 0},
+		{"largest size four bytes can be decompressed to", "\x20\x10\x00\x00", 4 * maxDeflateRatio},
+		{"one above the largest size four bytes can be decompressed to", "\x21\x10\x00\x00", -1},
+		{"largest size five bytes can be decompressed to", "\xff\x28\x14\x00\x00", 5 * maxDeflateRatio},
+		{"one above the largest size five bytes can be decompressed to", "\xff\x29\x14\x00\x00", -1},
+		{"largest size there is, of content that is too short for it", "\xff\xff\xff\xff", -1},
+		{"largest size there is", long + "\xff\xff\xff\xff", math.MaxUint32},
+		{"least significant byte first", long + "\x01\x02\x03\x04", 0x04030201},
+		{"most significant byte", long + "\x00\x00\x00\x80", 0x80000000},
+		{"empty member", string(gzipByte("")), 0},
+		{"member", string(gzipByte("hello world")), 11},
+		{"members", string(gzipByte("hello")) + string(gzipByte("world!")), 6},
+		{"member of 100,000 bytes", string(gzipByte(strings.Repeat("A", 100_000))), 100_000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mustEqual(t, "size", gzipSize(tt.content), tt.want)
+		})
+	}
 }
 
 // endless is a source that does not come to an end: it holds more than a read
@@ -9314,62 +9522,473 @@ func (e *endless) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestReadAtMost verifies that a read goes one byte past its limit and no
-// further: the byte that tells content which exceeds the limit from content
-// that fits it exactly. The largest limit there is has no byte past it, and
-// reads everything.
+// endsOnce is a source that fails the read which follows its end. What a source
+// does when it is read after it reported its end is up to the source, so a
+// source is not to be read then.
+type endsOnce struct {
+	source io.Reader
+	ended  bool
+}
+
+func (e *endsOnce) Read(p []byte) (int, error) {
+	if e.ended {
+		return 0, errors.New("read after the end")
+	}
+	n, err := e.source.Read(p)
+	e.ended = err == io.EOF
+	return n, err
+}
+
+// failsOnce is a source that fails the first time it is read, and is at its end
+// after that: a failure is not to be passed over for what the next read says.
+type failsOnce struct {
+	failure error
+	failed  bool
+}
+
+func (f *failsOnce) Read([]byte) (int, error) {
+	if f.failed {
+		return 0, io.EOF
+	}
+	f.failed = true
+	return 0, f.failure
+}
+
+// counted is a source that counts the reads it is asked for.
+type counted struct {
+	source io.Reader
+	reads  int
+}
+
+func (c *counted) Read(p []byte) (int, error) {
+	c.reads++
+	return c.source.Read(p)
+}
+
+// readBufferSize is the size of the buffers content is read through and into.
+const readBufferSize = 32 * 1024
+
+// readContent returns content of the given size that does not repeat itself
+// from one buffer to the next, so that buffers which are left out, put in
+// twice or put in the wrong order make for different content.
+func readContent(size int) string {
+	content := make([]byte, size)
+	for i := range content {
+		content[i] = byte(i ^ i>>8 ^ i>>16)
+	}
+	return string(content)
+}
+
+// sizesSaid returns what content of the given size may be said to have for a
+// size: nothing, the truth, and what is not true by a little and by a lot.
+func sizesSaid(size int) []int64 {
+	n := int64(size)
+	return []int64{math.MinInt64, -1, 0, 1, n / 2, n - 1, n, n + 1, 2*n + 1, 4 * 1024 * 1024, math.MaxInt64}
+}
+
+// allocatedBy returns the number of bytes f allocates. The buffers that earlier
+// reads have put back for the next read to use are not there for f, so that what
+// f allocates does not depend on what was read before it.
+func allocatedBy(f func()) uint64 {
+	// The collector empties a pool in two rounds.
+	runtime.GC()
+	runtime.GC()
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// TestReadAtMost verifies that a read returns the content it was given if the
+// content fits the limit, and nothing but the word that it does not if it
+// exceeds the limit, having read one byte past the limit and no further: the
+// byte that tells content which exceeds the limit from content that fits it
+// exactly. The largest limit there is has no byte past it, and reads
+// everything.
+// The size the content is said to have is not to be relied on, and changes
+// none of that.
 func TestReadAtMost(t *testing.T) {
 	const content = "0123456789"
 
 	tests := []struct {
-		name  string
-		limit int64
-		want  string
+		name     string
+		content  string
+		limit    int64
+		exceeded bool
 	}{
-		{"limit above the size", 11, content},
-		{"limit equal to the size", 10, content},
-		{"limit one byte below the size", 9, content},
-		{"limit below the size", 4, "01234"},
-		{"limit of zero", 0, "0"},
-		{"limit one below the maximum", math.MaxInt64 - 1, content},
-		{"maximum limit", math.MaxInt64, content},
+		{"limit above the size", content, 11, false},
+		{"limit equal to the size", content, 10, false},
+		{"limit one byte below the size", content, 9, true},
+		{"limit below the size", content, 4, true},
+		{"limit of zero", content, 0, true},
+		{"limit of zero and no content", "", 0, false},
+		{"no content", "", 10, false},
+		{"limit one below the maximum", content, math.MaxInt64 - 1, false},
+		{"maximum limit", content, math.MaxInt64, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := readAtMost(strings.NewReader(content), tt.limit)
+			for _, size := range sizesSaid(len(tt.content)) {
+				got, exceeded, err := readAtMost(strings.NewReader(tt.content), tt.limit, size)
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+				if err != nil {
+					t.Fatalf("said to be %d bytes: unexpected error: %v", size, err)
+				}
+				if exceeded != tt.exceeded {
+					t.Errorf("said to be %d bytes: exceeded is %t, expected %t", size, exceeded, tt.exceeded)
+				}
+				want := tt.content
+				if tt.exceeded {
+					want = ""
+				}
+				if got != want {
+					t.Errorf("said to be %d bytes: got %q, expected %q", size, got, want)
+				}
 			}
-			mustEqual(t, "content", got, tt.want)
 		})
 	}
 
+	t.Run("content is returned as it was read", func(t *testing.T) {
+		// How a source hands out its content is up to the source.
+		sources := []struct {
+			name string
+			wrap func(io.Reader) io.Reader
+			// largest is the size of the largest content the source is read with.
+			largest int
+		}{
+			{"all there is at once", func(r io.Reader) io.Reader { return r }, math.MaxInt},
+			{"half of what is asked for", iotest.HalfReader, math.MaxInt},
+			{"the last bytes together with the end", iotest.DataErrReader, math.MaxInt},
+			{"one byte at a time", iotest.OneByteReader, readBufferSize + 1},
+		}
+		// Sizes around those of one buffer and of two.
+		sizes := []int{0, 1, readBufferSize - 1, readBufferSize, readBufferSize + 1, 2*readBufferSize - 1, 2 * readBufferSize, 2*readBufferSize + 1, 200 * 1024}
+
+		for _, source := range sources {
+			for _, size := range sizes {
+				if size > source.largest {
+					continue
+				}
+				want := readContent(size)
+
+				for _, limit := range []int64{int64(size), int64(size) + 1, math.MaxInt64} {
+					for _, said := range sizesSaid(size) {
+						got, exceeded, err := readAtMost(&endsOnce{source: source.wrap(strings.NewReader(want))}, limit, said)
+
+						if err != nil {
+							t.Fatalf("%s, %d bytes said to be %d, limit of %d: unexpected error: %v", source.name, size, said, limit, err)
+						}
+						if exceeded {
+							t.Errorf("%s, %d bytes said to be %d, limit of %d: the limit is said to be exceeded", source.name, size, said, limit)
+						}
+						if got != want {
+							t.Errorf("%s, %d bytes said to be %d, limit of %d: got %d bytes that differ from what was read", source.name, size, said, limit, len(got))
+						}
+					}
+				}
+			}
+		}
+	})
+
+	t.Run("content is read a buffer at a time", func(t *testing.T) {
+		const buffers = 10
+		want := readContent(buffers * readBufferSize)
+		size := int64(len(want))
+
+		// A read for every buffer, and one that finds the end.
+		tests := []struct {
+			name  string
+			said  int64
+			reads int
+		}{
+			{"unknown size", -1, buffers + 1},
+			{"size it has", size, buffers + 1},
+			{"larger size", 2 * size, buffers + 1},
+			{"smaller size", size / 2, buffers + 1},
+			// What is left of the size is read first, and of the buffer after that.
+			{"smaller size that is not a number of buffers", size/2 + 100, buffers + 2},
+		}
+
+		for _, tt := range tests {
+			source := &counted{source: strings.NewReader(want)}
+
+			got, _, err := readAtMost(source, math.MaxInt64, tt.said)
+
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", tt.name, err)
+			}
+			if got != want {
+				t.Errorf("%s: got %d bytes that differ from what was read", tt.name, len(got))
+			}
+			mustEqual(t, tt.name+": reads", source.reads, tt.reads)
+		}
+	})
+
 	t.Run("no more is read than one byte past the limit", func(t *testing.T) {
 		// Limits around the size of the buffer the content is read through.
-		for _, limit := range []int64{0, 1, 32*1024 - 1, 32 * 1024, 32*1024 + 1, 200 * 1024} {
-			source := &endless{}
+		for _, limit := range []int64{0, 1, readBufferSize - 1, readBufferSize, readBufferSize + 1, 200 * 1024} {
+			for _, size := range append(sizesSaid(int(limit)), limit+2) {
+				source := &endless{}
 
-			got, err := readAtMost(source, limit)
+				got, exceeded, err := readAtMost(source, limit, size)
+
+				if err != nil {
+					t.Fatalf("limit of %d bytes, said to be %d: unexpected error: %v", limit, size, err)
+				}
+				if !exceeded {
+					t.Errorf("limit of %d bytes, said to be %d: the limit is not said to be exceeded", limit, size)
+				}
+				mustEqual(t, "bytes returned", len(got), 0)
+				mustEqual(t, "bytes read", source.read, limit+1)
+			}
+		}
+	})
+
+	t.Run("no content is returned with an error", func(t *testing.T) {
+		failure := errors.New("read failed")
+		const read = "read until then"
+		// A failure in the first buffer, and one that more than a buffer was read before.
+		for _, before := range []string{"", read, readContent(3*readBufferSize) + read} {
+			// The content fails where it was said to end, before that and after it.
+			for _, size := range append(sizesSaid(len(before)), 4, int64(len(before))+4) {
+				got, exceeded, err := readAtMost(io.MultiReader(strings.NewReader(before), &failsOnce{failure: failure}), 1024*1024, size)
+
+				if err != failure {
+					t.Errorf("%d bytes said to be %d: expected %v, got %v", len(before), size, failure, err)
+				}
+				if exceeded {
+					t.Errorf("%d bytes said to be %d: the limit is said to be exceeded", len(before), size)
+				}
+				mustEqual(t, "bytes returned", len(got), 0)
+			}
+		}
+	})
+
+	t.Run("a failure past the limit is not read up to", func(t *testing.T) {
+		failure := errors.New("read failed")
+
+		for _, size := range sizesSaid(len(content)) {
+			got, exceeded, err := readAtMost(io.MultiReader(strings.NewReader(content), iotest.ErrReader(failure)), int64(len(content))-1, size)
+
+			if err != nil {
+				t.Fatalf("said to be %d bytes: unexpected error: %v", size, err)
+			}
+			if !exceeded {
+				t.Errorf("said to be %d bytes: the limit is not said to be exceeded", size)
+			}
+			mustEqual(t, "content", got, "")
+		}
+	})
+}
+
+// TestReadAtMost_Memory verifies what a read takes up in memory: as much as the
+// content if the content has the size it was said to have, and twice as much if
+// its size is not known or not what was said, half of which is buffers that are
+// used again. A read that grew a string as it went allocated five times the
+// content. Content that exceeds the limit is not copied out of the buffers, and
+// no string is allocated for a size beyond the limit or beyond presizeLimit.
+func TestReadAtMost_Memory(t *testing.T) {
+	// A byte more than a number of buffers, and than what memory is allocated in: a string
+	// that is allocated a byte short is too small for it.
+	const size = 8*1024*1024 + 1
+	content := strings.Repeat("0123456789abcdef", size/16+1)[:size]
+
+	t.Run("content that fits the limit", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			limit int64
+			said  int64
+			// atMost is what may be allocated, in quarters of the size of the content.
+			atMost uint64
+		}{
+			{"of the size it was said to have", math.MaxInt64, size, 5},
+			{"of the size it was said to have, which is the limit", size, size, 5},
+			{"of unknown size", math.MaxInt64, -1, 9},
+			{"said to have no size", math.MaxInt64, 0, 9},
+			{"longer than it was said to be", math.MaxInt64, size / 2, 9},
+			{"longer than it was said to be, which is not a number of buffers", math.MaxInt64, size/2 + 100, 9},
+			{"longer by a byte than it was said to be", math.MaxInt64, size - 1, 9},
+			{"shorter than it was said to be", math.MaxInt64, 2 * size, 13},
+			{"shorter by a byte than it was said to be", math.MaxInt64, size + 1, 9},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var got string
+				var exceeded bool
+				var err error
+				allocated := allocatedBy(func() {
+					got, exceeded, err = readAtMost(strings.NewReader(content), tt.limit, tt.said)
+				})
+
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				mustEqual(t, "exceeded", exceeded, false)
+				if got != content {
+					t.Errorf("got %d bytes that differ from what was read", len(got))
+				}
+				if allocated > tt.atMost*size/4 {
+					t.Errorf("%d bytes were allocated to read %d bytes said to be %d", allocated, size, tt.said)
+				}
+			})
+		}
+	})
+
+	t.Run("content that exceeds the limit", func(t *testing.T) {
+		const limit = size
+
+		// What is read takes up the limit, and is not copied to be thrown away.
+		for _, said := range []int64{-1, 0, limit / 2, limit, limit + 1, limit + 2, math.MaxInt64} {
+			source := &endless{}
+			var got string
+			var exceeded bool
+			var err error
+			allocated := allocatedBy(func() {
+				got, exceeded, err = readAtMost(source, limit, said)
+			})
+
+			if err != nil {
+				t.Fatalf("said to be %d bytes: unexpected error: %v", said, err)
+			}
+			mustEqual(t, "exceeded", exceeded, true)
+			mustEqual(t, "content", got, "")
+			mustEqual(t, "bytes read", source.read, int64(limit+1))
+			if allocated > limit*5/4 {
+				t.Errorf("said to be %d bytes: %d bytes were allocated to read up to a limit of %d bytes", said, allocated, limit)
+			}
+		}
+	})
+
+	t.Run("no memory is allocated for a size that is not believed", func(t *testing.T) {
+		const few = "few bytes"
+
+		tests := []struct {
+			name  string
+			limit int64
+			said  int64
+		}{
+			{"size one above the limit", size, size + 1},
+			{"size far above the limit", 1024, size},
+			{"size above that of the largest sitemap", math.MaxInt64, defaultMaxResponseSize + 1},
+			{"size above that of the largest sitemap, which is the limit", defaultMaxResponseSize + 1, defaultMaxResponseSize + 1},
+			{"largest size there is", math.MaxInt64, math.MaxInt64},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var got string
+				var err error
+				allocated := allocatedBy(func() {
+					got, _, err = readAtMost(strings.NewReader(few), tt.limit, tt.said)
+				})
+
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				mustEqual(t, "content", got, few)
+				// A buffer to read through, and a string of a few bytes.
+				if allocated > 4*readBufferSize {
+					t.Errorf("%d bytes were allocated to read %d bytes said to be %d", allocated, len(few), tt.said)
+				}
+			})
+		}
+	})
+
+	t.Run("size of the largest sitemap is believed", func(t *testing.T) {
+		const few = "few bytes"
+
+		for _, limit := range []int64{defaultMaxResponseSize, math.MaxInt64} {
+			var got string
+			var err error
+			allocated := allocatedBy(func() {
+				got, _, err = readAtMost(strings.NewReader(few), limit, defaultMaxResponseSize)
+			})
 
 			if err != nil {
 				t.Fatalf("limit of %d bytes: unexpected error: %v", limit, err)
 			}
-			mustEqual(t, "bytes returned", int64(len(got)), limit+1)
-			mustEqual(t, "bytes read", source.read, limit+1)
+			mustEqual(t, "content", got, few)
+			// A string of the size is allocated for the content to be read into.
+			if allocated < defaultMaxResponseSize {
+				t.Errorf("limit of %d bytes: %d bytes were allocated to read content said to be %d bytes", limit, allocated, defaultMaxResponseSize)
+			}
 		}
 	})
 
-	t.Run("what was read is returned with the error", func(t *testing.T) {
-		failure := errors.New("read failed")
+	t.Run("memory allocated for more than there is is not kept", func(t *testing.T) {
+		const few = "few bytes"
 
-		got, err := readAtMost(io.MultiReader(strings.NewReader("read until then"), iotest.ErrReader(failure)), 1024)
-
-		if err != failure {
-			t.Errorf("expected %v, got %v", failure, err)
+		// What is not in use is collected before the read, and so are the buffers of the reads
+		// before, which the collector keeps for one more round: none of it is to be collected
+		// in between and made up for what the read keeps.
+		var before, after runtime.MemStats
+		for range 3 {
+			runtime.GC()
 		}
-		mustEqual(t, "content", got, "read until then")
+		runtime.ReadMemStats(&before)
+		got, _, err := readAtMost(strings.NewReader(few), math.MaxInt64, size)
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		mustEqual(t, "content", got, few)
+		// The string that is returned is in use, and holds nine bytes.
+		if kept := int64(after.HeapAlloc) - int64(before.HeapAlloc); kept > size/2 {
+			t.Errorf("%d bytes are kept for %d bytes that were said to be %d", kept, len(few), size)
+		}
+		runtime.KeepAlive(got)
+	})
+
+	t.Run("buffers are not allocated for every read", func(t *testing.T) {
+		const reads = 1000
+
+		for _, said := range []int64{-1, 5} {
+			allocated := allocatedBy(func() {
+				for i := 0; i < reads; i++ {
+					if _, _, err := readAtMost(strings.NewReader("small"), 1024, said); err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+				}
+			})
+
+			// A buffer is 32 KB. The race detector has a pool drop some of what is put back
+			// into it, so a read is not required to allocate nothing at all.
+			if perRead := allocated / reads; perRead > readBufferSize/2 {
+				t.Errorf("said to be %d bytes: %d bytes are allocated for a read of 5 bytes", said, perRead)
+			}
+		}
+	})
+
+	t.Run("buffers of a read are used by the next", func(t *testing.T) {
+		// The collector empties the pool the buffers are put back into.
+		defer debug.SetGCPercent(debug.SetGCPercent(-1))
+
+		read := func() {
+			got, _, err := readAtMost(strings.NewReader(content), math.MaxInt64, -1)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != content {
+				t.Errorf("got %d bytes that differ from what was read", len(got))
+			}
+		}
+		read()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		read()
+		runtime.ReadMemStats(&after)
+
+		// The string that is returned is allocated, the buffers are those of the read before.
+		// The race detector has a pool drop some of what is put back into it.
+		if allocated := after.TotalAlloc - before.TotalAlloc; allocated > size*7/4 {
+			t.Errorf("%d bytes were allocated to read %d bytes after a read of as many", allocated, size)
+		}
 	})
 }
 
