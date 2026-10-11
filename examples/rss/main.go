@@ -23,22 +23,29 @@ import (
 // the same. The dates of the channel are not read. Nothing but the location
 // and the date is taken from a feed, so ChangeFreq and Priority are nil.
 //
+// A feed may hold elements of other formats, which are told from its own by
+// their namespace: the <atom:link> of the channel and the one of the first
+// item are elements of Atom. Such an element is not read, so the <atom:link>
+// of the item is not taken for its <link>, wherever it stands in the item.
+//
 // The feed is passed in directly, so the example runs without network access.
 // To have it fetched, pass nil in place of the content.
 func main() {
-	// The second item gives its time zone by name, the third one has a date
-	// that is not in the format of RSS, the fourth one has no date, and the
-	// last one has no <link>.
+	// The first item has an <atom:link> after its <link>, the second one gives
+	// its time zone by name, the third one has a date that is not in the format
+	// of RSS, the fourth one has no date, and the last one has no <link>.
 	feed := `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
     <title>Example blog</title>
     <link>https://example.com/blog</link>
     <description>News from example.com</description>
+    <atom:link rel="self" type="application/rss+xml" href="https://example.com/feed.xml"/>
     <pubDate>Wed, 17 Jan 2024 09:15:00 GMT</pubDate>
     <item>
       <title>First post</title>
       <link>https://example.com/blog/first-post</link>
+      <atom:link rel="related" href="https://example.com/blog/first-post/comments.atom"/>
       <pubDate>Mon, 15 Jan 2024 10:30:00 +0100</pubDate>
     </item>
     <item>

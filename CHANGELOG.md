@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- An item of an RSS feed was left out without an error when an element of another namespace that is named `link` followed its `<link>`, such as an `<atom:link>`: `<item><link>https://example.com/a</link><atom:link rel="alternate" href="https://example.com/a.atom"/></item>` yielded no URL. The elements of an item were read by their local name, whatever their namespace, and the last one of a name counted: the content of the `<atom:link>`, which is empty, took the place of the link, and an item without a link is skipped without an error. With the two the other way round the item was returned. An element of another namespace that has content was returned as the location of the page (`<x:link>https://example.com/other</x:link>`), and one named `pubDate` was read as the date of the item, or reported as a date that cannot be parsed. An Atom entry was read the same way: a `<link>` of another namespace that stood before the link of the entry was returned as the location, and an `<updated>` of another namespace after that of the entry as the date. The elements of an item and of an entry are now the ones that are in the namespace of the item or of the entry they stand in, which is none for an RSS item and that of Atom for an Atom entry; an element of another namespace is not read, wherever it stands. A feed that is in another namespace as a whole (`<rss xmlns="http://backend.userland.com/rss2">`), or that is written with a prefix, is read as it was, since it is the namespace of the item that decides. An element that is not in the namespace of its item is no longer read the other way round either: the `<link>` in no namespace of an entry that has a prefix (`<a:entry><link href="https://example.com/a"/></a:entry>`) is no link of that entry. `README.md` describes this under `Formats supported`
+
 ## [1.3.0] - 2026-10-11
 
 ### Added

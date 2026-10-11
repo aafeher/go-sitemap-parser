@@ -3,6 +3,7 @@ package sitemap
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/xml"
 	"errors"
 	"io"
 	"math"
@@ -634,6 +635,8 @@ func FuzzParse(f *testing.F) {
 		`<rss><channel><pubDate>Sat, 13 Jan 2024 08:00:00 GMT</pubDate><item><link>https://example.com/a</link><pubDate>Mon, 15 Jan 2024 10:30:00 +0100</pubDate></item><item><link>https://example.com/b</link><pubDate> 5 Jan 24 10:30 est </pubDate></item><item><link>https://example.com/c</link><pubDate>2024-01-15T10:30:00Z</pubDate></item><item><link>https://example.com/c</link><pubDate/></item><item><link>https://www.example.com/d</link><pubDate>yesterday</pubDate></item><item><pubDate>no link</pubDate></item></channel></rss>`,
 		`<feed><updated>2024-01-13T08:00:00Z</updated><entry><link href="https://example.com/a"/><updated>2024-01-15T10:30:00+01:00</updated></entry><entry><link href="https://example.com/b"/><updated> 2024-01 </updated></entry><entry><link href="https://example.com/c"/><updated>Mon, 15 Jan 2024 10:30:00 GMT</updated></entry><entry><link href="https://example.com/c"/><updated/></entry><entry><link href="https://www.example.com/d"/><updated>yesterday</updated></entry><entry><updated>no link</updated></entry></feed>`,
 		`<sitemapindex><sitemap><loc>https://example.com/a.xml</loc><lastmod>2024-01-15T10:30:00+01:00</lastmod></sitemap><sitemap><loc>https://example.com/b.xml</loc><lastmod>2024-01-15 10:30:00</lastmod></sitemap><sitemap><loc>https://example.com/a.xml</loc><lastmod>2024-01-16</lastmod></sitemap><sitemap><loc>https://example.com/b.xml</loc><lastmod/></sitemap><sitemap><loc>https://www.example.com/c.xml</loc><lastmod>yesterday</lastmod></sitemap><sitemap><lastmod>no location</lastmod></sitemap></sitemapindex>`,
+		`<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:x="urn:x"><channel><item><link>https://example.com/a</link><atom:link rel="alternate" href="https://example.com/a.atom"/><x:pubDate>yesterday</x:pubDate></item><item><x:link>https://example.com/other</x:link><pubDate>Mon, 15 Jan 2024 10:30:00 GMT</pubDate></item></channel></rss>`,
+		`<feed xmlns="http://www.w3.org/2005/Atom" xmlns:x="urn:x"><entry><x:link href="https://example.com/other"/><link href="https://example.com/a"/><x:updated>never</x:updated></entry><a:entry xmlns:a="urn:a"><link href="https://example.com/b"/><a:link href="https://example.com/c"/></a:entry></feed>`,
 		`<sitemapindex><sitemap><loc>`,
 		"",
 		"not xml at all",
@@ -717,6 +720,88 @@ func FuzzDetectRootElement(f *testing.F) {
 		}
 		if strings.ContainsAny(root, "<>/ \t\r\n") {
 			t.Fatalf("detectRootElement returned a malformed name %q", root)
+		}
+	})
+}
+
+// escaped returns text as it is written in the content of an element, or in
+// the value of an attribute, of an XML document.
+func escaped(text string) string {
+	var content strings.Builder
+	_ = xml.EscapeText(&content, []byte(text))
+	return content.String()
+}
+
+// FuzzFeedNamespaces checks that an element of another namespace changes
+// nothing about what an item of a feed is read as: an item of an RSS feed and
+// an entry of an Atom feed yield the page, the date and the errors that they
+// yield without such an element, in both modes, whatever the element holds,
+// whether it stands before or after the element of the feed that has its name,
+// and whether or not the item has that element at all.
+func FuzzFeedNamespaces(f *testing.F) {
+	const rssDate, atomDate = "Mon, 15 Jan 2024 10:30:00 GMT", "2024-01-15T10:30:00Z"
+	for places := range uint8(16) {
+		f.Add("https://example.com/a", rssDate, "https://example.com/other", "Tue, 16 Jan 2024 10:30:00 GMT", places)
+		f.Add("https://example.com/a", atomDate, "", "", places)
+		f.Add("/a b", "yesterday", "https://example.com/other", atomDate, places)
+	}
+	f.Add("", "", "https://example.com/other", rssDate, uint8(0))
+	f.Add(" https://example.com/\u00e9 ", " "+atomDate+" ", "ftp://example.com/<other>", "\"&'", uint8(3))
+
+	f.Fuzz(func(t *testing.T, link, date, otherLink, otherDate string, places uint8) {
+		link, date, otherLink, otherDate = escaped(link), escaped(date), escaped(otherLink), escaped(otherDate)
+		// item returns the elements of an item: those of the feed, own, unless the item is to
+		// have none, each with the one of another namespace before it or after it.
+		item := func(ownLink, otherLinks, ownDate, otherDates string) (plain, mixed string) {
+			if places&4 != 0 {
+				ownLink = ""
+			}
+			if places&8 != 0 {
+				ownDate = ""
+			}
+			mixedLinks, mixedDates := ownLink+otherLinks, ownDate+otherDates
+			if places&1 != 0 {
+				mixedLinks = otherLinks + ownLink
+			}
+			if places&2 != 0 {
+				mixedDates = otherDates + ownDate
+			}
+			return ownLink + ownDate, mixedLinks + mixedDates
+		}
+		feeds := []struct {
+			name, feed   string
+			plain, mixed string
+		}{
+			{name: "RSS", feed: `<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:x="urn:example:x"><channel><item>%s</item></channel></rss>`},
+			{name: "Atom", feed: `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:x="urn:example:x"><entry>%s</entry></feed>`},
+		}
+		feeds[0].plain, feeds[0].mixed = item(
+			`<link>`+link+`</link>`,
+			`<x:link>`+otherLink+`</x:link><atom:link rel="alternate" href="`+otherLink+`"/>`,
+			`<pubDate>`+date+`</pubDate>`,
+			`<x:pubDate>`+otherDate+`</x:pubDate>`,
+		)
+		feeds[1].plain, feeds[1].mixed = item(
+			`<link href="`+link+`"/>`,
+			`<x:link href="`+otherLink+`"/><link xmlns="" rel="alternate" href="`+otherLink+`"/>`,
+			`<updated>`+date+`</updated>`,
+			`<x:updated>`+otherDate+`</x:updated><updated xmlns="">`+otherDate+`</updated>`,
+		)
+
+		for _, feed := range feeds {
+			for _, strict := range []bool{false, true} {
+				read := func(elements string) (urls, errs []string) {
+					s := New().SetStrict(strict)
+					s.parse(fuzzBaseURL, strings.Replace(feed.feed, "%s", elements, 1))
+					return datedLocs(s), errorsOf(s)
+				}
+				urls, errs := read(feed.plain)
+				mixedURLs, mixedErrs := read(feed.mixed)
+				if !slicesEqual(mixedURLs, urls) || !slicesEqual(mixedErrs, errs) {
+					t.Fatalf("%s, strict=%v: %q is read as %q with the errors %q, and %q as %q with the errors %q",
+						feed.name, strict, feed.plain, urls, errs, feed.mixed, mixedURLs, mixedErrs)
+				}
+			}
 		}
 	})
 }

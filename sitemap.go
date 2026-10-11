@@ -173,29 +173,44 @@ type (
 		parse func(text string) (LastModTime, error)
 	}
 
-	// rss is a structure of <rss> for RSS 2.0 feeds. The <pubDate> of an item is read as
-	// text, so that one that cannot be parsed costs only itself, see urlEntry.
+	// rss is a structure of <rss> for RSS 2.0 feeds.
 	rss struct {
 		XMLName xml.Name `xml:"rss"`
 		Channel struct {
-			Item []struct {
-				Link    string  `xml:"link"`
-				PubDate *string `xml:"pubDate"`
-			} `xml:"item"`
+			Item []rssItem `xml:"item"`
 		} `xml:"channel"`
 	}
 
-	// atom is a structure of <feed> for Atom 1.0 feeds. The <updated> of an entry is read as
-	// text, like the <pubDate> of an RSS item.
+	// rssItem is an <item> of an RSS feed. It is read by its UnmarshalXML method, which takes
+	// the elements of the feed and leaves those of other formats, see decodeOwnChildren.
+	rssItem struct {
+		// Link is the content of <link>.
+		Link string
+		// PubDate is the content of <pubDate>, nil if the item has none. It is read as
+		// text, so that one that cannot be parsed costs only itself, see urlEntry.
+		PubDate *string
+	}
+
+	// atom is a structure of <feed> for Atom 1.0 feeds.
 	atom struct {
-		XMLName xml.Name `xml:"feed"`
-		Entry   []struct {
-			Link []struct {
-				Href string `xml:"href,attr"`
-				Rel  string `xml:"rel,attr"`
-			} `xml:"link"`
-			Updated *string `xml:"updated"`
-		} `xml:"entry"`
+		XMLName xml.Name    `xml:"feed"`
+		Entry   []atomEntry `xml:"entry"`
+	}
+
+	// atomEntry is an <entry> of an Atom feed. It is read by its UnmarshalXML method, like an
+	// RSS item.
+	atomEntry struct {
+		// Link holds the <link> elements of the entry, in the order they stand in it.
+		Link []atomLink
+		// Updated is the content of <updated>, nil if the entry has none. It is read as
+		// text, like the <pubDate> of an RSS item.
+		Updated *string
+	}
+
+	// atomLink is a <link> of an Atom entry.
+	atomLink struct {
+		Href string `xml:"href,attr"`
+		Rel  string `xml:"rel,attr"`
 	}
 
 	// Image is a structure of <image:image> in <url>, per the Google Image Sitemap extension.
@@ -2825,6 +2840,80 @@ func parseInt(text string) (int, error) {
 // err returns the error that reports v.
 func (v invalidValue) err() error {
 	return fmt.Errorf("invalid %s value %q", v.element, strings.TrimSpace(v.text))
+}
+
+// decodeOwnChildren reads the children of the element start, which d has just read the start
+// of, up to the end of the element. It is what the UnmarshalXML method of an item of a feed
+// reads the item with.
+//
+// A child that is in the namespace of start is decoded into what target returns for its local
+// name, a pointer. Every other child is skipped together with what it contains: one that
+// target returns nil for, and one of another namespace.
+//
+// A feed holds elements of other formats beside its own, which are told apart by their
+// namespace alone: an RSS item may have an <atom:link> next to its <link>. encoding/xml reads
+// an element into a field by its local name, whatever its namespace, and the last element of
+// a name counts for a field that holds one. Read that way, the <atom:link>, which has no
+// content, took the place of the <link> that stood before it, and the item was left out for
+// having no link.
+//
+// The feed is taken at its word for its namespace, which is why that of the item decides and
+// not the one the format prescribes: none for RSS, that of Atom for Atom. A feed that puts
+// its elements into another namespace, or that has a prefix, is read as it was before the
+// namespaces were looked at.
+func decodeOwnChildren(d *xml.Decoder, start xml.StartElement, target func(name string) any) error {
+	for {
+		token, err := d.Token()
+		if err != nil {
+			return err
+		}
+		switch element := token.(type) {
+		case xml.StartElement:
+			var into any
+			if element.Name.Space == start.Name.Space {
+				into = target(element.Name.Local)
+			}
+			if into == nil {
+				err = d.Skip()
+			} else {
+				err = d.DecodeElement(into, &element)
+			}
+			if err != nil {
+				return err
+			}
+		case xml.EndElement:
+			return nil
+		}
+	}
+}
+
+// UnmarshalXML reads the <link> and the <pubDate> of the item, see decodeOwnChildren. The last
+// element of a name counts if the item has more than one.
+func (item *rssItem) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	return decodeOwnChildren(d, start, func(name string) any {
+		switch name {
+		case "link":
+			return &item.Link
+		case "pubDate":
+			return &item.PubDate
+		}
+		return nil
+	})
+}
+
+// UnmarshalXML reads the <link> elements and the <updated> of the entry, see
+// decodeOwnChildren. The last <updated> counts if the entry has more than one.
+func (entry *atomEntry) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	return decodeOwnChildren(d, start, func(name string) any {
+		switch name {
+		case "link":
+			entry.Link = append(entry.Link, atomLink{})
+			return &entry.Link[len(entry.Link)-1]
+		case "updated":
+			return &entry.Updated
+		}
+		return nil
+	})
 }
 
 // parseRSS parses the RSS 2.0 data and returns an rss object and an error, see decodeDocument.
