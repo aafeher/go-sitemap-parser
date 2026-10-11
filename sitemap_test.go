@@ -657,6 +657,13 @@ func TestImage_validateAndFilterImages(t *testing.T) {
 		{"strict: loc exceeding max length rejected", true, []Image{{Loc: "https://example.com/" + strings.Repeat("a", maxLocLength)}}, 0, 1},
 		{"strict: unparseable URL rejected with error", true, []Image{{Loc: "http://example.com/path%zzinvalid"}}, 0, 1},
 		{"strict: CDN host (different from page host) accepted", true, []Image{{Loc: "https://cdn.other-host.com/photo.jpg"}}, 1, 0},
+		{"strict: License that is a URL accepted", true, []Image{{Loc: "https://example.com/photo.jpg", License: "https://example.com/license"}}, 1, 0},
+		{"strict: License that is no URL produces error, image kept", true, []Image{{Loc: "https://example.com/photo.jpg", License: "CC BY 4.0"}}, 1, 1},
+		{"strict: License exceeding max length produces error, image kept", true, []Image{{Loc: "https://example.com/photo.jpg", License: "https://example.com/" + strings.Repeat("a", maxLocLength)}}, 1, 1},
+		{"strict: License of an image that is dropped is not validated", true, []Image{{Loc: "ftp://example.com/photo.jpg", License: "CC BY 4.0"}}, 0, 1},
+		{"strict: License of each image validated", true, []Image{{Loc: "https://example.com/a.jpg", License: "CC BY 4.0"}, {Loc: "https://example.com/b.jpg", License: "/license"}}, 2, 2},
+		{"tolerant: License that is no URL accepted", false, []Image{{Loc: "https://example.com/photo.jpg", License: "CC BY 4.0"}}, 1, 0},
+		{"tolerant: License exceeding max length accepted", false, []Image{{Loc: "https://example.com/photo.jpg", License: "https://example.com/" + strings.Repeat("a", maxLocLength)}}, 1, 0},
 	}
 
 	for _, tt := range tests {
@@ -665,7 +672,7 @@ func TestImage_validateAndFilterImages(t *testing.T) {
 			if tt.strict {
 				s = s.SetStrict(true)
 			}
-			got, errs := s.validateAndFilterImages(tt.images)
+			got, errs := s.validateAndFilterImages("https://example.com/page", tt.images)
 			if len(got) != tt.wantImages {
 				t.Errorf("expected %d images, got %d", tt.wantImages, len(got))
 			}
@@ -1400,6 +1407,16 @@ func TestVideo_validateAndFilterVideos(t *testing.T) {
 		{"strict: Rating below 0 produces error", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Rating: pointerOfFloat32Video(-0.1)}}, 1, 1},
 		{"strict: Rating above 5.0 produces error", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Rating: pointerOfFloat32Video(5.1)}}, 1, 1},
 		{"strict: Tags exceeding 32 produces error, video kept", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Tags: manyTags}}, 1, 1},
+		{"strict: Duration and Rating at their limits accepted", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Duration: pointerOfInt(1), Rating: pointerOfFloat32Video(0)}, {ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Duration: pointerOfInt(maxVideoDuration), Rating: pointerOfFloat32Video(maxVideoRating), Tags: manyTags[:maxVideoTags]}}, 2, 0},
+		{"strict: ContentLoc, PlayerLoc and Uploader.Info that are URLs accepted", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://cdn.example.net/v.mp4", PlayerLoc: "http://example.com/player", Uploader: &VideoUploader{Info: "https://example.com/u", Value: "U"}}}, 1, 0},
+		{"strict: ContentLoc that is no URL produces error, video kept", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "ftp://example.com/v.mp4"}}, 1, 1},
+		{"strict: PlayerLoc that is no URL produces error, video kept", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", PlayerLoc: "/player"}}, 1, 1},
+		{"strict: Uploader.Info that is no URL produces error, video kept", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Uploader: &VideoUploader{Info: "about the uploader", Value: "U"}}}, 1, 1},
+		{"strict: Uploader without Info accepted", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/v.mp4", Uploader: &VideoUploader{Value: "U"}}}, 1, 0},
+		{"strict: ContentLoc exceeding max length produces error, video kept", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "https://example.com/" + strings.Repeat("a", maxLocLength)}}, 1, 1},
+		{"strict: each URL that is no URL produces error", true, []Video{{ThumbnailLoc: "https://example.com/t.jpg", Title: "T", Description: "D", ContentLoc: "v.mp4", PlayerLoc: "/player", Uploader: &VideoUploader{Info: "u"}}}, 1, 3},
+		{"strict: URLs of a video that is dropped are not validated", true, []Video{{ThumbnailLoc: "/t.jpg", ContentLoc: "v.mp4", PlayerLoc: "/player"}}, 0, 1},
+		{"tolerant: ContentLoc, PlayerLoc and Uploader.Info that are no URLs accepted", false, []Video{{ThumbnailLoc: "https://example.com/t.jpg", ContentLoc: "v.mp4", PlayerLoc: "/player", Uploader: &VideoUploader{Info: "u"}}}, 1, 0},
 	}
 
 	for _, tt := range tests {
@@ -1408,7 +1425,7 @@ func TestVideo_validateAndFilterVideos(t *testing.T) {
 			if tt.strict {
 				s = s.SetStrict(true)
 			}
-			got, errs := s.validateAndFilterVideos(tt.videos)
+			got, errs := s.validateAndFilterVideos("https://example.com/page", tt.videos)
 			if len(got) != tt.wantVideos || len(errs) != tt.wantErrs {
 				t.Errorf("expected %d videos, %d errors; got %d, %d: %v", tt.wantVideos, tt.wantErrs, len(got), len(errs), errs)
 			}
@@ -1441,7 +1458,7 @@ func TestHreflang_validateAndFilterHreflangs(t *testing.T) {
 			if tt.strict {
 				s = s.SetStrict(true)
 			}
-			got, errs := s.validateAndFilterHreflangs(tt.links)
+			got, errs := s.validateAndFilterHreflangs("https://example.com/page", tt.links)
 			if len(got) != tt.wantLinks || len(errs) != tt.wantErrs {
 				t.Errorf("expected %d links, %d errors; got %d, %d", tt.wantLinks, tt.wantErrs, len(got), len(errs))
 			}
@@ -6149,7 +6166,8 @@ func TestS_Parse_Strict_ValuesNotAllowed(t *testing.T) {
 // TestS_Parse_BlankRequiredValues verifies that a value an extension requires is missing
 // when its element or attribute holds nothing but whitespace, the same as when it is empty.
 // Tolerant mode leaves out an image, a video and an alternate link without a location;
-// strict mode reports every value that is missing.
+// strict mode reports every value that is missing, by the name of the page it is missing
+// from, or by that of the alternate link when the link has a location.
 func TestS_Parse_BlankRequiredValues(t *testing.T) {
 	const (
 		sitemapURL = "https://example.com/sitemap.xml"
@@ -6220,15 +6238,15 @@ func TestS_Parse_BlankRequiredValues(t *testing.T) {
 				got = append(got, err.Error())
 			}
 			assertStringSlice(t, "errors", got, []string{
-				`validate "": strict mode: image <loc> is empty`,
+				`validate "` + pageURL + `": strict mode: image <loc> is empty`,
 				`validate "` + pageURL + `": strict mode: news <title> is empty`,
 				`validate "` + pageURL + `": strict mode: news <publication><name> is empty`,
 				`validate "` + pageURL + `": strict mode: news <publication><language> is empty`,
-				`validate "": strict mode: video <thumbnail_loc> is empty`,
-				`validate "` + thumbnail + `": strict mode: video <title> is empty`,
-				`validate "` + thumbnail + `": strict mode: video <description> is empty`,
-				`validate "` + thumbnail + `": strict mode: video must have at least one of <content_loc> or <player_loc>`,
-				`validate "": strict mode: alternate link <href> is empty`,
+				`validate "` + pageURL + `": strict mode: video <thumbnail_loc> is empty`,
+				`validate "` + pageURL + `": strict mode: video <title> is empty`,
+				`validate "` + pageURL + `": strict mode: video <description> is empty`,
+				`validate "` + pageURL + `": strict mode: video must have at least one of <content_loc> or <player_loc>`,
+				`validate "` + pageURL + `": strict mode: alternate link <href> is empty`,
 				`validate "` + german + `": strict mode: alternate link <hreflang> is empty`,
 			})
 
@@ -7891,8 +7909,9 @@ func TestS_Parse_NonASCIIInURL_Filters(t *testing.T) {
 
 // TestS_Parse_Strict_ExtensionURL verifies what strict mode requires of the URL of an
 // image, of the thumbnail of a video and of an alternate link: an absolute HTTP or HTTPS
-// URL that names a host and has no space in it. Unlike the URL of the page it may be on
-// any host. An entry whose URL is not one is left out and reported, the page is kept.
+// URL that names a host and has neither a space nor a character in it that a URL may not
+// hold. Unlike the URL of the page it may be on any host. An entry whose URL is not one is
+// left out and reported, the page is kept.
 // Tolerant mode keeps the entry of every one of these URLs, and returns the URL as the
 // document gives it unless it can percent-encode it, see TestTolerantExtensionURL.
 func TestS_Parse_Strict_ExtensionURL(t *testing.T) {
@@ -7947,6 +7966,13 @@ func TestS_Parse_Strict_ExtensionURL(t *testing.T) {
 		{"other protocol with a space", "ftp://cdn.example.net/a b", `strict mode: unsupported scheme "ftp"`, ""},
 		{"URL that cannot be parsed", "https://cdn.example.net/%zz", `parse "https://cdn.example.net/%zz": invalid URL escape "%zz"`, ""},
 		{"URL with a space that cannot be parsed", "https://cdn.example.net/%zz b", `parse "https://cdn.example.net/%zz b": invalid URL escape "%zz"`, ""},
+		{"vertical bar in the path", "https://cdn.example.net/a|b", `strict mode: URL contains the character '|', which it has to give as "%7C"`, ""},
+		{"braces in the query", "https://cdn.example.net/file?size={width}x{height}", `strict mode: URL contains the character '{', which it has to give as "%7B"`, ""},
+		{"quotation mark in the fragment", `https://cdn.example.net/file#"a"`, `strict mode: URL contains the character '"', which it has to give as "%22"`, ""},
+		{"angle brackets and a space", "https://cdn.example.net/<a b>", "strict mode: URL contains a space", "https://cdn.example.net/%3Ca%20b%3E"},
+		{"vertical bar, other protocol", "ftp://cdn.example.net/a|b", `strict mode: unsupported scheme "ftp"`, ""},
+		{"vertical bar percent-encoded", "https://cdn.example.net/a%7Cb?c=%7Bd%7D", "", ""},
+		{"square brackets", "https://cdn.example.net/file?size[]=1", "", ""},
 	}
 
 	for kind, entry := range entries {
@@ -7955,7 +7981,7 @@ func TestS_Parse_Strict_ExtensionURL(t *testing.T) {
         xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
         xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
         xmlns:xhtml="http://www.w3.org/1999/xhtml">
-  <url><loc>` + pageURL + `</loc>` + entry(test.loc) + `</url>
+  <url><loc>` + pageURL + `</loc>` + entry(xmlText(test.loc)) + `</url>
 </urlset>`
 
 			t.Run(kind+", "+test.name+", tolerant mode", func(t *testing.T) {
@@ -8002,6 +8028,484 @@ func TestS_Parse_Strict_ExtensionURL(t *testing.T) {
 			})
 		}
 	}
+}
+
+// xmlText returns s the way an XML document has to give it as the text of an element or as
+// the value of an attribute.
+func xmlText(s string) string {
+	var escaped strings.Builder
+	_ = xml.EscapeText(&escaped, []byte(s))
+	return escaped.String()
+}
+
+// excludedCharacters holds the printable ASCII characters that have no place in a URL, each
+// with what a URL has to give it as and with the error strict mode reports for it.
+var excludedCharacters = []struct {
+	char    string
+	encoded string
+	err     string
+}{
+	{`"`, "%22", `strict mode: URL contains the character '"', which it has to give as "%22"`},
+	{"<", "%3C", `strict mode: URL contains the character '<', which it has to give as "%3C"`},
+	{">", "%3E", `strict mode: URL contains the character '>', which it has to give as "%3E"`},
+	{`\`, "%5C", `strict mode: URL contains the character '\', which it has to give as "%5C"`},
+	{"^", "%5E", `strict mode: URL contains the character '^', which it has to give as "%5E"`},
+	{"`", "%60", "strict mode: URL contains the character '`', which it has to give as \"%60\""},
+	{"{", "%7B", `strict mode: URL contains the character '{', which it has to give as "%7B"`},
+	{"|", "%7C", `strict mode: URL contains the character '|', which it has to give as "%7C"`},
+	{"}", "%7D", `strict mode: URL contains the character '}', which it has to give as "%7D"`},
+}
+
+// TestValidateAbsoluteURL verifies what strict mode requires of a URL apart from the host
+// it is on: an absolute HTTP or HTTPS URL that names a host and holds no space, no control
+// character and none of the characters that have no place in a URL. The first thing that is
+// wrong with a URL is the one that is reported.
+func TestValidateAbsoluteURL(t *testing.T) {
+	const barErr = `strict mode: URL contains the character '|', which it has to give as "%7C"`
+
+	tests := []struct {
+		name string
+		url  string
+		// err is the error, empty for a URL that is accepted.
+		err string
+	}{
+		{"URL", "https://example.com/a?b=c#d", ""},
+		{"HTTP URL", "http://example.com/", ""},
+		{"host and nothing else", "https://example.com", ""},
+		{"excluded characters percent-encoded", "https://example.com/a%22%3C%3E%5C%5E%60%7B%7C%7Db?q=%7C%7c#%7B%7D", ""},
+		{"square brackets", "https://example.com/a[1]?b[]=1&c=[2]#[3]", ""},
+		{"IPv6 address", "https://[2001:db8::1]:8443/a", ""},
+		{"other punctuation", "https://example.com/a'b(c)d!e*f~g$h,i;j?k=l'm&n=o@p:q/r?s#t'u!v", ""},
+		{"characters that are not ASCII", "https://example.com/café?q=例#é", ""},
+		{"internationalised host", "https://bücher.example/", ""},
+		{"vertical bar in the path", "https://example.com/a|b", barErr},
+		{"vertical bar in the query", "https://example.com/search?tags=a|b", barErr},
+		{"vertical bar in the fragment", "https://example.com/page#a|b", barErr},
+		{"vertical bar at the end", "https://example.com/a|", barErr},
+		{"vertical bar after the host", "https://example.com|", `parse "https://example.com|": invalid character "|" in host name`},
+		{"vertical bar in the host", "https://exa|mple.com/", `parse "https://exa|mple.com/": invalid character "|" in host name`},
+		{"vertical bar in the user", "https://us|er@example.com/", `parse "https://us|er@example.com/": net/url: invalid userinfo`},
+		{"quotation mark in the host", `https://exa"mple.com/`, `strict mode: URL contains the character '"', which it has to give as "%22"`},
+		{"angle bracket in the host", "https://exa<mple.com/", `strict mode: URL contains the character '<', which it has to give as "%3C"`},
+		{"several excluded characters", "https://example.com/a{b}?c=<d>#e|f", `strict mode: URL contains the character '{', which it has to give as "%7B"`},
+		{"excluded character before a space", "https://example.com/a|b c", "strict mode: URL contains a space"},
+		{"excluded character before a control character", "https://example.com/a|b#c\td", "strict mode: URL contains a control character"},
+		{"excluded character, no host", "https:///a|b", "strict mode: missing host"},
+		{"excluded character, other protocol", "ftp://example.com/a|b", `strict mode: unsupported scheme "ftp"`},
+		{"excluded character, relative URL", "/a|b", `strict mode: unsupported scheme ""`},
+		{"space", "https://example.com/a b", "strict mode: URL contains a space"},
+		{"control character in the fragment", "https://example.com/a#b\x7fc", "strict mode: URL contains a control character"},
+		{"URL that cannot be parsed", "https://example.com/%zz", `parse "https://example.com/%zz": invalid URL escape "%zz"`},
+	}
+	for _, excluded := range excludedCharacters {
+		tests = append(tests, struct{ name, url, err string }{
+			"character " + excluded.char, "https://example.com/search?q=a" + excluded.char + "b", excluded.err,
+		})
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateAbsoluteURL(test.url)
+			if test.err == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				return
+			}
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) {
+				t.Fatalf("expected a *ValidationError, got %T: %v", err, err)
+			}
+			mustEqual(t, "URL of the error", validationErr.URL, test.url)
+			mustEqual(t, "error", validationErr.Err.Error(), test.err)
+		})
+	}
+}
+
+// TestS_Parse_ExcludedCharacterInURL verifies what becomes of a URL that holds one of the
+// printable ASCII characters that have no place in a URL, a vertical bar for one, which a
+// URL has to give as "%7C". Strict mode rejects the URL wherever the character stands.
+// Tolerant mode accepts it as it always has: it returns the character percent-encoded in
+// the path and in the fragment, and as it is in the query. It makes no difference which
+// format lists the URL.
+func TestS_Parse_ExcludedCharacterInURL(t *testing.T) {
+	places := []struct {
+		name string
+		// loc returns the URL that holds s in the place.
+		loc func(s string) string
+		// encoded tells whether tolerant mode percent-encodes the character in the place.
+		encoded bool
+	}{
+		{"path", func(s string) string { return "https://example.com/a" + s + "b" }, true},
+		{"query", func(s string) string { return "https://example.com/search?q=a" + s + "b" }, false},
+		{"fragment", func(s string) string { return "https://example.com/page#a" + s + "b" }, true},
+	}
+	formats := []struct {
+		name    string
+		url     string
+		content func(loc string) string
+	}{
+		{"urlset", "https://example.com/sitemap.xml", func(loc string) string {
+			return `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + xmlText(loc) + `</loc></url></urlset>`
+		}},
+		{"text", "https://example.com/sitemap.txt", func(loc string) string { return loc + "\n" }},
+		{"RSS", "https://example.com/rss.xml", func(loc string) string {
+			return `<rss version="2.0"><channel><item><link>` + xmlText(loc) + `</link></item></channel></rss>`
+		}},
+		{"Atom", "https://example.com/atom.xml", func(loc string) string {
+			return `<feed xmlns="http://www.w3.org/2005/Atom"><entry><link href="` + xmlText(loc) + `"/></entry></feed>`
+		}},
+	}
+
+	for _, format := range formats {
+		for _, place := range places {
+			for _, excluded := range excludedCharacters {
+				loc := place.loc(excluded.char)
+				content := format.content(loc)
+				name := fmt.Sprintf("%s, %q in the %s", format.name, excluded.char, place.name)
+
+				t.Run(name+", tolerant mode", func(t *testing.T) {
+					s := New()
+					requireParse(t, s, format.url, &content)
+
+					want := loc
+					if place.encoded {
+						want = place.loc(excluded.encoded)
+					}
+					assertStringSlice(t, "URLs", locsOf(s), []string{want})
+					assertStringSlice(t, "errors", errorsOf(s), []string{})
+				})
+
+				t.Run(name+", strict mode", func(t *testing.T) {
+					s := New().SetStrict(true)
+					requireParse(t, s, format.url, &content)
+
+					assertStringSlice(t, "URLs", locsOf(s), []string{})
+					errs := s.GetErrors()
+					if len(errs) != 1 {
+						t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+					}
+					var validationErr *ValidationError
+					if !errors.As(errs[0], &validationErr) {
+						t.Fatalf("expected a *ValidationError, got %T: %v", errs[0], errs[0])
+					}
+					mustEqual(t, "URL of the error", validationErr.URL, loc)
+					mustEqual(t, "error", validationErr.Err.Error(), excluded.err)
+				})
+			}
+		}
+
+		// A URL that gives the characters the way a URL has to is left as it is in both
+		// modes, and so is one that holds the punctuation a URL may hold.
+		for _, loc := range []string{
+			"https://example.com/a%7Cb?q=%22c%22&d=%7Be%7D#f%5Eg",
+			"https://example.com/a'b(c)!*?d[]=1&e=[2]#[3]",
+		} {
+			for _, strict := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s, %s, strict=%v", format.name, loc, strict), func(t *testing.T) {
+					content := format.content(loc)
+					s := New().SetStrict(strict)
+					requireParse(t, s, format.url, &content)
+
+					assertStringSlice(t, "URLs", locsOf(s), []string{loc})
+					assertStringSlice(t, "errors", errorsOf(s), []string{})
+				})
+			}
+		}
+	}
+}
+
+// TestS_Parse_ExcludedCharacterInURL_SitemapIndex verifies that a sitemap index entry
+// with one of these characters in its URL is treated like a page with one: tolerant mode
+// requests the sitemap, strict mode rejects the entry and makes no request for it.
+func TestS_Parse_ExcludedCharacterInURL_SitemapIndex(t *testing.T) {
+	content := `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://example.com/sitemap|1.xml?tags=a|b</loc></sitemap>
+</sitemapindex>`
+
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			var requested []string
+			client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				requested = append(requested, req.URL.RequestURI())
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(`<urlset><url><loc>https://example.com/page</loc></url></urlset>`)),
+					Request:    req,
+				}, nil
+			})}
+			s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(client)
+			requireParse(t, s, "https://example.com/sitemap-index.xml", &content)
+
+			if strict {
+				if len(requested) != 0 {
+					t.Errorf("expected no request, got %v", requested)
+				}
+				assertStringSlice(t, "URLs", locsOf(s), []string{})
+				assertStringSlice(t, "errors", errorsOf(s), []string{
+					`validate "https://example.com/sitemap|1.xml?tags=a|b": strict mode: URL contains the character '|', which it has to give as "%7C"`,
+				})
+				return
+			}
+			assertStringSlice(t, "requests", requested, []string{"/sitemap%7C1.xml?tags=a|b"})
+			assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page"})
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+	}
+}
+
+// TestS_Parse_Strict_SecondaryExtensionURL verifies what strict mode requires of the URLs
+// an image or a video gives besides the one it is known by: the licence of an image, the
+// content, the player and the page about the uploader of a video. None of them has to be
+// there. One that is has to be what the location of the image and the thumbnail of the
+// video have to be: an absolute HTTP or HTTPS URL of at most 2,048 characters that names a
+// host and holds no character a URL may not hold. One that is not is reported by its own
+// name, and costs nothing else: the page, the entry and the URL itself are returned.
+// Tolerant mode requires nothing of these URLs, and percent-encodes the ones it can.
+func TestS_Parse_Strict_SecondaryExtensionURL(t *testing.T) {
+	const (
+		sitemapURL = "https://example.com/sitemap.xml"
+		pageURL    = "https://example.com/page"
+		imageURL   = "https://cdn.example.net/image.jpg"
+		thumbnail  = "https://cdn.example.net/thumbnail.jpg"
+		otherURL   = "https://cdn.example.net/other"
+		video      = `<video:thumbnail_loc>` + thumbnail + `</video:thumbnail_loc><video:title>Video title</video:title><video:description>Video description</video:description>`
+	)
+	kinds := []struct {
+		name string
+		// entry returns the entry of the extension that gives url, got the URLs the entry
+		// of u comes back with: the one it is known by first, then url.
+		entry func(url string) string
+		got   func(u URL) []string
+		// known is the URL the entry is known by.
+		known string
+	}{
+		{
+			name: "licence of an image",
+			entry: func(url string) string {
+				return `<image:image><image:loc>` + imageURL + `</image:loc><image:license>` + url + `</image:license></image:image>`
+			},
+			got:   func(u URL) []string { return []string{u.Images[0].Loc, u.Images[0].License} },
+			known: imageURL,
+		},
+		{
+			name: "content of a video",
+			entry: func(url string) string {
+				return `<video:video>` + video + `<video:content_loc>` + url + `</video:content_loc><video:player_loc>` + otherURL + `</video:player_loc></video:video>`
+			},
+			got:   func(u URL) []string { return []string{u.Videos[0].ThumbnailLoc, u.Videos[0].ContentLoc} },
+			known: thumbnail,
+		},
+		{
+			name: "player of a video",
+			entry: func(url string) string {
+				return `<video:video>` + video + `<video:content_loc>` + otherURL + `</video:content_loc><video:player_loc>` + url + `</video:player_loc></video:video>`
+			},
+			got:   func(u URL) []string { return []string{u.Videos[0].ThumbnailLoc, u.Videos[0].PlayerLoc} },
+			known: thumbnail,
+		},
+		{
+			name: "uploader of a video",
+			entry: func(url string) string {
+				return `<video:video>` + video + `<video:content_loc>` + otherURL + `</video:content_loc><video:uploader info="` + url + `">Uploader</video:uploader></video:video>`
+			},
+			got:   func(u URL) []string { return []string{u.Videos[0].ThumbnailLoc, u.Videos[0].Uploader.Info} },
+			known: thumbnail,
+		},
+	}
+
+	longest := "https://cdn.example.net/" + strings.Repeat("a", maxLocLength-len("https://cdn.example.net/"))
+	tooLong := longest + "a"
+	tests := []struct {
+		name string
+		url  string
+		// err is the error of strict mode, empty for a URL it accepts.
+		err string
+		// tolerant is the URL tolerant mode returns, empty if it is the URL as it is.
+		tolerant string
+	}{
+		{"not given", "", "", ""},
+		{"URL on the host of the page", "https://example.com/file", "", ""},
+		{"URL on another host and port", "https://CDN.example.net:8443/a%20b?c=d+e#f", "", ""},
+		{"HTTP URL", "http://cdn.example.net/file", "", ""},
+		{"URL that is not in ASCII", "https://cdn.example.net/café", "", "https://cdn.example.net/caf%C3%A9"},
+		{"URL as long as a URL may be", longest, "", ""},
+		{"URL that is too long", tooLong, fmt.Sprintf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(tooLong)), ""},
+		{"space", "https://cdn.example.net/a b", "strict mode: URL contains a space", "https://cdn.example.net/a%20b"},
+		{"vertical bar", "https://cdn.example.net/file?tags=a|b", `strict mode: URL contains the character '|', which it has to give as "%7C"`, ""},
+		{"no host", "https:///file", "strict mode: missing host", ""},
+		{"relative URL", "/file", `strict mode: unsupported scheme ""`, ""},
+		{"text that is no URL", "Creative Commons", `strict mode: unsupported scheme ""`, ""},
+		{"other protocol", "ftp://cdn.example.net/file", `strict mode: unsupported scheme "ftp"`, ""},
+		{"URL that cannot be parsed", "https://cdn.example.net/%zz", `parse "https://cdn.example.net/%zz": invalid URL escape "%zz"`, ""},
+	}
+
+	for _, kind := range kinds {
+		for _, test := range tests {
+			content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
+  <url><loc>` + pageURL + `</loc>` + kind.entry(xmlText(test.url)) + `</url>
+</urlset>`
+
+			t.Run(kind.name+", "+test.name+", tolerant mode", func(t *testing.T) {
+				s := New()
+				requireParse(t, s, sitemapURL, &content)
+
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+				urls := s.GetURLs()
+				if len(urls) != 1 {
+					t.Fatalf("expected 1 URL, got %d", len(urls))
+				}
+				want := test.tolerant
+				if want == "" {
+					want = test.url
+				}
+				assertStringSlice(t, "URLs of the entry", kind.got(urls[0]), []string{kind.known, want})
+			})
+
+			t.Run(kind.name+", "+test.name+", strict mode", func(t *testing.T) {
+				s := New().SetStrict(true)
+				requireParse(t, s, sitemapURL, &content)
+
+				// The entry is kept whatever the URL is, and so is the URL.
+				urls := s.GetURLs()
+				if len(urls) != 1 {
+					t.Fatalf("expected 1 URL, got %d", len(urls))
+				}
+				mustEqual(t, "URL", urls[0].Loc, pageURL)
+				assertStringSlice(t, "URLs of the entry", kind.got(urls[0]), []string{kind.known, test.url})
+
+				errs := s.GetErrors()
+				if test.err == "" {
+					assertStringSlice(t, "errors", errorsOf(s), []string{})
+					return
+				}
+				if len(errs) != 1 {
+					t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+				}
+				var validationErr *ValidationError
+				if !errors.As(errs[0], &validationErr) {
+					t.Fatalf("expected a *ValidationError, got %T: %v", errs[0], errs[0])
+				}
+				mustEqual(t, "URL of the error", validationErr.URL, test.url)
+				mustEqual(t, "error", validationErr.Err.Error(), test.err)
+			})
+		}
+	}
+}
+
+// TestS_Parse_Strict_ExtensionErrors verifies which URL the errors of strict mode name for
+// the entries of the extensions. An error about a URL names that URL. An error about
+// anything else names the page the entry is on: a video that lacks a field or has one out
+// of range, and an image, a video or an alternate link that has no URL to name. A video
+// that is known by its thumbnail is kept whatever else is wrong with it, and every one of
+// its faults is reported.
+func TestS_Parse_Strict_ExtensionErrors(t *testing.T) {
+	const (
+		sitemapURL = "https://example.com/sitemap.xml"
+		firstURL   = "https://example.com/first"
+		secondURL  = "https://example.com/second"
+		thirdURL   = "https://example.com/third"
+	)
+	var tags strings.Builder
+	for i := 0; i <= maxVideoTags; i++ {
+		_, _ = fmt.Fprintf(&tags, "<video:tag>tag %d</video:tag>", i)
+	}
+	content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>` + firstURL + `</loc>
+    <video:video>
+      <video:thumbnail_loc>https://cdn.example.net/first.jpg</video:thumbnail_loc>
+      <video:content_loc>ftp://cdn.example.net/first.mp4</video:content_loc>
+      <video:player_loc>/player?video=first</video:player_loc>
+      <video:duration>0</video:duration>
+      <video:rating>5.5</video:rating>
+      <video:uploader info="uploaders/first">Uploader</video:uploader>
+      ` + tags.String() + `
+    </video:video>
+  </url>
+  <url>
+    <loc>` + secondURL + `</loc>
+    <image:image><image:title>Image without a location</image:title></image:image>
+    <image:image><image:loc>https://cdn.example.net/second.jpg</image:loc><image:license>CC BY 4.0</image:license></image:image>
+    <video:video><video:title>Video without a thumbnail</video:title></video:video>
+    <video:video>
+      <video:thumbnail_loc>https://cdn.example.net/second.jpg</video:thumbnail_loc>
+      <video:title>Video title</video:title>
+      <video:description>Video description</video:description>
+      <video:duration>28801</video:duration>
+      <video:rating>-1</video:rating>
+    </video:video>
+    <xhtml:link rel="alternate" hreflang="de"/>
+    <xhtml:link rel="stylesheet" hreflang="de" href="https://example.com/de/second"/>
+    <xhtml:link rel="alternate" href="https://example.com/fr/second"/>
+  </url>
+  <url>
+    <loc>` + thirdURL + `</loc>
+    <video:video>
+      <video:thumbnail_loc>https://cdn.example.net/third.jpg</video:thumbnail_loc>
+      <video:title>Video title</video:title>
+      <video:description>Video description</video:description>
+      <video:content_loc>https://cdn.example.net/third.mp4</video:content_loc>
+      <video:player_loc>https://example.com/player?video=third</video:player_loc>
+      <video:duration>28800</video:duration>
+      <video:rating>5.0</video:rating>
+      <video:uploader info="https://example.com/uploaders/third">Uploader</video:uploader>
+    </video:video>
+  </url>
+</urlset>`
+
+	s := New().SetStrict(true)
+	requireParse(t, s, sitemapURL, &content)
+
+	assertStringSlice(t, "errors", errorsOf(s), []string{
+		`validate "` + firstURL + `": strict mode: video <title> is empty`,
+		`validate "` + firstURL + `": strict mode: video <description> is empty`,
+		`validate "` + firstURL + `": strict mode: video <duration> 0 is out of range [1, 28800]`,
+		`validate "` + firstURL + `": strict mode: video <rating> 5.5 is out of range [0.0, 5]`,
+		`validate "` + firstURL + `": strict mode: video has 33 tags, maximum is 32`,
+		`validate "ftp://cdn.example.net/first.mp4": strict mode: unsupported scheme "ftp"`,
+		`validate "/player?video=first": strict mode: unsupported scheme ""`,
+		`validate "uploaders/first": strict mode: unsupported scheme ""`,
+		`validate "` + secondURL + `": strict mode: image <loc> is empty`,
+		`validate "CC BY 4.0": strict mode: unsupported scheme ""`,
+		`validate "` + secondURL + `": strict mode: video <thumbnail_loc> is empty`,
+		`validate "` + secondURL + `": strict mode: video must have at least one of <content_loc> or <player_loc>`,
+		`validate "` + secondURL + `": strict mode: video <duration> 28801 is out of range [1, 28800]`,
+		`validate "` + secondURL + `": strict mode: video <rating> -1 is out of range [0.0, 5]`,
+		`validate "` + secondURL + `": strict mode: alternate link <href> is empty`,
+		`validate "https://example.com/de/second": strict mode: alternate link <rel> must be "alternate", got "stylesheet"`,
+		`validate "https://example.com/fr/second": strict mode: alternate link <hreflang> is empty`,
+	})
+
+	// Every page is kept, and so is every entry that has the URL it is known by, with
+	// its other URLs as the document gives them.
+	urls := s.GetURLs()
+	assertStringSlice(t, "URLs", locsOf(s), []string{firstURL, secondURL, thirdURL})
+	if len(urls) != 3 {
+		t.FailNow()
+	}
+	assertStringSlice(t, "URLs of the extensions of the first page", extensionURLsOf(urls[0]), []string{
+		"https://cdn.example.net/first.jpg", "ftp://cdn.example.net/first.mp4", "/player?video=first", "uploaders/first",
+	})
+	assertStringSlice(t, "URLs of the extensions of the second page", extensionURLsOf(urls[1]), []string{
+		"https://cdn.example.net/second.jpg", "CC BY 4.0",
+		"https://cdn.example.net/second.jpg", "", "",
+	})
+	assertStringSlice(t, "URLs of the extensions of the third page", extensionURLsOf(urls[2]), []string{
+		"https://cdn.example.net/third.jpg", "https://cdn.example.net/third.mp4", "https://example.com/player?video=third", "https://example.com/uploaders/third",
+	})
+
+	// Tolerant mode has nothing against any of it, and leaves out the entries without a URL.
+	tolerant := New()
+	requireParse(t, tolerant, sitemapURL, &content)
+	assertStringSlice(t, "errors of tolerant mode", errorsOf(tolerant), []string{})
+	assertStringSlice(t, "URLs of tolerant mode", locsOf(tolerant), []string{firstURL, secondURL, thirdURL})
 }
 
 func TestParseFloat32(t *testing.T) {
@@ -9890,6 +10394,21 @@ func TestS_robotsTXTSitemapLocations(t *testing.T) {
 			sitemaps: []string{"https://example.com/site map.xml?v=a b", "https://example.com/sitemap.xml"},
 			want:     []string{"https://example.com/sitemap.xml"},
 			wantErrs: []string{`validate "https://example.com/site map.xml?v=a b": strict mode: URL contains a space`},
+		},
+		{
+			name:     "URL with a character in it that a URL may not hold",
+			sitemaps: []string{"https://example.com/sitemap|1.xml?tags=a|b", "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap%7C1.xml?tags=a|b", "https://example.com/sitemap.xml"},
+		},
+		{
+			name:     "URL with a character in it that a URL may not hold, strict mode",
+			strict:   true,
+			sitemaps: []string{"https://example.com/sitemap|1.xml?tags=a|b", "https://cdn.example.net/{sitemap}.xml", "https://example.com/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml"},
+			wantErrs: []string{
+				`validate "https://example.com/sitemap|1.xml?tags=a|b": strict mode: URL contains the character '|', which it has to give as "%7C"`,
+				`validate "https://cdn.example.net/{sitemap}.xml": strict mode: URL contains the character '{', which it has to give as "%7B"`,
+			},
 		},
 		{
 			name:     "host in another letter case and on another port, strict mode",

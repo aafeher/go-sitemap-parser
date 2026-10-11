@@ -351,6 +351,7 @@ To enable **strict mode**, use the `SetStrict()` function. In strict mode, all U
 - `<loc>` must be an absolute HTTP or HTTPS URL
 - `<loc>` must use the same host and protocol as the sitemap file (for a sitemap reached through a redirect: as the URL it was served from, see [Redirects](#redirects)); what counts as the same host is described below
 - `<loc>` must hold neither a space nor a control character (a tab or a line break for one); a URL gives them percent-encoded, a space as `%20`
+- `<loc>` must hold none of the characters `"` `<` `>` `\` `^` `` ` `` `{` `|` `}` either, which have no place in a URL ([RFC 3986](https://www.rfc-editor.org/rfc/rfc3986)); a URL gives them percent-encoded as well, a vertical bar as `%7C`. Square brackets and characters that are not in ASCII are accepted
 - `<loc>` must not exceed 2,048 characters
 - `<changefreq>` must be one of the values of the protocol, written as the protocol writes them: `always`, `hourly`, `daily`, `weekly`, `monthly`, `yearly` or `never` (if present)
 - `<priority>` must be between `0.0` and `1.0` inclusive (if present)
@@ -379,6 +380,14 @@ validate "https://example.com:8443/page": strict mode: host "example.com:8443" d
 
 The same goes for the sitemaps a sitemap index lists. An internationalised host name is one host in whichever form it is written, see [Internationalised host names](#internationalised-host-names).
 
+Strict mode rejects a URL with a character in it that a URL may not hold wherever the character stands, in the path, in the query or in the fragment. The error tells what the URL has to give the character as:
+
+```
+validate "https://example.com/search?tags=summer|sale": strict mode: URL contains the character '|', which it has to give as "%7C"
+```
+
+Tolerant mode accepts such a URL. It returns the character percent-encoded in the path and in the fragment, and as it is in the query.
+
 An entry without a location is one of them in both modes. A `<url>` or `<sitemap>` whose `<loc>` is missing, empty or holds only whitespace is skipped and reported as a `*ValidationError`. The entry has no URL of its own, so the error names the sitemap it stands in:
 
 ```
@@ -401,7 +410,7 @@ validate "//::": parse "https://::": invalid port "::" after host
 
 The `Loc` of every URL that `GetURLs()` returns is thus an HTTP or HTTPS URL that names a host and that `net/url` can parse, in both modes.
 
-The sitemaps a `robots.txt` names are checked before they are fetched as well. The value of a `Sitemap:` line has to be an HTTP or HTTPS URL of at most 2,048 characters. Tolerant mode resolves a relative one against the URL of the `robots.txt` and percent-encodes a space or a character that is not in ASCII in it, strict mode requires an absolute one without a space. The sitemap may be on another host than the `robots.txt` in both modes, which the protocol allows. A value that is rejected is skipped and reported as a `*ValidationError`:
+The sitemaps a `robots.txt` names are checked before they are fetched as well. The value of a `Sitemap:` line has to be an HTTP or HTTPS URL of at most 2,048 characters. Tolerant mode resolves a relative one against the URL of the `robots.txt` and percent-encodes a space or a character that is not in ASCII in it, strict mode requires an absolute one that holds neither a space nor another character a URL may not hold. The sitemap may be on another host than the `robots.txt` in both modes, which the protocol allows. A value that is rejected is skipped and reported as a `*ValidationError`:
 
 ```
 validate "ftp://example.com/sitemap.xml": unsupported scheme "ftp"
@@ -417,7 +426,7 @@ An empty date is no such value. A `<lastmod>`, `<news:publication_date>`, `<vide
 
 Whitespace around a value is no part of it, in both modes. The content of an element may be indented or stand on a line of its own, and an attribute may be padded: every text value of an entry is returned without the whitespace that surrounds it, those of the extensions included. A value that holds nothing but whitespace is therefore an empty one. A `<changefreq>` like that is read as if the element were not there, and a value an extension requires is missing then, see [GetURLs](#geturls).
 
-See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location, a location without a host and URLs that are not percent-encoded among them, and [`examples/strict`](examples/strict/main.go) for one of what strict mode requires of a URL.
+See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location, a location without a host and URLs that are not percent-encoded among them, and [`examples/strict`](examples/strict/main.go) for one of what strict mode requires of a URL and of the images, the videos and the alternate links of an entry.
 
 ##### Internationalised host names
 
@@ -682,10 +691,23 @@ Each `URL` struct contains the following fields:
 
 No text value of a `URL` has whitespace around it, see [Strict mode](#strict-mode). This goes for the fields of the extensions below as well: an `Image.Loc` or a `Video.Title` that stands on a line of its own in the document is returned without the line breaks and the indentation.
 
-The URL of an extension (`Image.Loc`, `Video.ThumbnailLoc`, `AlternateLink.Href`) may be on any host. Strict mode requires an absolute HTTP or HTTPS URL that names a host and holds neither a space nor a control character; an image, a video or an alternate link whose URL is not one is left out and reported, the page itself is kept:
+An image, a video and an alternate link are each known by a URL: `Image.Loc`, `Video.ThumbnailLoc` and `AlternateLink.Href`. It may be on any host. Strict mode requires an absolute HTTP or HTTPS URL that names a host and holds no space, no control character and none of the characters `"` `<` `>` `\` `^` `` ` `` `{` `|` `}`; an image, a video or an alternate link whose URL is not one is left out and reported, the page itself is kept:
 
 ```
 validate "https://cdn.example.com/summer sale.jpg": strict mode: URL contains a space
+```
+
+The other URLs of an image and of a video (`Image.License`, `Video.ContentLoc`, `Video.PlayerLoc` and `Video.Uploader.Info`) need not be given. Strict mode requires the same of one that is given, and that it is of at most 2,048 characters. One that is not such a URL is reported, and nothing is left out over it: the image or the video is returned, with the URL as the document gives it:
+
+```
+validate "ftp://cdn.example.com/video.mp4": strict mode: unsupported scheme "ftp"
+```
+
+An error names the URL it is about, as these do. An error that is not about a URL names the page the entry is on: that of a video which lacks a field or has one out of range, and that of an image, a video or an alternate link which has no URL at all:
+
+```
+validate "https://example.com/page": strict mode: video <title> is empty
+validate "https://example.com/page": strict mode: image <loc> is empty
 ```
 
 Tolerant mode asks no more of the URL than that it is there and of at most 2,048 characters. An absolute HTTP or HTTPS URL comes back the way the `Loc` of the page does, so that it can be requested as it is: with a space or a character that is not in ASCII percent-encoded, and with an [internationalised host name](#internationalised-host-names) in its Punycode form. This goes for every URL of an extension: `Image.Loc` and `Image.License`, `Video.ThumbnailLoc`, `Video.ContentLoc`, `Video.PlayerLoc` and `Video.Uploader.Info`, and `AlternateLink.Href`.
@@ -707,7 +729,7 @@ Each `Image` struct contains the following fields (all `string`):
 - `Title` — image title (optional)
 - `Caption` — image caption (optional)
 - `GeoLocation` — geographic location of the image subject (optional)
-- `License` — URL of the image licence (optional)
+- `License` — URL of the image licence (optional; validated in strict mode if present, see above)
 
 See [`examples/image`](examples/image/main.go) for a runnable example.
 
@@ -723,9 +745,11 @@ In strict mode, all four required fields (`Title`, `Publication.Name`, `Publicat
 See [`examples/news`](examples/news/main.go) for a runnable example.
 
 Each `AlternateLink` struct contains:
-- `Rel` (`string`) — relationship, should be `"alternate"`
-- `Hreflang` (`string`) — language/region code (e.g. `"en"`, `"de-ch"`)
-- `Href` (`string`) — the URL of the alternate version
+- `Rel` (`string`) — relationship, should be `"alternate"` (strict mode accepts nothing else)
+- `Hreflang` (`string`) — language/region code (e.g. `"en"`, `"de-ch"`) (required in strict mode)
+- `Href` (`string`) — the URL of the alternate version (required; links with an empty `Href` are silently dropped in tolerant mode, or produce an error in strict mode)
+
+In strict mode a link whose `Rel` or `Hreflang` is not what it has to be is left out and reported, like one whose `Href` is no URL; the error names the `Href` of the link.
 
 See [`examples/hreflang`](examples/hreflang/main.go) for a runnable example.
 
@@ -733,8 +757,8 @@ Each `Video` struct contains:
 - `ThumbnailLoc` (`string`) — thumbnail image URL (required; videos with an empty `ThumbnailLoc` are silently dropped in tolerant mode, or produce an error in strict mode)
 - `Title` (`string`) — video title (required in strict mode)
 - `Description` (`string`) — video description (required in strict mode)
-- `ContentLoc` (`string`) — direct URL to the video file (at least one of `ContentLoc` or `PlayerLoc` required in strict mode)
-- `PlayerLoc` (`string`) — URL of an embedded video player
+- `ContentLoc` (`string`) — direct URL to the video file (at least one of `ContentLoc` or `PlayerLoc` required in strict mode); validated in strict mode if present
+- `PlayerLoc` (`string`) — URL of an embedded video player; validated in strict mode if present
 - `Duration` (`*int`) — duration in seconds (1–28800); validated in strict mode if present
 - `ExpirationDate` (`*LastModTime`) — date after which the video should not be shown; embeds `time.Time`, `nil` if absent or empty
 - `Rating` (`*float32`) — rating between 0.0 and 5.0; validated in strict mode if present
@@ -744,11 +768,13 @@ Each `Video` struct contains:
 - `Restriction` (`*VideoRestriction`) — country restriction with `Relationship` (`"allow"`/`"deny"`) and `Value` (space-separated country codes)
 - `Platform` (`*VideoPlatform`) — platform restriction with `Relationship` and `Value` (e.g. `"web mobile tv"`)
 - `RequiresSubscription` (`string`) — `"yes"` or `"no"`
-- `Uploader` (`*VideoUploader`) — uploader name (`Value`) and optional profile URL (`Info`)
+- `Uploader` (`*VideoUploader`) — uploader name (`Value`) and optional profile URL (`Info`); the URL is validated in strict mode if present
 - `Live` (`string`) — `"yes"` or `"no"`
 - `Tags` (`[]string`) — content tags; maximum 32 validated in strict mode
 
 A `Duration`, `Rating`, `ViewCount`, `ExpirationDate` or `PublicationDate` that cannot be parsed is left `nil` and reported via `GetErrors()` in both modes; the video itself is kept.
+
+In strict mode a video that has a `ThumbnailLoc` which is a URL is kept whatever else is wrong with it. Every field that is missing, every value that is out of range and every other URL that is no URL is reported via `GetErrors()`, the first two for the page the video is on, the last for the URL itself.
 
 See [`examples/video`](examples/video/main.go) for a runnable example.
 
