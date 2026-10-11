@@ -29,6 +29,7 @@ type (
 	// It contains a cfg field of type `config`, which stores configuration settings.
 	// The mainURL field of type string represents the main URL being processed.
 	// The robotsTxtSitemapURLs field is a slice of strings that contains the URLs present in the robots.txt file's sitemap directive.
+	// The sitemaps field is a slice of Sitemap structs that holds the sitemaps the documents list.
 	// The urls field is a slice of URL structs that stores the URLs to be processed.
 	// The errs field is a slice of errors that holds any encountered errors during processing.
 	S struct {
@@ -41,8 +42,14 @@ type (
 		// call to prevent duplicate HTTP requests when the same URL is referenced
 		// from multiple sitemap indexes or robots.txt directives.
 		fetchedURLs map[string]struct{}
-		urls        []URL
-		errs        []error
+		// sitemaps are the sitemaps the documents of the current Parse call list, each of
+		// them once and in the order they were found, and listedURLs holds the URL of each
+		// of them. There are no more of them than the limit set with SetMaxSitemaps allows:
+		// how many sitemaps the documents list is up to the server.
+		sitemaps   []Sitemap
+		listedURLs map[string]struct{}
+		urls       []URL
+		errs       []error
 		// sem is a per-Parse-call semaphore that bounds the number of
 		// sitemaps being fetched or parsed at the same time when
 		// cfg.maxConcurrency > 0.
@@ -50,7 +57,7 @@ type (
 		// concurrency is unlimited.
 		sem chan struct{}
 		// limits holds the limits of the current Parse call on the sitemaps it
-		// fetches and the URLs it collects, and whether they were reached.
+		// fetches and lists and on the URLs it collects, and whether they were reached.
 		limits callLimits
 	}
 
@@ -58,7 +65,8 @@ type (
 	// values set with SetMaxSitemaps and SetMaxURLs as they stand when the call starts, so
 	// that one limit applies to the whole call; 0 means no limit.
 	// sitemapsLeftOut and urlsLeftOut tell that a limit was not only reached, but kept the
-	// call from fetching a sitemap or from collecting a URL: the results are not complete.
+	// call from fetching or listing a sitemap or from collecting a URL: the results are not
+	// complete.
 	callLimits struct {
 		maxSitemaps     int
 		maxURLs         int
@@ -259,6 +267,21 @@ type (
 		News       *News           `xml:"http://www.google.com/schemas/sitemap-news/0.9 news"`
 		Videos     []Video         `xml:"http://www.google.com/schemas/sitemap-video/1.1 video"`
 		Hreflangs  []AlternateLink `xml:"http://www.w3.org/1999/xhtml link"`
+	}
+
+	// Sitemap is a sitemap that a document lists: an entry of a sitemap index, or a Sitemap
+	// line of a robots.txt. GetSitemaps returns the ones a call found.
+	//
+	// Loc is the URL the sitemap is located at, the one it is requested by. It is an absolute
+	// URL that passed the checks a URL has to pass to be requested. In tolerant mode it can be
+	// requested as it is: a relative URL is resolved against the URL of the document that
+	// lists it, a space or a character that is not in ASCII is percent-encoded, and an
+	// internationalised host name is in its Punycode form. Strict mode returns it as the
+	// document gives it. A sitemap that is reached through a redirect is served from another
+	// URL than this one.
+	Sitemap struct {
+		// Loc is the URL the sitemap is requested by. It is never empty.
+		Loc string
 	}
 
 	// LastModTime is the date, or the date and time, that a <lastmod> element or a date
@@ -475,9 +498,15 @@ func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
 // fetched; with multi-threading on, which ones are depends on how fast the server answers.
 // Nothing is recorded if no sitemap had to be left out.
 //
-// The limit bounds the number of requests a document can make the parser send. Without it, a
-// server can keep a call busy for as long as it likes by listing sitemaps that list ever
-// further sitemaps.
+// The same limit is on the sitemaps GetSitemaps returns, which are the ones the documents
+// list whether or not they are fetched: no more of them are kept than the limit allows, and
+// the same error is recorded if one had to be left out of them. A call that fetches fewer
+// sitemaps than it finds, as one with patterns set with SetFollow does, can therefore reach
+// the limit by the sitemaps it finds.
+//
+// The limit bounds the number of requests a document can make the parser send, and the memory
+// the sitemaps of a call take up. Without it, a server can keep a call busy for as long as it
+// likes by listing sitemaps that list ever further sitemaps.
 //
 // Negative values are rejected and a *ConfigError is recorded; a later call with a valid
 // value clears it. The value that applies to a call is the one set when the call starts.
@@ -692,7 +721,8 @@ func (s *S) GetMaxConcurrency() int {
 	return s.cfg.maxConcurrency
 }
 
-// GetMaxSitemaps returns the maximum number of sitemaps a Parse or ParseContext call fetches.
+// GetMaxSitemaps returns the maximum number of sitemaps a Parse or ParseContext call fetches,
+// which is the maximum number of sitemaps it lists as well, see SetMaxSitemaps.
 // A value of 0 means no limit.
 func (s *S) GetMaxSitemaps() int {
 	s.mu.Lock()
@@ -746,8 +776,8 @@ func (s *S) GetStrict() bool {
 // context.Background(). For new code, prefer ParseContext so that callers
 // can propagate cancellation and deadlines.
 //
-// An instance can be reused: every call first discards the URLs and errors
-// collected by the previous call. Configuration errors recorded by the Set*
+// An instance can be reused: every call first discards the URLs, sitemaps and
+// errors collected by the previous call. Configuration errors recorded by the Set*
 // methods are the exception. They persist across calls, and while any of them
 // is outstanding Parse does not parse anything and returns an error with the
 // message "errors occurred before parsing, see GetErrors() for details".
@@ -772,6 +802,9 @@ func (s *S) GetStrict() bool {
 // A call fetches no more sitemaps than SetMaxSitemaps allows, and collects no
 // more URLs than SetMaxURLs allows, so that it comes to an end whatever the
 // documents list.
+//
+// The sitemaps the documents of the call list are returned by GetSitemaps,
+// whether or not they were fetched.
 //
 // It returns the S structure, and a nil error if the document at the given
 // URL was fetched and parsed. Otherwise the error tells why it was not:
@@ -844,6 +877,8 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	s.mainURL = ""
 	s.robotsTxtSitemapURLs = nil
 	s.fetchedURLs = make(map[string]struct{})
+	s.sitemaps = nil
+	s.listedURLs = nil
 	s.urls = nil
 	s.errs = filterErrors(s.errs, isConfigError)
 	// The limits of the call are those set by now: a SetMaxSitemaps or SetMaxURLs call made
@@ -960,6 +995,52 @@ func (s *S) GetErrors() []error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.errs
+}
+
+// GetSitemaps returns the sitemaps that the documents of the most recent Parse or
+// ParseContext call list: the entries of the sitemap indexes the call read, and the Sitemap
+// lines of the robots.txt it was made for.
+//
+// A sitemap is among them whether or not the call fetched it. One that the patterns set with
+// SetFollow leave out is, and so is one that could not be fetched, and one that a limit of
+// the call kept from being fetched. A location that is no URL to request is not: it is
+// reported in GetErrors instead. Neither is the document the call was made for, unless a
+// document of the call lists it.
+//
+// Each sitemap is returned once, however many documents list it, and by the URL it is
+// requested by, see Sitemap. The sitemaps of a document are in the order the document lists
+// them. With multi-threading off, the documents are read one after the other, so the order is
+// the same from one call to the next; with multi-threading on, see SetMultiThread, it is not
+// for the sitemaps of different documents.
+//
+// No more sitemaps are returned than the limit set with SetMaxSitemaps allows. If the
+// documents list more, the first ones the call found are returned, and the error that tells
+// the limit was reached is recorded. The sitemaps that are listed and the ones that are
+// fetched are counted apart, so the ones returned then need not be the ones that were fetched.
+//
+// While a call is running, GetSitemaps returns the sitemaps found so far.
+// The slice that is returned is a copy the caller may modify. It is never nil, and empty for
+// a nil *S.
+func (s *S) GetSitemaps() []Sitemap {
+	if s == nil {
+		return []Sitemap{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sitemaps := make([]Sitemap, len(s.sitemaps))
+	copy(sitemaps, s.sitemaps)
+	return sitemaps
+}
+
+// GetSitemapCount returns the number of sitemaps GetSitemaps returns.
+// It returns 0 for a nil *S.
+func (s *S) GetSitemapCount() int64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return int64(len(s.sitemaps))
 }
 
 // GetURLs returns the list of parsed URLs.
@@ -1100,6 +1181,8 @@ func (s *S) parseRobotsTXT(robotsTXTContent string) {
 // entry does, and is treated the same way before anything is fetched: it is resolved and
 // validated, a value that is rejected is skipped and reported, and a URL that matches none of
 // the patterns set with SetFollow is skipped.
+// Every sitemap that is not rejected is added to the sitemaps the call found, see listSitemap,
+// whether it is to be fetched or not.
 // url is the URL the robots.txt was served from.
 // Must be called with s.mu held.
 func (s *S) robotsTXTSitemapLocations(url string) []string {
@@ -1112,6 +1195,7 @@ func (s *S) robotsTXTSitemapLocations(url string) []string {
 			s.errs = append(s.errs, err)
 			continue
 		}
+		s.listSitemap(Sitemap{Loc: location})
 		if !s.matchesFollowFilter(location) {
 			continue
 		}
@@ -1325,6 +1409,29 @@ func (s *S) claimSitemap(url string) (fetch, limited bool) {
 	return true, false
 }
 
+// listSitemap adds sitemap to the sitemaps the call found, unless it is among them already:
+// a sitemap is listed once in a call, however many documents list it.
+//
+// If there are as many of them as the limit set with SetMaxSitemaps allows, the sitemap is
+// left out, and it is noted that one had to be. The limit is the one on the sitemaps the call
+// fetches, but the two are counted apart: a sitemap that is listed need not be fetched.
+//
+// Must be called with s.mu held, unless no other goroutine has access to s.
+func (s *S) listSitemap(sitemap Sitemap) {
+	if _, listed := s.listedURLs[sitemap.Loc]; listed {
+		return
+	}
+	if s.limits.maxSitemaps > 0 && len(s.sitemaps) >= s.limits.maxSitemaps {
+		s.limits.sitemapsLeftOut = true
+		return
+	}
+	if s.listedURLs == nil {
+		s.listedURLs = make(map[string]struct{})
+	}
+	s.listedURLs[sitemap.Loc] = struct{}{}
+	s.sitemaps = append(s.sitemaps, sitemap)
+}
+
 // hasRoomForURL reports whether s may collect another URL. If the limit set with SetMaxURLs
 // is reached, it notes that something had to be left out for it.
 // Must be called with s.mu held, unless no other goroutine has access to s.
@@ -1336,9 +1443,10 @@ func (s *S) hasRoomForURL() bool {
 	return true
 }
 
-// reportLimits records the limits that kept the call for url from fetching a sitemap or from
-// collecting a URL. Each is recorded once, however many sitemaps and URLs were left out, and
-// names the URL the call was made for: it is the call as a whole that the limits are about.
+// reportLimits records the limits that kept the call for url from fetching or listing a
+// sitemap or from collecting a URL. Each is recorded once, however many sitemaps and URLs
+// were left out, and names the URL the call was made for: it is the call as a whole that the
+// limits are about.
 // Must be called with s.mu held.
 func (s *S) reportLimits(url string) {
 	if s.limits.sitemapsLeftOut {
@@ -1511,7 +1619,9 @@ func (s *S) parseDocument(url string, content string) ([]string, error) {
 // nil if s has no room for another URL.
 //
 // The instance may collect as many URLs as s has room for at this point, so that a document
-// does not pile up URLs only to have them dropped when they are added to s.
+// does not pile up URLs only to have them dropped when they are added to s. It may list as
+// many sitemaps as the call may in all: which of them s has listed already is only known when
+// they are added to it, and one that is listed already takes up no room there.
 //
 // Must be called without s.mu held.
 func (s *S) newDocument() *S {
@@ -1522,6 +1632,7 @@ func (s *S) newDocument() *S {
 	}
 
 	document := &S{cfg: s.cfg}
+	document.limits.maxSitemaps = s.limits.maxSitemaps
 	if s.limits.maxURLs > 0 {
 		document.limits.maxURLs = s.limits.maxURLs - len(s.urls)
 	}
@@ -1552,6 +1663,10 @@ func (s *S) addDocument(document *S) {
 		s.urls = append(s.urls, urls...)
 	}
 	s.limits.urlsLeftOut = s.limits.urlsLeftOut || document.limits.urlsLeftOut
+	for _, sitemap := range document.sitemaps {
+		s.listSitemap(sitemap)
+	}
+	s.limits.sitemapsLeftOut = s.limits.sitemapsLeftOut || document.limits.sitemapsLeftOut
 	s.errs = append(s.errs, document.errs...)
 }
 
@@ -1636,9 +1751,10 @@ func rootElement(decoder *xml.Decoder) (xml.StartElement, error) {
 // when the request was redirected.
 // It determines whether the content is a sitemap index or a sitemap by inspecting
 // the root XML element, then only invokes the appropriate parser.
-// If it is a sitemap index, it returns the locations of the sitemaps the index lists that are
-// to be fetched. They are returned and not kept: a call that fetches many indexes would
-// otherwise hold every entry of every one of them until the next call.
+// If it is a sitemap index, it adds the sitemaps the index lists to the sitemaps the call
+// found, see listSitemap, and returns the locations of the ones that are to be fetched. These
+// are returned and not kept: a call that fetches many indexes would otherwise hold every
+// entry of every one of them until the next call.
 // If it is a sitemap, it adds the URLs from the sitemap to the URL list, and returns nil.
 // Parsing errors are added to the error list.
 func (s *S) parse(url string, content string) []string {
@@ -1673,6 +1789,7 @@ func (s *S) parseSitemapIndexContent(url, content string) []string {
 			continue
 		}
 		sm.Loc = resolvedLoc
+		s.listSitemap(Sitemap{Loc: sm.Loc})
 		if !s.matchesFollowFilter(sm.Loc) {
 			continue
 		}

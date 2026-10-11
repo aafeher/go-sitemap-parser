@@ -12,6 +12,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 
 ## Features
 - Recursive parsing (sitemap index → sitemaps → URLs)
+- The sitemaps a call finds can be queried, whether or not they were fetched
 - Concurrent (multi-threaded) fetching and parsing
 - Configurable follow rules to filter which sitemaps to parse
 - Configurable URL rules to filter which URLs to include
@@ -186,6 +187,8 @@ parse "https://example.com/sitemap-index.xml": limit of 1000 sitemaps reached
 
 Reaching the limit does not fail `Parse()`: the URLs of the sitemaps fetched until then are returned. With multi-threading off, the sitemaps are fetched in the order they are listed, so it is the first ones that are fetched. With multi-threading on, which ones are fetched depends on how fast the server answers. Nothing is recorded if no sitemap had to be left out.
 
+The same limit is on the sitemaps [`GetSitemaps()`](#getsitemaps) returns, which are the ones the documents list, whether or not they are fetched. No more of them are kept than the limit allows, and the same error is recorded if one had to be left out. The two are counted apart, so a call that fetches fewer sitemaps than it finds, as one with [follow rules](#follow-rules) does, can reach the limit by the sitemaps it finds: with a limit of 1,000, a call for a sitemap index of 1,200 entries records the error whichever of the sitemaps are followed.
+
 Negative values are rejected and an error is recorded in `GetErrors()`. The limit of a call is the one set when the call starts.
 
 See [`examples/maxsitemaps`](examples/maxsitemaps/main.go) for a runnable example.
@@ -276,6 +279,7 @@ See [`examples/multithread`](examples/multithread/main.go) for a runnable exampl
 
 To set the follow rules, use the `SetFollow()` function. It should be specified a `[]string` value.
 It is a list of regular expressions. Only the sitemaps whose URL matches one of these expressions are fetched and parsed, whether a sitemap index lists them or a `robots.txt` names them. A sitemap index that is not followed takes the sitemaps it lists with it. The URL passed to `Parse()` is always fetched.
+A sitemap that is not followed is still among the sitemaps [`GetSitemaps()`](#getsitemaps) returns.
 If no follow rules are provided, all sitemaps are followed.
 Patterns longer than 1,000 characters are rejected and reported via `GetErrors()`.
 
@@ -479,7 +483,7 @@ Each configuration setting can be read back via a corresponding `Get*` method. A
 | `GetMaxResponseSize()` | `int64` | Maximum HTTP response size in bytes |
 | `GetMaxDepth()` | `int` | Maximum sitemap index recursion depth |
 | `GetMaxConcurrency()` | `int` | Maximum number of sitemaps fetched or parsed at the same time (`0` = unlimited) |
-| `GetMaxSitemaps()` | `int` | Maximum number of sitemaps a call fetches (`0` = unlimited) |
+| `GetMaxSitemaps()` | `int` | Maximum number of sitemaps a call fetches, and of sitemaps it lists (`0` = unlimited) |
 | `GetMaxURLs()` | `int` | Maximum number of URLs a call collects (`0` = unlimited) |
 | `GetFollow()` | `[]string` | Copy of the follow regex pattern list |
 | `GetRules()` | `[]string` | Copy of the URL filter regex pattern list |
@@ -498,7 +502,7 @@ fmt.Println(s.GetStrict())         // true
 
 All public methods on `*S` are safe to call from multiple goroutines. Internal state (configuration, collected URLs, errors) is protected by a mutex.
 
-The mutex is not held while a sitemap is fetched, unzipped or decoded, only while what the sitemap yielded is added to the results. The getters can therefore be called while `Parse()` is running without waiting for it: `GetURLs()`, `GetURLCount()` and `GetErrors()` return what has been collected so far. The URLs of a sitemap appear all at once, when that sitemap has been parsed.
+The mutex is not held while a sitemap is fetched, unzipped or decoded, only while what the sitemap yielded is added to the results. The getters can therefore be called while `Parse()` is running without waiting for it: `GetURLs()`, `GetURLCount()`, `GetSitemaps()` and `GetErrors()` return what has been collected so far. The URLs of a sitemap appear all at once, when that sitemap has been parsed, and so do the sitemaps a sitemap index lists.
 
 However, two important constraints apply:
 
@@ -616,7 +620,7 @@ See [`examples/redirect`](examples/redirect/main.go) for a runnable example.
 
 ### Reusing an instance
 
-An instance can be used for any number of `Parse()` / `ParseContext()` calls. Every call starts from a clean state: the URLs and errors collected by the previous call are discarded first, so `GetURLs()` and `GetErrors()` always describe the most recent call only. This also holds when a call returns early, for example because the input URL is invalid.
+An instance can be used for any number of `Parse()` / `ParseContext()` calls. Every call starts from a clean state: the URLs, sitemaps and errors collected by the previous call are discarded first, so `GetURLs()`, `GetSitemaps()` and `GetErrors()` always describe the most recent call only. This also holds when a call returns early, for example because the input URL is invalid.
 
 ```go
 s := sitemap.New()
@@ -797,6 +801,53 @@ Returns a slice of `n` randomly selected URLs without duplicates. If `n` exceeds
 
 ```go
 randomURLs := s.GetRandomURLs(5)
+```
+
+#### GetSitemaps
+
+Returns the sitemaps that the documents of the most recent `Parse()` / `ParseContext()` call list, as a `[]Sitemap` slice: the `Sitemap:` lines of the `robots.txt` the call was made for, and the entries of every sitemap index it read.
+
+```go
+for _, sm := range s.GetSitemaps() {
+    fmt.Println(sm.Loc)
+}
+```
+
+Each `Sitemap` struct contains the following field:
+- `Loc` (`string`) — the URL the sitemap is requested by, never empty. In tolerant mode it can be requested as it is: a relative URL is resolved against the URL of the document that lists it, a space or a character that is not in ASCII is percent-encoded, and an [internationalised host name](#internationalised-host-names) is in its Punycode form. Strict mode returns it as the document gives it. A sitemap that is reached through a [redirect](#redirects) is listed by the URL the document gives, not by the one it was served from
+
+What is among them, and what is not:
+- A sitemap is listed **whether or not it was fetched**: one that the [follow rules](#follow-rules) leave out, one that could not be fetched, and one that a limit of the call kept from being fetched (see [Max depth](#max-depth), [Max sitemaps](#max-sitemaps) and [Max URLs](#max-urls)) are all listed. What a sitemap index lists is known only if the index itself was fetched.
+- A sitemap is listed **once**, however many documents list it.
+- A location that is rejected (an empty one, one that is no HTTP or HTTPS URL, one that strict mode does not accept) is reported via [`GetErrors()`](#geterrors) and not listed.
+- The document passed to `Parse()` is not listed, unless a document of the call lists it.
+
+The sitemaps of a document are in the order the document lists them. With multi-threading off the documents are read one after the other, so the order is the same from one call to the next; with multi-threading on it is not for the sitemaps of different documents.
+
+No more sitemaps are returned than [`SetMaxSitemaps()`](#max-sitemaps) allows (default: 50,000). If the documents list more, the first ones the call found are returned, and the error `limit of N sitemaps reached` is recorded. The sitemaps listed and the sitemaps fetched are counted apart, so when the limit is reached the ones that are returned need not be the ones that were fetched.
+
+The slice returned is a copy: it may be modified, and it does not change afterwards. It is never `nil`.
+
+To find out which sitemaps a sitemap index lists without fetching any of them, set a follow rule that no URL matches:
+
+```go
+s := sitemap.New().SetFollow([]string{`^$`})
+if _, err := s.Parse("https://example.com/sitemap-index.xml", nil); err != nil {
+    log.Fatal(err)
+}
+for _, sm := range s.GetSitemaps() {
+    fmt.Println(sm.Loc)
+}
+```
+
+See [`examples/sitemaps`](examples/sitemaps/main.go) for a runnable example.
+
+#### GetSitemapCount
+
+Returns the number of sitemaps `GetSitemaps()` returns.
+
+```go
+count := s.GetSitemapCount()
 ```
 
 #### GetErrors
