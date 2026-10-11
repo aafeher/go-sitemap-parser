@@ -19,6 +19,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Configurable URL rules to filter which URLs to include
 - Configurable HTTP response size limit
 - Limits on the sitemaps a call fetches and on the URLs it collects, so that a call comes to an end whatever a server lists
+- A limit on the validation errors a call records, so that its errors are bounded like its results are
 - Tolerant mode (default): resolves relative URLs in `<loc>` elements; rejects URLs exceeding 2,048 characters after resolution
 - Strict mode: validates URLs per the sitemaps.org specification
 - A value that cannot be parsed (e.g. a malformed `<lastmod>`) costs only itself, never the whole sitemap
@@ -28,6 +29,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - XHTML hreflang extension (`<xhtml:link>`)
 - XML documents in encodings other than UTF-8 (e.g. `ISO-8859-1`, `windows-1252`) are transcoded automatically
 - Typed errors: `*ConfigError`, `*NetworkError`, `*ParseError`, `*ValidationError` — inspectable via `errors.As`
+- A limit that was reached can be told with `errors.Is`: `ErrMaxResponseSize`, `ErrMaxDepth`, `ErrMaxSitemaps`, `ErrMaxURLs`, `ErrMaxValidationErrors`
 - Thread-safe
 
 ## Formats supported
@@ -89,6 +91,7 @@ s := sitemap.New()
  - maxConcurrency: `16`
  - maxSitemaps: `50000`
  - maxURLs: `10000000`
+ - maxValidationErrors: `100000`
  - multiThread: `true`
  - strict: `false`
  - httpClient: `nil` (a default `*http.Client` is created per call with the configured `fetchTimeout`)
@@ -127,7 +130,9 @@ To set the maximum allowed HTTP response size, use the `SetMaxResponseSize()` fu
 
 The same limit caps the **decompressed** size of gzip-compressed content, of all the members of a gzip file together, so a small `.gz` response cannot expand without bound in memory. This applies both to fetched content and to gzip content passed in through the `urlContent` argument of `Parse()`. Content that expands beyond the limit is rejected and reported via `GetErrors()` as a `*ParseError`. If it is the content of the URL passed to `Parse()`, the call fails with that error, see [Parse](#parse).
 
-The value must be greater than 0. Unlike with `SetMaxSitemaps()` and `SetMaxURLs()`, `0` does not lift the limit: it is rejected with a `*ConfigError` and the limit stays as it was. Every value above it is a limit, up to `math.MaxInt64`, which nothing can exceed.
+Both errors wrap `ErrMaxResponseSize`, the `*NetworkError` of a response over the limit and the `*ParseError` of gzip content over it, see [Limit errors](#limit-errors).
+
+The value must be greater than 0. Unlike with `SetMaxSitemaps()`, `SetMaxURLs()` and `SetMaxValidationErrors()`, `0` does not lift the limit: it is rejected with a `*ConfigError` and the limit stays as it was. Every value above it is a limit, up to `math.MaxInt64`, which nothing can exceed.
 
 ```go
 s := sitemap.New()
@@ -159,7 +164,7 @@ When the limit is reached, a `*ParseError` is recorded in `GetErrors()` for ever
 parse "https://example.com/sitemap-index-2.xml": max recursion depth of 1 reached
 ```
 
-Reaching the limit does not fail `Parse()`: the URLs collected up to that depth are returned.
+The error wraps `ErrMaxDepth`, see [Limit errors](#limit-errors). Reaching the limit does not fail `Parse()`: the URLs collected up to that depth are returned.
 
 See [`examples/maxdepth`](examples/maxdepth/main.go) for a runnable example.
 
@@ -192,7 +197,7 @@ Once the limit is reached, the sitemaps that are left are not fetched, and a `*P
 parse "https://example.com/sitemap-index.xml": limit of 1000 sitemaps reached
 ```
 
-Reaching the limit does not fail `Parse()`: the URLs of the sitemaps fetched until then are returned. With multi-threading off, the sitemaps are fetched in the order they are listed, so it is the first ones that are fetched. With multi-threading on, which ones are fetched depends on how fast the server answers. Nothing is recorded if no sitemap had to be left out.
+The error wraps `ErrMaxSitemaps`, see [Limit errors](#limit-errors). Reaching the limit does not fail `Parse()`: the URLs of the sitemaps fetched until then are returned. With multi-threading off, the sitemaps are fetched in the order they are listed, so it is the first ones that are fetched. With multi-threading on, which ones are fetched depends on how fast the server answers. Nothing is recorded if no sitemap had to be left out.
 
 The same limit is on the sitemaps [`GetSitemaps()`](#getsitemaps) returns, which are the ones the documents list, whether or not they are fetched. No more of them are kept than the limit allows, and the same error is recorded if one had to be left out. The two are counted apart, so a call that fetches fewer sitemaps than it finds, as one with [follow rules](#follow-rules) does, can reach the limit by the sitemaps it finds: with a limit of 1,000, a call for a sitemap index of 1,200 entries records the error whichever of the sitemaps are followed.
 
@@ -229,13 +234,51 @@ Once the limit is reached, the call stops collecting:
 parse "https://example.com/sitemap-index.xml": limit of 100000 URLs reached
 ```
 
-Reaching the limit does not fail `Parse()`: the URLs collected until then are returned. With multi-threading off, they are the first ones in the order the sitemaps list them. With multi-threading on, which ones they are depends on how fast the server answers. Nothing is recorded if nothing had to be left out.
+The error wraps `ErrMaxURLs`, see [Limit errors](#limit-errors). Reaching the limit does not fail `Parse()`: the URLs collected until then are returned. With multi-threading off, they are the first ones in the order the sitemaps list them. With multi-threading on, which ones they are depends on how fast the server answers. Nothing is recorded if nothing had to be left out.
 
 The default is a last resort rather than a tight bound: ten million URLs take up gigabytes of memory. Set a lower limit when the documents are not trusted, see [SECURITY.md](SECURITY.md).
 
 Negative values are rejected and an error is recorded in `GetErrors()`. The limit of a call is the one set when the call starts.
 
 See [`examples/maxurls`](examples/maxurls/main.go) for a runnable example.
+
+#### Max validation errors
+
+What is wrong with an entry is recorded in `GetErrors()` as a `*ValidationError`: a location that is not valid, a value that cannot be parsed, in strict mode a value the protocol does not allow. An entry that is not valid does not count towards `SetMaxURLs()`, so how many of these errors a call records is up to the server as well: a single document of 50 MB can hold some three million entries without a location. To limit the number of validation errors a `Parse()` / `ParseContext()` call records, use the `SetMaxValidationErrors()` function.
+
+The value is an `int`:
+- `0`: no limit.
+- a positive value: the call records at most that many validation errors. The default is `100000`.
+
+```go
+s := sitemap.New()
+s = s.SetMaxValidationErrors(1000)
+```
+... or ...
+```go
+s := sitemap.New().SetMaxValidationErrors(1000)
+```
+
+The limit is one of the call as well: the validation errors of all the documents count together. What counts are the `*ValidationError` values `GetErrors()` returns, so an entry with two values that are not valid counts twice.
+
+Once the limit is reached, the validation errors that follow are not recorded, and a `*ParseError` is recorded in `GetErrors()`, once for the call. It names the URL passed to `Parse()`:
+
+```
+parse "https://example.com/sitemap-index.xml": limit of 1000 validation errors reached
+```
+
+The error wraps `ErrMaxValidationErrors`, see [Limit errors](#limit-errors). Nothing is recorded if no error had to be left out.
+
+Unlike the limits on the sitemaps and on the URLs, this one takes nothing off what the call does:
+
+- the documents are read to their end and the sitemaps are fetched all the same, so `GetURLs()` and `GetSitemaps()` return what they return without the limit;
+- the errors of the other types are recorded whatever the limit is: a sitemap that cannot be fetched or parsed is reported even when there is no room left for validation errors. How many of those there are depends on the sitemaps the call fetches, not on the entries of a document, so it is `SetMaxSitemaps()` that bounds them.
+
+With multi-threading off, the validation errors recorded are the first ones in the order the documents are read. With multi-threading on, which ones they are depends on how fast the server answers.
+
+Negative values are rejected and an error is recorded in `GetErrors()`. The limit of a call is the one set when the call starts.
+
+See [`examples/maxvalidationerrors`](examples/maxvalidationerrors/main.go) for a runnable example.
 
 #### Max concurrency
 
@@ -499,6 +542,7 @@ Each configuration setting can be read back via a corresponding `Get*` method. A
 | `GetMaxConcurrency()` | `int` | Maximum number of sitemaps fetched or parsed at the same time (`0` = unlimited) |
 | `GetMaxSitemaps()` | `int` | Maximum number of sitemaps a call fetches, and of sitemaps it lists (`0` = unlimited) |
 | `GetMaxURLs()` | `int` | Maximum number of URLs a call collects (`0` = unlimited) |
+| `GetMaxValidationErrors()` | `int` | Maximum number of validation errors a call records (`0` = unlimited) |
 | `GetFollow()` | `[]string` | Copy of the follow regex pattern list |
 | `GetRules()` | `[]string` | Copy of the URL filter regex pattern list |
 | `GetHTTPClient()` | `*http.Client` | Custom HTTP client, or `nil` if using the default |
@@ -888,14 +932,16 @@ Errors are typed and can be inspected with `errors.As`:
 | Type | When returned | Useful fields |
 |---|---|---|
 | `*ConfigError` | A `Set*` method received an invalid value | `Field` (setting name), `Err` (root cause) |
-| `*NetworkError` | An HTTP fetch failed | `URL` (requested URL), `Err` (root cause) |
+| `*NetworkError` | An HTTP fetch failed, or the response is larger than the size limit, see [Max response size](#max-response-size) | `URL` (requested URL), `Err` (root cause) |
 | `*ParseError` | A sitemap document could not be parsed (not a sitemap, empty, broken XML or gzip content, larger than the size limit) | `URL` (sitemap URL; after a redirect, the URL the sitemap was served from), `Err` (root cause) |
 | `*ParseError` | The depth limit was reached, see [Max depth](#max-depth) | `URL` (the sitemap index whose sitemaps were not followed), `Err` (root cause) |
-| `*ParseError` | The limit on the sitemaps or on the URLs of the call was reached, see [Max sitemaps](#max-sitemaps) and [Max URLs](#max-urls) | `URL` (the URL passed to `Parse()`), `Err` (root cause) |
+| `*ParseError` | The limit on the sitemaps, on the URLs or on the validation errors of the call was reached, see [Max sitemaps](#max-sitemaps), [Max URLs](#max-urls) and [Max validation errors](#max-validation-errors) | `URL` (the URL passed to `Parse()`), `Err` (root cause) |
 | `*ParseError` | The call was cut short by its context, see [Parse with context](#parse-with-context) | `URL` (the URL passed to `ParseContext()`), `Err` (the error of the context) |
 | `*ValidationError` | A URL or field value failed validation | `URL` (the rejected URL, or the page or sitemap the rejected value belongs to), `Err` (root cause) |
 
 All types implement `Unwrap()`, enabling `errors.Is` traversal to the root cause.
+
+No more `*ValidationError` values are recorded than `SetMaxValidationErrors()` allows, see [Max validation errors](#max-validation-errors). The errors of the other types are all recorded.
 
 The error that `Parse()` / `ParseContext()` return is one of these as well, see [Parse](#parse).
 
@@ -915,6 +961,31 @@ for _, err := range s.GetErrors() {
     }
 }
 ```
+
+##### Limit errors
+
+The error that is recorded when a limit is reached wraps an error that stands for that limit, so `errors.Is` tells which limit it was, with no need to read the message:
+
+| Error | Limit | Wrapped by |
+|---|---|---|
+| `ErrMaxResponseSize` | [`SetMaxResponseSize()`](#max-response-size) | the `*NetworkError` of a response over the limit, and the `*ParseError` of gzip content over it once decompressed |
+| `ErrMaxDepth` | [`SetMaxDepth()`](#max-depth) | the `*ParseError` of a sitemap index whose sitemaps were not followed |
+| `ErrMaxSitemaps` | [`SetMaxSitemaps()`](#max-sitemaps) | the `*ParseError` of the call |
+| `ErrMaxURLs` | [`SetMaxURLs()`](#max-urls) | the `*ParseError` of the call |
+| `ErrMaxValidationErrors` | [`SetMaxValidationErrors()`](#max-validation-errors) | the `*ParseError` of the call |
+
+```go
+for _, err := range s.GetErrors() {
+    switch {
+    case errors.Is(err, sitemap.ErrMaxURLs):
+        fmt.Println("the URLs are not all there:", err)
+    case errors.Is(err, sitemap.ErrMaxSitemaps):
+        fmt.Println("the sitemaps were not all fetched or listed:", err)
+    }
+}
+```
+
+`errors.Is` works on the error `Parse()` / `ParseContext()` return as well, which is about a limit when the document at the URL they are called for is over the size limit. The messages of the errors are what they were before these errors were introduced.
 
 See [`examples/errors`](examples/errors/main.go) for a runnable example.
 

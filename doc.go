@@ -54,7 +54,8 @@
 // What a call may take up is bounded: the size of a response by
 // [S.SetMaxResponseSize], the depth of nested sitemap indexes by
 // [S.SetMaxDepth], the number of sitemaps it fetches and of sitemaps it lists
-// by [S.SetMaxSitemaps], the number of URLs it collects by [S.SetMaxURLs], and
+// by [S.SetMaxSitemaps], the number of URLs it collects by [S.SetMaxURLs], the
+// number of validation errors it records by [S.SetMaxValidationErrors], and
 // the sitemaps it works on at a time by [S.SetMaxConcurrency]. [S.SetFollow]
 // restricts the sitemaps that are fetched, [S.SetRules] the URLs that are
 // collected.
@@ -70,6 +71,16 @@
 //
 // The errors are of the types [ConfigError], [NetworkError], [ParseError] and
 // [ValidationError], to be told apart with [errors.As].
+//
+// The error of a limit that was reached wraps the error that stands for the
+// limit, so [errors.Is] tells which limit it was: [ErrMaxResponseSize],
+// [ErrMaxDepth], [ErrMaxSitemaps], [ErrMaxURLs] or [ErrMaxValidationErrors].
+//
+//	for _, err := range s.GetErrors() {
+//		if errors.Is(err, sitemap.ErrMaxURLs) {
+//			log.Print("the URLs are not all there: ", err)
+//		}
+//	}
 //
 // # Concurrency
 //

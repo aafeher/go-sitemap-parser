@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -44,6 +45,8 @@ func TestS_setConfigDefaults(t *testing.T) {
 				multiThread:     true,
 				follow:          []string{},
 				rules:           []string{},
+
+				maxValidationErrors: 100000,
 			},
 		},
 	}
@@ -418,6 +421,7 @@ func TestS_Setters_ConfigErrors(t *testing.T) {
 		{"maxConcurrency", func(s *S) { s.SetMaxConcurrency(-1) }, func(s *S) { s.SetMaxConcurrency(4) }},
 		{"maxSitemaps", func(s *S) { s.SetMaxSitemaps(-1) }, func(s *S) { s.SetMaxSitemaps(100) }},
 		{"maxURLs", func(s *S) { s.SetMaxURLs(-1) }, func(s *S) { s.SetMaxURLs(1000) }},
+		{"maxValidationErrors", func(s *S) { s.SetMaxValidationErrors(-1) }, func(s *S) { s.SetMaxValidationErrors(1000) }},
 		{"follow", func(s *S) { s.SetFollow([]string{`(`}) }, func(s *S) { s.SetFollow([]string{`alpha`}) }},
 		{"rules", func(s *S) { s.SetRules([]string{`(`}) }, func(s *S) { s.SetRules([]string{`alpha`}) }},
 	}
@@ -582,6 +586,7 @@ func TestS_GetConfiguration_Defaults(t *testing.T) {
 	mustEqual(t, "GetMaxConcurrency", s.GetMaxConcurrency(), 16)
 	mustEqual(t, "GetMaxSitemaps", s.GetMaxSitemaps(), 50000)
 	mustEqual(t, "GetMaxURLs", s.GetMaxURLs(), 10000000)
+	mustEqual(t, "GetMaxValidationErrors", s.GetMaxValidationErrors(), 100000)
 	mustEqual(t, "GetFollow length", len(s.GetFollow()), 0)
 	mustEqual(t, "GetRules length", len(s.GetRules()), 0)
 	mustEqual(t, "GetHTTPClient is nil", s.GetHTTPClient() == nil, true)
@@ -599,6 +604,7 @@ func TestS_GetConfiguration_AfterSetters(t *testing.T) {
 		SetMaxConcurrency(8).
 		SetMaxSitemaps(100).
 		SetMaxURLs(1000).
+		SetMaxValidationErrors(500).
 		SetFollow([]string{`\.xml$`}).
 		SetRules([]string{`/product/`}).
 		SetHTTPClient(customClient).
@@ -612,6 +618,7 @@ func TestS_GetConfiguration_AfterSetters(t *testing.T) {
 	mustEqual(t, "GetMaxConcurrency", s.GetMaxConcurrency(), 8)
 	mustEqual(t, "GetMaxSitemaps", s.GetMaxSitemaps(), 100)
 	mustEqual(t, "GetMaxURLs", s.GetMaxURLs(), 1000)
+	mustEqual(t, "GetMaxValidationErrors", s.GetMaxValidationErrors(), 500)
 	follow := s.GetFollow()
 	mustEqual(t, "GetFollow length", len(follow), 1)
 	if len(follow) > 0 {
@@ -4069,6 +4076,7 @@ func TestS_fetch_ResponseSizeLimit(t *testing.T) {
 				t.Fatalf("expected *NetworkError, got %T: %v", err, err)
 			}
 			mustEqual(t, "error", err.Error(), fmt.Sprintf("fetch %q: response size exceeds limit of %d bytes", server.URL, tt.limit))
+			assertStringSlice(t, "limits the error matches", limitsMatched(err), []string{"ErrMaxResponseSize"})
 			mustEqual(t, "content", content, "")
 		})
 	}
@@ -4089,6 +4097,7 @@ func TestS_fetch_ResponseSizeLimit(t *testing.T) {
 			t.Fatal("expected a size limit error, got nil")
 		}
 		mustEqual(t, "error", err.Error(), fmt.Sprintf("fetch %q: response size exceeds limit of %d bytes", url, limit))
+		assertStringSlice(t, "limits the error matches", limitsMatched(err), []string{"ErrMaxResponseSize"})
 		mustEqual(t, "bytes read", source.read, int64(limit+1))
 	})
 }
@@ -4249,6 +4258,7 @@ func requireSizeLimitError(t *testing.T, errs []error, url string, limit int64) 
 	for _, err := range errs {
 		var parseErr *ParseError
 		if errors.As(err, &parseErr) && parseErr.URL == url && strings.Contains(parseErr.Error(), want) {
+			assertStringSlice(t, "limits the error matches", limitsMatched(err), []string{"ErrMaxResponseSize"})
 			return
 		}
 	}
@@ -4611,6 +4621,7 @@ func requireDepthLimitErrors(t *testing.T, errs []error, maxDepth int, documents
 			t.Fatalf("expected *ParseError, got %T: %v", err, err)
 		}
 		mustEqual(t, "error", parseErr.Err.Error(), fmt.Sprintf("max recursion depth of %d reached", maxDepth))
+		assertStringSlice(t, "limits the error matches", limitsMatched(err), []string{"ErrMaxDepth"})
 		got = append(got, parseErr.URL)
 	}
 	assertStringSlice(t, "documents named by the depth limit errors", sortedCopy(got), sortedCopy(documents))
@@ -9662,9 +9673,10 @@ func TestS_SetMaxConcurrency(t *testing.T) {
 	})
 }
 
-// TestS_SetMaxSitemaps_SetMaxURLs verifies what the setters of the two limits
-// of a call accept, and that a value they reject leaves the setting as it was.
-func TestS_SetMaxSitemaps_SetMaxURLs(t *testing.T) {
+// TestS_SetCallLimits verifies what the setters of the limits of a call on
+// what it fetches, collects and records accept, and that a value they reject
+// leaves the setting as it was.
+func TestS_SetCallLimits(t *testing.T) {
 	settings := []struct {
 		field    string
 		set      func(s *S, value int) *S
@@ -9673,6 +9685,7 @@ func TestS_SetMaxSitemaps_SetMaxURLs(t *testing.T) {
 	}{
 		{"maxSitemaps", (*S).SetMaxSitemaps, (*S).GetMaxSitemaps, defaultMaxSitemaps},
 		{"maxURLs", (*S).SetMaxURLs, (*S).GetMaxURLs, defaultMaxURLs},
+		{"maxValidationErrors", (*S).SetMaxValidationErrors, (*S).GetMaxValidationErrors, defaultMaxValidationErrors},
 	}
 
 	for _, setting := range settings {
@@ -11597,7 +11610,9 @@ func errorsOf(s *S) []string {
 }
 
 // limitErrors returns the errors among those of s that tell a limit of the
-// call for url was reached, by what they say, and the other errors.
+// call for url was reached, by what they say, and the other errors. An error
+// that tells a limit was reached has to match the error that stands for the
+// limit it names, and no other.
 func limitErrors(t *testing.T, s *S, url string) (limits []string, others []string) {
 	t.Helper()
 
@@ -11606,7 +11621,17 @@ func limitErrors(t *testing.T, s *S, url string) (limits []string, others []stri
 		var parseErr *ParseError
 		if errors.As(err, &parseErr) && strings.HasPrefix(parseErr.Err.Error(), "limit of ") {
 			mustEqual(t, "URL of the limit error", parseErr.URL, url)
-			limits = append(limits, parseErr.Err.Error())
+			text := parseErr.Err.Error()
+			limits = append(limits, text)
+
+			// The text is "limit of", the limit, and what the limit is on.
+			named := strings.TrimSuffix(strings.SplitN(text, " ", 4)[3], " reached")
+			limit := map[string]string{
+				"sitemaps":          "ErrMaxSitemaps",
+				"URLs":              "ErrMaxURLs",
+				"validation errors": "ErrMaxValidationErrors",
+			}[named]
+			assertStringSlice(t, "limits the error "+text+" matches", limitsMatched(err), []string{limit})
 			continue
 		}
 		others = append(others, err.Error())
@@ -13421,6 +13446,966 @@ func TestS_GetSitemaps_LastMod_Copy(t *testing.T) {
 	mustEqual(t, "date of the other caller", dateText(second[2].LastMod), "2024-01-17T00:00:00Z")
 }
 
+// limitSentinels are the errors that stand for the limits of a call, by the
+// names they are exported by.
+var limitSentinels = []struct {
+	name string
+	err  error
+}{
+	{"ErrMaxResponseSize", ErrMaxResponseSize},
+	{"ErrMaxDepth", ErrMaxDepth},
+	{"ErrMaxSitemaps", ErrMaxSitemaps},
+	{"ErrMaxURLs", ErrMaxURLs},
+	{"ErrMaxValidationErrors", ErrMaxValidationErrors},
+}
+
+// limitsMatched returns the names of the limits errors.Is matches err with, in
+// a slice that is never nil.
+func limitsMatched(err error) []string {
+	names := []string{}
+	for _, limit := range limitSentinels {
+		if errors.Is(err, limit.err) {
+			names = append(names, limit.name)
+		}
+	}
+	return names
+}
+
+// TestLimitErrors verifies the errors that stand for the limits of a call:
+// each is an error of its own, and the error of a limit that was reached says
+// what it said before there were any, and matches the one it was made for.
+func TestLimitErrors(t *testing.T) {
+	t.Run("each stands for one limit", func(t *testing.T) {
+		names := map[string]string{}
+		for _, limit := range limitSentinels {
+			assertStringSlice(t, "limits "+limit.name+" matches", limitsMatched(limit.err), []string{limit.name})
+
+			text := limit.err.Error()
+			if !strings.HasPrefix(text, "sitemap: ") {
+				t.Errorf("%s: expected the message to name the package, got %q", limit.name, text)
+			}
+			if other, taken := names[text]; taken {
+				t.Errorf("%s and %s have the same message: %q", limit.name, other, text)
+			}
+			names[text] = limit.name
+		}
+	})
+
+	t.Run("the error of a limit that was reached", func(t *testing.T) {
+		const url = "https://example.com/sitemap.xml"
+
+		err := limitErrorf(ErrMaxURLs, "limit of %d %s reached", 5, "URLs")
+		mustEqual(t, "message", err.Error(), "limit of 5 URLs reached")
+		if errors.Unwrap(err) != ErrMaxURLs {
+			t.Errorf("expected the error to wrap ErrMaxURLs, got %v", errors.Unwrap(err))
+		}
+		assertStringSlice(t, "limits matched", limitsMatched(err), []string{"ErrMaxURLs"})
+
+		parseErr := &ParseError{URL: url, Err: err}
+		mustEqual(t, "message of the *ParseError", parseErr.Error(), `parse "https://example.com/sitemap.xml": limit of 5 URLs reached`)
+		assertStringSlice(t, "limits the *ParseError matches", limitsMatched(parseErr), []string{"ErrMaxURLs"})
+
+		networkErr := &NetworkError{URL: url, Err: limitErrorf(ErrMaxResponseSize, "response size exceeds limit of %d bytes", 10)}
+		mustEqual(t, "message of the *NetworkError", networkErr.Error(), `fetch "https://example.com/sitemap.xml": response size exceeds limit of 10 bytes`)
+		assertStringSlice(t, "limits the *NetworkError matches", limitsMatched(networkErr), []string{"ErrMaxResponseSize"})
+	})
+
+	t.Run("an error that only reads like one", func(t *testing.T) {
+		err := &ParseError{URL: "https://example.com/sitemap.xml", Err: errors.New("limit of 5 URLs reached")}
+		assertStringSlice(t, "limits matched", limitsMatched(err), []string{})
+	})
+}
+
+// TestS_Parse_LimitErrors verifies that the error a call records when it
+// reaches a limit matches the error that stands for that limit and no other,
+// that it is of the type and says what it did before, and that no other error
+// of the call matches a limit.
+func TestS_Parse_LimitErrors(t *testing.T) {
+	site := newSiteServer(t, limitTestLists, map[string]int{"/a1.xml": 50})
+	const contentURL = "https://example.com/sitemap.xml"
+
+	// requireLimit verifies that one of the errors of s is about a limit: it
+	// has to match limit and say text. It returns that error.
+	requireLimit := func(t *testing.T, s *S, limit, text string) error {
+		t.Helper()
+
+		var matched []error
+		for _, err := range s.GetErrors() {
+			if names := limitsMatched(err); len(names) > 0 {
+				assertStringSlice(t, "limits matched by: "+err.Error(), names, []string{limit})
+				matched = append(matched, err)
+			}
+		}
+		if len(matched) != 1 {
+			t.Fatalf("expected one error about a limit, got %v of %v", matched, s.GetErrors())
+		}
+		mustEqual(t, "error", matched[0].Error(), text)
+		return matched[0]
+	}
+	isNetworkError := func(err error) bool {
+		_, ok := err.(*NetworkError)
+		return ok
+	}
+	isParseError := func(err error) bool {
+		_, ok := err.(*ParseError)
+		return ok
+	}
+
+	t.Run("response size, the document of the call", func(t *testing.T) {
+		url := site.URL + "/a1.xml"
+		s := New().SetMaxResponseSize(1000)
+		_, err := s.Parse(url, nil)
+
+		limit := requireLimit(t, s, "ErrMaxResponseSize", fmt.Sprintf("fetch %q: response size exceeds limit of 1000 bytes", url))
+		mustEqual(t, "is a *NetworkError", isNetworkError(limit), true)
+		// The call fails with the error it recorded.
+		if err != limit {
+			t.Errorf("expected the error to be returned, got %v", err)
+		}
+		mustEqual(t, "errors", s.GetErrorsCount(), 1)
+	})
+
+	t.Run("response size, a sitemap of the call", func(t *testing.T) {
+		s := New().SetMaxResponseSize(1000).SetMultiThread(false)
+		requireParse(t, s, site.URL+"/index-a.xml", nil)
+
+		limit := requireLimit(t, s, "ErrMaxResponseSize", fmt.Sprintf("fetch %q: response size exceeds limit of 1000 bytes", site.URL+"/a1.xml"))
+		mustEqual(t, "is a *NetworkError", isNetworkError(limit), true)
+		assertStringSlice(t, "URLs", locsOf(s), site.pagesOfAll("/a2.xml", "/a3.xml"))
+		mustEqual(t, "errors", s.GetErrorsCount(), 1)
+	})
+
+	t.Run("response size, gzip content", func(t *testing.T) {
+		content := string(gzipByte(strings.Repeat("A", 64)))
+		s := New().SetMaxResponseSize(10)
+		_, err := s.Parse(contentURL+".gz", &content)
+
+		limit := requireLimit(t, s, "ErrMaxResponseSize", fmt.Sprintf("parse %q: decompressed size exceeds limit of 10 bytes", contentURL+".gz"))
+		mustEqual(t, "is a *ParseError", isParseError(limit), true)
+		if err != limit {
+			t.Errorf("expected the error to be returned, got %v", err)
+		}
+		mustEqual(t, "errors", s.GetErrorsCount(), 1)
+	})
+
+	t.Run("depth", func(t *testing.T) {
+		s := New().SetMaxDepth(1).SetMultiThread(false)
+		requireParse(t, s, site.URL+"/robots.txt", nil)
+
+		limit := requireLimit(t, s, "ErrMaxDepth", fmt.Sprintf("parse %q: max recursion depth of 1 reached", site.URL+"/index-c.xml"))
+		mustEqual(t, "is a *ParseError", isParseError(limit), true)
+		mustEqual(t, "errors", s.GetErrorsCount(), 1)
+	})
+
+	t.Run("sitemaps", func(t *testing.T) {
+		url := site.URL + "/robots.txt"
+		s := New().SetMaxSitemaps(1).SetMultiThread(false)
+		requireParse(t, s, url, nil)
+
+		limit := requireLimit(t, s, "ErrMaxSitemaps", fmt.Sprintf("parse %q: limit of 1 sitemaps reached", url))
+		mustEqual(t, "is a *ParseError", isParseError(limit), true)
+		mustEqual(t, "errors", s.GetErrorsCount(), 1)
+	})
+
+	t.Run("URLs", func(t *testing.T) {
+		url := site.URL + "/robots.txt"
+		s := New().SetMaxURLs(1).SetMultiThread(false)
+		requireParse(t, s, url, nil)
+
+		limit := requireLimit(t, s, "ErrMaxURLs", fmt.Sprintf("parse %q: limit of 1 URLs reached", url))
+		mustEqual(t, "is a *ParseError", isParseError(limit), true)
+		mustEqual(t, "errors", s.GetErrorsCount(), 1)
+	})
+
+	t.Run("validation errors", func(t *testing.T) {
+		content := `<urlset><url><loc>https:///bad-1</loc></url><url><loc>https:///bad-2</loc></url></urlset>`
+		s := New().SetMaxValidationErrors(1)
+		requireParse(t, s, contentURL, &content)
+
+		limit := requireLimit(t, s, "ErrMaxValidationErrors", fmt.Sprintf("parse %q: limit of 1 validation errors reached", contentURL))
+		mustEqual(t, "is a *ParseError", isParseError(limit), true)
+		mustEqual(t, "errors", s.GetErrorsCount(), 2)
+	})
+
+	t.Run("errors that are about no limit", func(t *testing.T) {
+		var errs []error
+
+		// A setting that is not valid, and the call it fails.
+		s := New().SetMaxValidationErrors(-1)
+		_, err := s.Parse(contentURL, nil)
+		errs = append(append(errs, err), s.GetErrors()...)
+
+		// A URL that is not valid.
+		s = New()
+		_, _ = s.Parse("ftp://example.com/sitemap.xml", nil)
+		errs = append(errs, s.GetErrors()...)
+
+		// A document that is not found, one that cannot be parsed, an entry that
+		// is not valid, and a call that is cut short.
+		s = New()
+		_, _ = s.Parse(site.URL+"/missing/robots.txt", nil)
+		errs = append(errs, s.GetErrors()...)
+
+		for _, content := range []string{`<urlset><url>`, `<urlset><url><loc>https:///bad</loc></url></urlset>`, string(gzipByte("https://example.com/")[:12])} {
+			s = New()
+			_, _ = s.Parse(contentURL, &content)
+			errs = append(errs, s.GetErrors()...)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		index := `<sitemapindex><sitemap><loc>https://example.com/sitemap-1.xml</loc></sitemap></sitemapindex>`
+		s = New()
+		_, _ = s.ParseContext(ctx, contentURL, &index)
+		errs = append(errs, s.GetErrors()...)
+
+		kinds := map[string]bool{}
+		for _, err := range errs {
+			kinds[fmt.Sprintf("%T", err)] = true
+			assertStringSlice(t, "limits matched by: "+err.Error(), limitsMatched(err), []string{})
+		}
+		// Errors of every type were looked at, the error that is of none among them.
+		mustEqual(t, "types of the errors", len(kinds), 5)
+		mustEqual(t, "errors", len(errs), 9)
+	})
+}
+
+// validationErrorOf returns a *ValidationError that names what it is about.
+func validationErrorOf(name string) error {
+	return &ValidationError{URL: "https://example.com/" + name, Err: errors.New("not valid")}
+}
+
+// TestS_addError verifies which errors of a call are recorded: no more
+// validation errors than the limit on them allows, and every error of another
+// type.
+func TestS_addError(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	network := &NetworkError{URL: url, Err: errors.New("not found")}
+	parse := &ParseError{URL: url, Err: errors.New("not parsed")}
+	config := &ConfigError{Field: "maxDepth", Err: errors.New("not valid")}
+	v1, v2, v3, v4 := validationErrorOf("1"), validationErrorOf("2"), validationErrorOf("3"), validationErrorOf("4")
+
+	texts := func(errs []error) []string {
+		list := []string{}
+		for _, err := range errs {
+			list = append(list, err.Error())
+		}
+		return list
+	}
+
+	tests := []struct {
+		name     string
+		limit    int
+		recorded int
+		add      []error
+		want     []error
+		count    int
+		leftOut  bool
+	}{
+		{name: "no limit", limit: 0, add: []error{v1, network, v2, v3, parse, v4}, want: []error{v1, network, v2, v3, parse, v4}, count: 4},
+		{name: "fewer than the limit", limit: 3, add: []error{v1, v2}, want: []error{v1, v2}, count: 2},
+		{name: "as many as the limit", limit: 2, add: []error{v1, network, v2}, want: []error{v1, network, v2}, count: 2},
+		{name: "one more than the limit", limit: 2, add: []error{v1, v2, v3}, want: []error{v1, v2}, count: 2, leftOut: true},
+		{
+			name: "the other errors are recorded whatever the limit is", limit: 1,
+			add:  []error{network, v1, parse, v2, network, v3, config, parse, v4},
+			want: []error{network, v1, parse, network, config, parse}, count: 1, leftOut: true,
+		},
+		{name: "the other errors do not count", limit: 1, add: []error{network, parse, config, network, v1}, want: []error{network, parse, config, network, v1}, count: 1},
+		{name: "errors recorded already count", limit: 3, recorded: 2, add: []error{v1, v2}, want: []error{v1}, count: 3, leftOut: true},
+		{name: "errors recorded already leave no room", limit: 2, recorded: 2, add: []error{network, v1}, want: []error{network}, count: 2, leftOut: true},
+		{name: "no limit, errors recorded already", limit: 0, recorded: 7, add: []error{v1, v2}, want: []error{v1, v2}, count: 9},
+	}
+
+	for _, tt := range tests {
+		for _, together := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, together=%v", tt.name, together), func(t *testing.T) {
+				s := New()
+				s.limits.maxValidationErrors = tt.limit
+				s.limits.validationErrors = tt.recorded
+
+				if together {
+					s.addErrors(tt.add)
+				} else {
+					for _, err := range tt.add {
+						s.addError(err)
+					}
+				}
+
+				assertStringSlice(t, "errors", texts(s.errs), texts(tt.want))
+				mustEqual(t, "validation errors counted", s.limits.validationErrors, tt.count)
+				mustEqual(t, "validation errors left out", s.limits.validationErrorsLeftOut, tt.leftOut)
+			})
+		}
+	}
+}
+
+// requireErrorsLimited verifies what the limit on the validation errors makes
+// of the errors of a call for url whose errors are recorded in the same order
+// every time. got, the errors it records with the limit, have to be all, the
+// errors it records without one, less the validation errors there is no room
+// for, and the error of the limit after them if one had to be left out.
+func requireErrorsLimited(t *testing.T, got, all []error, limit int, url string) {
+	t.Helper()
+
+	want := []string{}
+	recorded, leftOut := 0, false
+	for _, err := range all {
+		if _, ok := err.(*ValidationError); ok {
+			if recorded == limit {
+				leftOut = true
+				continue
+			}
+			recorded++
+		}
+		want = append(want, err.Error())
+	}
+	if leftOut {
+		want = append(want, fmt.Sprintf("parse %q: limit of %d validation errors reached", url, limit))
+	}
+
+	texts := []string{}
+	for _, err := range got {
+		texts = append(texts, err.Error())
+	}
+	assertStringSlice(t, fmt.Sprintf("errors with a limit of %d", limit), texts, want)
+	if leftOut && len(got) > 0 {
+		last := got[len(got)-1]
+		assertStringSlice(t, "limits the last error matches", limitsMatched(last), []string{"ErrMaxValidationErrors"})
+		if _, ok := last.(*ParseError); !ok {
+			t.Errorf("expected the error of the limit to be a *ParseError, got %T", last)
+		}
+	}
+}
+
+// countValidationErrors returns the number of validation errors among errs.
+func countValidationErrors(errs []error) int {
+	count := 0
+	for _, err := range errs {
+		if _, ok := err.(*ValidationError); ok {
+			count++
+		}
+	}
+	return count
+}
+
+// invalidEntryDocuments returns documents of every format at
+// https://example.com, by their path, with entries that are valid and entries
+// that are not, in every way an entry can be not valid. It returns the number
+// of validation errors each of them yields as well, in tolerant and in strict
+// mode.
+func invalidEntryDocuments() (documents map[string]string, validationErrors map[string][2]int) {
+	const base = "https://example.com"
+
+	// The four formats that list pages.
+	documents = documentsListing([]string{
+		base + "/page-1", "https:///bad-1", base + "/page-2", "https:///bad-2", "https:///bad-3", base + "/page-3", "https:///bad-4",
+	})
+	// The documents that list sitemaps.
+	documents["/index.xml"] = `<sitemapindex>` +
+		`<sitemap><loc>https://example.com/s1.xml</loc><lastmod>yesterday</lastmod></sitemap>` +
+		`<sitemap><loc>https:///bad-1</loc></sitemap>` +
+		`<sitemap><loc>https://example.com/s2.xml</loc><lastmod>2024-01-15</lastmod></sitemap>` +
+		`<sitemap><loc>https:///bad-2</loc><lastmod>today</lastmod></sitemap>` +
+		`<sitemap><loc>https://example.com/s3.xml</loc><lastmod>2024-13-45</lastmod></sitemap>` +
+		`</sitemapindex>`
+	documents["/robots.txt"] = "Sitemap: https://example.com/s1.xml\n" +
+		"Sitemap: https:///bad-1\n" +
+		"Sitemap: ftp://example.com/s2.xml\n" +
+		"Sitemap: https://example.com/s3.xml\n" +
+		"Sitemap: https:///bad-2\n"
+	// Values that cannot be parsed, values the protocol does not allow, and
+	// entries with more than one of them.
+	documents["/values.xml"] = `<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"` +
+		` xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"` +
+		` xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"` +
+		` xmlns:xhtml="http://www.w3.org/1999/xhtml">` +
+		`<url><loc>https://example.com/a</loc><lastmod>yesterday</lastmod><priority>high</priority></url>` +
+		`<url><loc>https://example.com/b</loc><changefreq>sometimes</changefreq><priority>1.5</priority></url>` +
+		`<url><loc>https://example.com/c</loc>` +
+		`<image:image><image:loc></image:loc></image:image>` +
+		`<news:news><news:publication_date>soon</news:publication_date></news:news>` +
+		`<video:video><video:thumbnail_loc>https://example.com/t.jpg</video:thumbnail_loc><video:duration>long</video:duration></video:video>` +
+		`<xhtml:link rel="alternate" hreflang="de" href=""/>` +
+		`</url>` +
+		`<url><loc>/relative</loc><lastmod>2024-01-15 10:30:00</lastmod></url>` +
+		`<url><loc>https://example.com/d</loc></url>` +
+		`</urlset>`
+	documents["/dates.rss"] = `<rss><channel>` +
+		`<item><link>https://example.com/a</link><pubDate>yesterday</pubDate></item>` +
+		`<item><link>https:///bad</link><pubDate>today</pubDate></item>` +
+		`<item><link>https://example.com/b</link><pubDate>2024-01-15</pubDate></item>` +
+		`<item><link>https://example.com/c</link><pubDate>Mon, 15 Jan 2024 10:30:00 GMT</pubDate></item>` +
+		`</channel></rss>`
+	documents["/dates.atom"] = `<feed>` +
+		`<entry><link href="https://example.com/a"/><updated>yesterday</updated></entry>` +
+		`<entry><link href="https:///bad"/><updated>today</updated></entry>` +
+		`<entry><link href="https://example.com/b"/><updated>Mon, 15 Jan 2024 10:30:00 GMT</updated></entry>` +
+		`<entry><link href="https://example.com/c"/><updated>2024-01-15T10:30:00Z</updated></entry>` +
+		`</feed>`
+
+	validationErrors = map[string][2]int{
+		"/sitemap.xml": {4, 4},
+		"/sitemap.txt": {4, 4},
+		"/rss.xml":     {4, 4},
+		"/atom.xml":    {4, 4},
+		"/index.xml":   {4, 4},
+		"/robots.txt":  {3, 3},
+		"/values.xml":  {5, 15},
+		"/dates.rss":   {3, 3},
+		"/dates.atom":  {3, 3},
+	}
+	return documents, validationErrors
+}
+
+// TestS_Parse_MaxValidationErrors_Documents verifies that a call records no
+// more validation errors than the limit set with SetMaxValidationErrors
+// allows, whatever the document is and whatever its entries have wrong with
+// them, that the errors recorded are the first ones, and that the limit takes
+// nothing else off the call: neither a URL, nor a sitemap, nor another error.
+func TestS_Parse_MaxValidationErrors_Documents(t *testing.T) {
+	const base = "https://example.com"
+	documents, validationErrors := invalidEntryDocuments()
+	mustEqual(t, "documents", len(documents), len(validationErrors))
+
+	for path, content := range documents {
+		for mode, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", path, strict), func(t *testing.T) {
+				url := base + path
+				parse := func(limit int) *S {
+					s := New().SetStrict(strict).SetMaxValidationErrors(limit)
+					// No sitemap is fetched: the document is all the call is about.
+					followNone(s)
+					requireParse(t, s, url, &content)
+					return s
+				}
+
+				all := parse(0)
+				count := countValidationErrors(all.GetErrors())
+				mustEqual(t, "validation errors without a limit", count, validationErrors[path][mode])
+				mustEqual(t, "errors without a limit", len(all.GetErrors()), count)
+
+				for limit := 1; limit <= count+1; limit++ {
+					limited := parse(limit)
+					if !reflect.DeepEqual(limited.GetURLs(), all.GetURLs()) {
+						t.Errorf("limit of %d: expected the URLs of a call without a limit, got %v, want %v", limit, datedLocs(limited), datedLocs(all))
+					}
+					assertStringSlice(t, fmt.Sprintf("sitemaps with a limit of %d", limit), datedSitemaps(limited), datedSitemaps(all))
+					requireErrorsLimited(t, limited.GetErrors(), all.GetErrors(), limit, url)
+
+					want := min(limit, count)
+					if limit < count {
+						// The error of the limit.
+						want++
+					}
+					mustEqual(t, fmt.Sprintf("errors with a limit of %d", limit), int(limited.GetErrorsCount()), want)
+				}
+			})
+		}
+	}
+}
+
+// TestS_newDocument_ValidationErrors_Room verifies that a document records no
+// validation error the call has no room for, whatever the error is about. The
+// call would leave such an error out when the document is added, but a
+// document would hold an error for each of its entries until then.
+func TestS_newDocument_ValidationErrors_Room(t *testing.T) {
+	const base = "https://example.com"
+	const limit = 100
+	documents, validationErrors := invalidEntryDocuments()
+
+	for path, content := range documents {
+		if path == "/robots.txt" {
+			// A robots.txt is not parsed as a document of its own.
+			continue
+		}
+		for mode, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", path, strict), func(t *testing.T) {
+				count := validationErrors[path][mode]
+				for room := 0; room <= count+1; room++ {
+					s := New().SetStrict(strict)
+					followNone(s)
+					s.limits.maxValidationErrors = limit
+					s.limits.validationErrors = limit - room
+
+					document := s.newDocument()
+					document.parse(base+path, content)
+
+					mustEqual(t, fmt.Sprintf("errors of the document with room for %d", room), len(document.errs), min(room, count))
+					mustEqual(t, fmt.Sprintf("validation errors of the document with room for %d", room), countValidationErrors(document.errs), min(room, count))
+					mustEqual(t, fmt.Sprintf("errors left out with room for %d", room), document.limits.validationErrorsLeftOut, room < count)
+				}
+			})
+		}
+	}
+}
+
+// TestS_Parse_MaxValidationErrors_Default verifies that a call records no more
+// validation errors than the default limit allows when no limit is set.
+func TestS_Parse_MaxValidationErrors_Default(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	content := `<urlset>` + strings.Repeat(`<url><loc/></url>`, defaultMaxValidationErrors+1) + `<url><loc>https://example.com/page</loc></url></urlset>`
+
+	s := New()
+	requireParse(t, s, url, &content)
+
+	errs := s.GetErrors()
+	mustEqual(t, "validation errors", countValidationErrors(errs), 100000)
+	mustEqual(t, "errors", len(errs), 100001)
+	mustEqual(t, "last error", errs[len(errs)-1].Error(), fmt.Sprintf("parse %q: limit of 100000 validation errors reached", url))
+	// The document is read to its end all the same.
+	assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page"})
+}
+
+// invalidEntriesSite starts a server for a sitemap index that lists sitemaps
+// whose entries are not all valid, and returns its URL:
+//
+//	/index.xml -> /s1.xml, /missing.xml, /s2.xml, /broken.xml, /s3.xml, /index-2.xml -> /s4.xml
+//
+// /s1.xml, /s2.xml and /s3.xml list two pages and two entries that are not
+// valid each, /missing.xml is not found, and /broken.xml cannot be parsed
+// after two entries that are not valid.
+func invalidEntriesSite(t *testing.T) string {
+	t.Helper()
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".xml")
+		switch name {
+		case "index":
+			_, _ = fmt.Fprint(w, `<sitemapindex>`)
+			for _, sitemap := range []string{"s1", "missing", "s2", "broken", "s3", "index-2"} {
+				_, _ = fmt.Fprintf(w, `<sitemap><loc>%s/%s.xml</loc></sitemap>`, server.URL, sitemap)
+			}
+			_, _ = fmt.Fprint(w, `</sitemapindex>`)
+		case "index-2":
+			_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%s/s4.xml</loc></sitemap></sitemapindex>`, server.URL)
+		case "broken":
+			_, _ = fmt.Fprint(w, `<urlset><url><loc>https:///broken-bad-1</loc></url><url><loc>https:///broken-bad-2</loc></url><url><loc>`)
+		case "s1", "s2", "s3":
+			_, _ = fmt.Fprintf(w, `<urlset>`+
+				`<url><loc>%[1]s/%[2]s/page-1</loc></url><url><loc>https:///%[2]s-bad-1</loc></url>`+
+				`<url><loc>%[1]s/%[2]s/page-2</loc></url><url><loc>https:///%[2]s-bad-2</loc></url>`+
+				`</urlset>`, server.URL, name)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	return server.URL
+}
+
+// TestS_Parse_MaxValidationErrors_Sitemaps verifies that the limit set with
+// SetMaxValidationErrors is one of the call, for the entries of all of its
+// sitemaps together, and that it is on the validation errors only: the errors
+// about a sitemap that could not be fetched or parsed and about one whose
+// sitemaps were not followed are recorded whatever the limit is.
+func TestS_Parse_MaxValidationErrors_Sitemaps(t *testing.T) {
+	site := invalidEntriesSite(t)
+	url := site + "/index.xml"
+	pages := []string{site + "/s1/page-1", site + "/s1/page-2", site + "/s2/page-1", site + "/s2/page-2", site + "/s3/page-1", site + "/s3/page-2"}
+	invalid := func(name string) string {
+		return fmt.Sprintf(`validate "https:///%s": missing host`, name)
+	}
+	// The errors of a call without a limit that fetches the sitemaps one at a time.
+	all := []string{
+		invalid("s1-bad-1"), invalid("s1-bad-2"),
+		fmt.Sprintf("fetch %q: received HTTP status 404", site+"/missing.xml"),
+		invalid("s2-bad-1"), invalid("s2-bad-2"),
+		fmt.Sprintf("parse %q: XML syntax error on line 1: unexpected EOF", site+"/broken.xml"),
+		invalid("s3-bad-1"), invalid("s3-bad-2"),
+		fmt.Sprintf("parse %q: max recursion depth of 1 reached", site+"/index-2.xml"),
+	}
+
+	parse := func(t *testing.T, limit int, multiThread bool) *S {
+		t.Helper()
+		s := New().SetMaxValidationErrors(limit).SetMaxDepth(1).SetMultiThread(multiThread)
+		requireParse(t, s, url, nil)
+		return s
+	}
+
+	unlimited := parse(t, 0, false)
+	assertStringSlice(t, "errors without a limit", errorsOf(unlimited), all)
+	assertStringSlice(t, "URLs without a limit", locsOf(unlimited), pages)
+
+	for limit := 1; limit <= 7; limit++ {
+		t.Run(fmt.Sprintf("limit=%d, multiThread=false", limit), func(t *testing.T) {
+			s := parse(t, limit, false)
+			assertStringSlice(t, "URLs", locsOf(s), pages)
+			assertStringSlice(t, "sitemaps", listedLocs(s), listedLocs(unlimited))
+			requireErrorsLimited(t, s.GetErrors(), unlimited.GetErrors(), limit, url)
+		})
+
+		t.Run(fmt.Sprintf("limit=%d, multiThread=true", limit), func(t *testing.T) {
+			s := parse(t, limit, true)
+			// In which order the sitemaps are read depends on timing, what they yield does not.
+			assertStringSlice(t, "URLs", sortedCopy(locsOf(s)), sortedCopy(pages))
+			assertStringSlice(t, "sitemaps", sortedCopy(listedLocs(s)), sortedCopy(listedLocs(unlimited)))
+
+			var validation, others []string
+			for _, err := range s.GetErrors() {
+				if _, ok := err.(*ValidationError); ok {
+					validation = append(validation, err.Error())
+					continue
+				}
+				others = append(others, err.Error())
+			}
+			// The validation errors are as many as the limit allows, and each is one
+			// of a sitemap.
+			mustEqual(t, "validation errors", len(validation), min(limit, 6))
+			for _, text := range validation {
+				if !slices.Contains(all, text) {
+					t.Errorf("unexpected validation error: %s", text)
+				}
+			}
+			mustEqual(t, "validation errors, each once", len(slices.Compact(sortedCopy(validation))), len(validation))
+
+			// The other errors are all there, and the error of the limit is the last one.
+			want := []string{all[2], all[5], all[8]}
+			if limit < 6 {
+				text := fmt.Sprintf("parse %q: limit of %d validation errors reached", url, limit)
+				want = append(want, text)
+				mustEqual(t, "last error", errorsOf(s)[len(errorsOf(s))-1], text)
+			}
+			assertStringSlice(t, "other errors", sortedCopy(others), sortedCopy(want))
+		})
+	}
+}
+
+// TestS_Parse_MaxValidationErrors_InputURL verifies that the error of a call
+// for a URL that is not valid is recorded with the lowest limit there is.
+func TestS_Parse_MaxValidationErrors_InputURL(t *testing.T) {
+	const url = "ftp://example.com/sitemap.xml"
+
+	s := New().SetMaxValidationErrors(1)
+	// The call is made twice: the errors of the first one do not count for the second.
+	for call := 1; call <= 2; call++ {
+		_, err := s.Parse(url, nil)
+
+		requireValidationError(t, err, url, `invalid URL scheme "ftp": only http and https are supported`)
+		errs := s.GetErrors()
+		if len(errs) != 1 || errs[0] != err {
+			t.Fatalf("call %d: expected the error returned to be the one recorded, got %v", call, errs)
+		}
+	}
+}
+
+// TestS_Parse_MaxValidationErrors_NotParsed verifies that a <urlset> which
+// cannot be read to its end takes no room from the validation errors of the
+// call, and is not what the limit is reported for: what its entries had wrong
+// with them is dropped with the entries.
+func TestS_Parse_MaxValidationErrors_NotParsed(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	const broken = `<urlset><url><loc>https:///bad-1</loc></url><url><loc>https:///bad-2</loc></url><url><loc>https:///bad-3</loc></url><url><loc>`
+	brokenError := func(url string) string {
+		return fmt.Sprintf("parse %q: XML syntax error on line 1: unexpected EOF", url)
+	}
+
+	t.Run("the document of the call", func(t *testing.T) {
+		for _, limit := range []int{0, 1, 2, 3, 4} {
+			content := broken
+			s := New().SetMaxValidationErrors(limit)
+			_, err := s.Parse(url, &content)
+
+			assertStringSlice(t, fmt.Sprintf("errors with a limit of %d", limit), errorsOf(s), []string{brokenError(url)})
+			if errs := s.GetErrors(); len(errs) != 1 || errs[0] != err {
+				t.Errorf("limit of %d: expected the error recorded to be returned, got %v", limit, err)
+			}
+		}
+	})
+
+	t.Run("a sitemap of the call", func(t *testing.T) {
+		documents := map[string]string{
+			"https://example.com/s1.xml":     `<urlset><url><loc>https:///s1-bad-1</loc></url><url><loc>https:///s1-bad-2</loc></url></urlset>`,
+			"https://example.com/broken.xml": broken,
+			"https://example.com/s2.xml":     `<urlset><url><loc>https://example.com/page</loc></url></urlset>`,
+			"https://example.com/s3.xml":     `<urlset><url><loc>https:///s3-bad-1</loc></url></urlset>`,
+		}
+		client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(documents[req.URL.String()])),
+				Request:    req,
+			}, nil
+		})}
+		index := func(sitemaps ...string) string {
+			content := `<sitemapindex>`
+			for _, sitemap := range sitemaps {
+				content += `<sitemap><loc>https://example.com/` + sitemap + `.xml</loc></sitemap>`
+			}
+			return content + `</sitemapindex>`
+		}
+		invalid := func(name string) string {
+			return fmt.Sprintf(`validate "https:///%s": missing host`, name)
+		}
+
+		tests := []struct {
+			name     string
+			sitemaps []string
+			limit    int
+			want     []string
+		}{
+			{
+				// The errors of the sitemap before it take up all the room there is.
+				// What the broken one would have had left out is not reported.
+				name: "no room left when it is read", sitemaps: []string{"s1", "broken", "s2"}, limit: 2,
+				want: []string{invalid("s1-bad-1"), invalid("s1-bad-2"), brokenError("https://example.com/broken.xml")},
+			},
+			{
+				// There is room for one of its three errors, so two of them would have
+				// been left out. The room is there for the sitemap after it.
+				name: "room for some of its errors", sitemaps: []string{"s1", "broken", "s3"}, limit: 3,
+				want: []string{invalid("s1-bad-1"), invalid("s1-bad-2"), brokenError("https://example.com/broken.xml"), invalid("s3-bad-1")},
+			},
+			{
+				name: "room for none of the errors after it", sitemaps: []string{"s1", "broken", "s3"}, limit: 2,
+				want: []string{
+					invalid("s1-bad-1"), invalid("s1-bad-2"), brokenError("https://example.com/broken.xml"),
+					fmt.Sprintf("parse %q: limit of 2 validation errors reached", url),
+				},
+			},
+			{
+				// That a sitemap had an error left out is not forgotten for the sitemaps
+				// after it which have none.
+				name: "a sitemap whose entries are valid after one that had an error left out", sitemaps: []string{"s1", "s2", "broken"}, limit: 1,
+				want: []string{
+					invalid("s1-bad-1"), brokenError("https://example.com/broken.xml"),
+					fmt.Sprintf("parse %q: limit of 1 validation errors reached", url),
+				},
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				content := index(tt.sitemaps...)
+				s := New().SetMaxValidationErrors(tt.limit).SetMultiThread(false).SetHTTPClient(client)
+				requireParse(t, s, url, &content)
+
+				assertStringSlice(t, "errors", errorsOf(s), tt.want)
+			})
+		}
+	})
+}
+
+// TestS_Parse_MaxValidationErrors_Calls verifies that the limit on the
+// validation errors is one of a call: the errors of a call take no room from
+// the next one, and the limit of a call is the one set when the call starts.
+func TestS_Parse_MaxValidationErrors_Calls(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	const index = `<sitemapindex><sitemap><loc>https://example.com/s1.xml</loc></sitemap><sitemap><loc>https://example.com/s2.xml</loc></sitemap></sitemapindex>`
+	invalid := func(names ...string) []string {
+		list := []string{}
+		for _, name := range names {
+			list = append(list, fmt.Sprintf(`validate "https:///%s": missing host`, name))
+		}
+		return list
+	}
+	limitError := func(limit int) string {
+		return fmt.Sprintf("parse %q: limit of %d validation errors reached", url, limit)
+	}
+
+	s := New().SetMultiThread(false)
+	var onRequest func()
+	s.SetHTTPClient(&http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if onRequest != nil {
+			onRequest()
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(req.URL.Path, "/"), ".xml")
+		body := fmt.Sprintf(`<urlset><url><loc>https:///%[1]s-bad-1</loc></url><url><loc>https:///%[1]s-bad-2</loc></url></urlset>`, name)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})})
+	parse := func() []string {
+		content := index
+		requireParse(t, s, url, &content)
+		return errorsOf(s)
+	}
+
+	// A limit that is set while a call runs is not the one of that call.
+	onRequest = func() { s.SetMaxValidationErrors(1) }
+	assertStringSlice(t, "errors of the call the limit was set in", parse(), invalid("s1-bad-1", "s1-bad-2", "s2-bad-1", "s2-bad-2"))
+	onRequest = nil
+	assertStringSlice(t, "errors of the next call", parse(), append(invalid("s1-bad-1"), limitError(1)))
+
+	// Every call has the room the limit gives it, whatever the one before it recorded.
+	s.SetMaxValidationErrors(3)
+	for call := 1; call <= 2; call++ {
+		assertStringSlice(t, fmt.Sprintf("errors of call %d with a limit of 3", call), parse(), append(invalid("s1-bad-1", "s1-bad-2", "s2-bad-1"), limitError(3)))
+	}
+
+	// What a call left out is no concern of the next one.
+	s.SetMaxValidationErrors(4)
+	assertStringSlice(t, "errors with a limit of 4", parse(), invalid("s1-bad-1", "s1-bad-2", "s2-bad-1", "s2-bad-2"))
+	s.SetMaxValidationErrors(0)
+	assertStringSlice(t, "errors without a limit", parse(), invalid("s1-bad-1", "s1-bad-2", "s2-bad-1", "s2-bad-2"))
+}
+
+// TestS_Parse_Limits_Together verifies that the limits of a call on what it
+// fetches, collects and records are reported side by side when each of them
+// had something left out, and that they are the last errors.
+func TestS_Parse_Limits_Together(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	const index = `<sitemapindex><sitemap><loc>https://example.com/s1.xml</loc></sitemap><sitemap><loc>https://example.com/s2.xml</loc></sitemap></sitemapindex>`
+	const sitemap = `<urlset>` +
+		`<url><loc>https:///bad-1</loc></url><url><loc>https:///bad-2</loc></url>` +
+		`<url><loc>https://example.com/page-1</loc></url><url><loc>https://example.com/page-2</loc></url>` +
+		`</urlset>`
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(sitemap)), Request: req}, nil
+	})}
+
+	for _, multiThread := range []bool{false, true} {
+		t.Run(fmt.Sprintf("multiThread=%v", multiThread), func(t *testing.T) {
+			content := index
+			// The limit on the sitemaps leaves the second sitemap out, and the first
+			// one has an error and a page more than there is room for.
+			s := New().SetMaxSitemaps(1).SetMaxURLs(1).SetMaxValidationErrors(1).SetMultiThread(multiThread).SetHTTPClient(client)
+			requireParse(t, s, url, &content)
+
+			assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page-1"})
+			assertStringSlice(t, "errors", errorsOf(s), []string{
+				`validate "https:///bad-1": missing host`,
+				fmt.Sprintf("parse %q: limit of 1 sitemaps reached", url),
+				fmt.Sprintf("parse %q: limit of 1 URLs reached", url),
+				fmt.Sprintf("parse %q: limit of 1 validation errors reached", url),
+			})
+			limits, others := limitErrors(t, s, url)
+			assertStringSlice(t, "limit errors", limits, []string{"limit of 1 sitemaps reached", "limit of 1 URLs reached", "limit of 1 validation errors reached"})
+			assertStringSlice(t, "other errors", others, []string{`validate "https:///bad-1": missing host`})
+		})
+	}
+}
+
+// TestS_newDocument_addDocument_ValidationErrors verifies how the room a call
+// has for validation errors is shared between documents that are processed at
+// the same time: each may record as many as there is room for when it is
+// begun, and what there is no room for any more when it is added is left out.
+func TestS_newDocument_addDocument_ValidationErrors(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	const content = `<urlset>` +
+		`<url><loc>https:///bad-1</loc></url><url><loc>https://example.com/page</loc></url><url><loc>https:///bad-2</loc></url>` +
+		`</urlset>`
+	const valid = `<urlset><url><loc>https://example.com/page</loc></url></urlset>`
+	invalid := func(names ...string) []string {
+		list := []string{}
+		for _, name := range names {
+			list = append(list, fmt.Sprintf(`validate "https:///%s": missing host`, name))
+		}
+		return list
+	}
+
+	t.Run("documents begun before either is added", func(t *testing.T) {
+		s := New()
+		s.limits.maxValidationErrors = 3
+
+		first, second := s.newDocument(), s.newDocument()
+		mustEqual(t, "limit of the first document", first.limits.maxValidationErrors, 3)
+		mustEqual(t, "limit of the second document", second.limits.maxValidationErrors, 3)
+		mustEqual(t, "errors the second document counts on from", second.limits.validationErrors, 0)
+		first.parse(url, content)
+		second.parse(url, content)
+		mustEqual(t, "errors of the second document", len(second.errs), 2)
+		mustEqual(t, "errors the second document left out", second.limits.validationErrorsLeftOut, false)
+
+		s.addDocument(first)
+		assertStringSlice(t, "errors", errorsOf(s), invalid("bad-1", "bad-2"))
+		mustEqual(t, "errors counted", s.limits.validationErrors, 2)
+		mustEqual(t, "errors left out", s.limits.validationErrorsLeftOut, false)
+
+		// There was room for both errors of the second document when it was begun.
+		s.addDocument(second)
+		assertStringSlice(t, "errors", errorsOf(s), invalid("bad-1", "bad-2", "bad-1"))
+		mustEqual(t, "errors counted", s.limits.validationErrors, 3)
+		mustEqual(t, "errors left out", s.limits.validationErrorsLeftOut, true)
+		mustEqual(t, "URLs", s.GetURLCount(), 2)
+	})
+
+	t.Run("document begun after the other is added", func(t *testing.T) {
+		s := New()
+		s.limits.maxValidationErrors = 3
+
+		first := s.newDocument()
+		first.parse(url, content)
+		s.addDocument(first)
+
+		// The second document records no more than there is room for.
+		second := s.newDocument()
+		mustEqual(t, "limit of the second document", second.limits.maxValidationErrors, 3)
+		mustEqual(t, "errors the second document counts on from", second.limits.validationErrors, 2)
+		second.parse(url, content)
+		mustEqual(t, "errors of the second document", len(second.errs), 1)
+		mustEqual(t, "errors the second document left out", second.limits.validationErrorsLeftOut, true)
+
+		s.limits.validationErrorsLeftOut = false
+		s.addDocument(second)
+		assertStringSlice(t, "errors", errorsOf(s), invalid("bad-1", "bad-2", "bad-1"))
+		mustEqual(t, "errors counted", s.limits.validationErrors, 3)
+		// That the document had to leave one out is taken over from it.
+		mustEqual(t, "errors left out", s.limits.validationErrorsLeftOut, true)
+	})
+
+	t.Run("no room left", func(t *testing.T) {
+		s := New()
+		s.limits.maxValidationErrors = 2
+
+		first := s.newDocument()
+		first.parse(url, content)
+		s.addDocument(first)
+		mustEqual(t, "errors left out", s.limits.validationErrorsLeftOut, false)
+
+		// A document whose entries are all valid has nothing left out.
+		second := s.newDocument()
+		second.parse(url, valid)
+		s.addDocument(second)
+		mustEqual(t, "errors left out", s.limits.validationErrorsLeftOut, false)
+
+		// The call has a use for a document it cannot record an error of: its URLs.
+		third := s.newDocument()
+		if third == nil {
+			t.Fatal("expected a document to be begun")
+		}
+		third.parse(url, content)
+		mustEqual(t, "errors of the third document", len(third.errs), 0)
+		mustEqual(t, "URLs of the third document", len(third.urls), 1)
+		s.addDocument(third)
+		assertStringSlice(t, "errors", errorsOf(s), invalid("bad-1", "bad-2"))
+		mustEqual(t, "errors left out", s.limits.validationErrorsLeftOut, true)
+		mustEqual(t, "URLs", s.GetURLCount(), 3)
+	})
+
+	t.Run("an error that tells the document could not be parsed", func(t *testing.T) {
+		s := New()
+		s.limits.maxValidationErrors = 2
+
+		first := s.newDocument()
+		first.parse(url, content)
+		s.addDocument(first)
+
+		// It is no validation error, so it is recorded with no room left.
+		locations, err := s.parseDocument(url, `<urlset><url>`)
+		if locations != nil || err == nil {
+			t.Fatalf("expected the document not to be parsed, got %v, %v", locations, err)
+		}
+		assertStringSlice(t, "errors", errorsOf(s), append(invalid("bad-1", "bad-2"), fmt.Sprintf("parse %q: XML syntax error on line 1: unexpected EOF", url)))
+		mustEqual(t, "errors left out", s.limits.validationErrorsLeftOut, false)
+	})
+
+	t.Run("no limit", func(t *testing.T) {
+		s := New()
+
+		first, second := s.newDocument(), s.newDocument()
+		mustEqual(t, "limit of a document", first.limits.maxValidationErrors, 0)
+		first.parse(url, content)
+		second.parse(url, content)
+		s.addDocument(first)
+		s.addDocument(second)
+		assertStringSlice(t, "errors", errorsOf(s), invalid("bad-1", "bad-2", "bad-1", "bad-2"))
+		mustEqual(t, "errors counted", s.limits.validationErrors, 4)
+		mustEqual(t, "errors left out", s.limits.validationErrorsLeftOut, false)
+	})
+}
+
 func configsEqual(c1, c2 config) bool {
 	return c1.fetchTimeout == c2.fetchTimeout &&
 		c1.userAgent == c2.userAgent &&
@@ -13429,6 +14414,7 @@ func configsEqual(c1, c2 config) bool {
 		c1.maxConcurrency == c2.maxConcurrency &&
 		c1.maxSitemaps == c2.maxSitemaps &&
 		c1.maxURLs == c2.maxURLs &&
+		c1.maxValidationErrors == c2.maxValidationErrors &&
 		c1.multiThread == c2.multiThread &&
 		c1.httpClient == c2.httpClient &&
 		reflect.DeepEqual(c1.follow, c2.follow) &&
