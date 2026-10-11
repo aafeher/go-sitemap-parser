@@ -3427,6 +3427,8 @@ func TestS_Parse_SettersDuringParse(t *testing.T) {
 						_ = s.GetRules()
 						_ = s.GetHTTPClient()
 						_ = s.GetStrict()
+						_ = s.GetSitemaps()
+						_ = s.GetSitemapCount()
 						_ = s.GetURLs()
 						_ = s.GetURLCount()
 						_ = s.GetRandomURLs(1)
@@ -12287,6 +12289,548 @@ func TestS_newDocument_addDocument(t *testing.T) {
 		s.addDocument(second)
 		assertStringSlice(t, "URLs", locsOf(s), append(append([]string{}, pages...), pages...))
 		mustEqual(t, "URLs left out", s.limits.urlsLeftOut, false)
+	})
+}
+
+// listedLocs returns the locations of the sitemaps s has listed, in a slice
+// that is never nil.
+func listedLocs(s *S) []string {
+	locs := []string{}
+	for _, sitemap := range s.GetSitemaps() {
+		locs = append(locs, sitemap.Loc)
+	}
+	return locs
+}
+
+// listedPaths returns the sitemaps s has listed by the path they have on site,
+// in a slice that is never nil.
+func listedPaths(site *siteServer, s *S) []string {
+	paths := []string{}
+	for _, loc := range listedLocs(s) {
+		paths = append(paths, strings.TrimPrefix(loc, site.URL))
+	}
+	return paths
+}
+
+// followNone has s follow no sitemap, so that a call fetches nothing but the
+// document it is made for: no URL matches the pattern.
+func followNone(s *S) {
+	s.SetFollow([]string{`^$`})
+}
+
+// TestS_GetSitemaps verifies that GetSitemaps returns the sitemaps the
+// documents of a call list: each of them once, whether or not it is fetched,
+// in the order they are found when the documents are read one at a time, and
+// without the document the call is made for.
+func TestS_GetSitemaps(t *testing.T) {
+	site := newSiteServer(t, limitTestLists, nil)
+	// The order in which the sitemaps of the site are found one at a time, and
+	// the one in which they are fetched: a document lists all of its sitemaps
+	// before the first of them is fetched.
+	found := []string{"/index-a.xml", "/index-b.xml", "/a1.xml", "/a2.xml", "/a3.xml", "/b1.xml", "/index-c.xml", "/b2.xml", "/c1.xml", "/c2.xml"}
+	fetched := []string{"/index-a.xml", "/a1.xml", "/a2.xml", "/a3.xml", "/index-b.xml", "/b1.xml", "/index-c.xml", "/c1.xml", "/c2.xml", "/b2.xml"}
+	missing := func(path string) string {
+		return fmt.Sprintf("fetch %q: received HTTP status 404", site.URL+path)
+	}
+
+	tests := []struct {
+		name      string
+		path      string
+		configure func(s *S)
+		listed    []string
+		fetched   []string
+		errs      []string
+	}{
+		{name: "robots.txt", path: "/robots.txt", listed: found, fetched: fetched},
+		{
+			name: "sitemap index", path: "/index-b.xml",
+			listed:  []string{"/b1.xml", "/index-c.xml", "/b2.xml", "/c1.xml", "/c2.xml"},
+			fetched: []string{"/b1.xml", "/index-c.xml", "/c1.xml", "/c2.xml", "/b2.xml"},
+		},
+		{name: "sitemap", path: "/a1.xml"},
+		{
+			name: "a sitemap that is listed more than once", path: "/repeated/robots.txt",
+			listed: []string{"/a1.xml", "/a2.xml"}, fetched: []string{"/a1.xml", "/a2.xml"},
+		},
+		{
+			name: "sitemaps that are not found", path: "/missing/robots.txt",
+			listed:  []string{"/missing-1.xml", "/missing-2.xml", "/a1.xml"},
+			fetched: []string{"/missing-1.xml", "/missing-2.xml", "/a1.xml"},
+			errs:    []string{missing("/missing-1.xml"), missing("/missing-2.xml")},
+		},
+		{
+			// What a sitemap index lists is known only if the index is fetched.
+			name: "sitemaps that are not followed", path: "/robots.txt",
+			configure: func(s *S) { s.SetFollow([]string{`/index-a\.xml$`, `/a2\.xml$`}) },
+			listed:    found[:5], fetched: []string{"/index-a.xml", "/a2.xml"},
+		},
+		{name: "no sitemap is followed, robots.txt", path: "/robots.txt", configure: followNone, listed: found[:2]},
+		{
+			name: "no sitemap is followed, sitemap index", path: "/index-b.xml", configure: followNone,
+			listed: []string{"/b1.xml", "/index-c.xml", "/b2.xml"},
+		},
+		{
+			name: "sitemaps beyond the depth limit", path: "/robots.txt",
+			configure: func(s *S) { s.SetMaxDepth(1) },
+			listed:    found,
+			fetched:   []string{"/index-a.xml", "/a1.xml", "/a2.xml", "/a3.xml", "/index-b.xml", "/b1.xml", "/index-c.xml", "/b2.xml"},
+			errs:      []string{fmt.Sprintf("parse %q: max recursion depth of 1 reached", site.URL+"/index-c.xml")},
+		},
+		{
+			name: "no limit on the sitemaps", path: "/robots.txt",
+			configure: func(s *S) { s.SetMaxSitemaps(0) },
+			listed:    found, fetched: fetched,
+		},
+	}
+
+	for _, tt := range tests {
+		for _, multiThread := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, multiThread=%v", tt.name, multiThread), func(t *testing.T) {
+				s := New().SetMultiThread(multiThread)
+				if tt.configure != nil {
+					tt.configure(s)
+				}
+				// The sitemaps are those of a call, so the second call has to find what the first did.
+				for call := 1; call <= 2; call++ {
+					site.fetched()
+					requireParse(t, s, site.URL+tt.path, nil)
+
+					// The first request is the one for the document of the call.
+					gotListed, gotFetched := listedPaths(site, s), site.fetched()[1:]
+					wantListed, wantFetched := append([]string{}, tt.listed...), append([]string{}, tt.fetched...)
+					if multiThread {
+						// In which order the documents are read depends on timing, which sitemaps they list does not.
+						gotListed, gotFetched = sortedCopy(gotListed), sortedCopy(gotFetched)
+						wantListed, wantFetched = sortedCopy(wantListed), sortedCopy(wantFetched)
+					}
+					assertStringSlice(t, "sitemaps listed", gotListed, wantListed)
+					assertStringSlice(t, "sitemaps fetched", gotFetched, wantFetched)
+					mustEqual(t, "GetSitemapCount", s.GetSitemapCount(), int64(len(tt.listed)))
+					assertStringSlice(t, "errors", sortedCopy(errorsOf(s)), sortedCopy(tt.errs))
+				}
+			})
+		}
+	}
+}
+
+// TestS_GetSitemaps_WhileParsing verifies that the sitemaps of a document are
+// listed once the document is parsed, before the first of them is fetched.
+func TestS_GetSitemaps_WhileParsing(t *testing.T) {
+	site := newSiteServer(t, limitTestLists, nil)
+	s := New().SetMultiThread(false)
+
+	var mu sync.Mutex
+	listedAt := map[string][]string{}
+	site.onRequest = func(path string) {
+		mu.Lock()
+		defer mu.Unlock()
+		listedAt[path] = listedPaths(site, s)
+	}
+	requireParse(t, s, site.URL+"/robots.txt", nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	assertStringSlice(t, "listed when robots.txt is requested", listedAt["/robots.txt"], []string{})
+	assertStringSlice(t, "listed when index-a.xml is requested", listedAt["/index-a.xml"], []string{"/index-a.xml", "/index-b.xml"})
+	assertStringSlice(t, "listed when a1.xml is requested", listedAt["/a1.xml"], []string{"/index-a.xml", "/index-b.xml", "/a1.xml", "/a2.xml", "/a3.xml"})
+	assertStringSlice(t, "listed when c1.xml is requested", listedAt["/c1.xml"],
+		[]string{"/index-a.xml", "/index-b.xml", "/a1.xml", "/a2.xml", "/a3.xml", "/b1.xml", "/index-c.xml", "/b2.xml", "/c1.xml", "/c2.xml"})
+}
+
+// TestS_GetSitemaps_MaxSitemaps verifies that a call lists no more sitemaps
+// than the limit set with SetMaxSitemaps allows, that the ones it lists are the
+// first ones it finds, and that it reports the limit once if a sitemap had to
+// be left out of them: also when the sitemaps it fetches do not reach the
+// limit, and not when a sitemap that is listed already is listed again.
+func TestS_GetSitemaps_MaxSitemaps(t *testing.T) {
+	site := newSiteServer(t, limitTestLists, nil)
+
+	tests := []struct {
+		name      string
+		path      string
+		limit     int
+		configure func(s *S)
+		// listed are the sitemaps that are listed when the documents are read one at a time.
+		listed []string
+		// fetched is the number of sitemaps that are fetched.
+		fetched int
+		leftOut bool
+	}{
+		{
+			name: "the sitemaps fetched reach the limit as well", path: "/robots.txt", limit: 3,
+			listed: []string{"/index-a.xml", "/index-b.xml", "/a1.xml"}, fetched: 3, leftOut: true,
+		},
+		{
+			name: "more sitemaps in a robots.txt than the limit allows", path: "/missing/robots.txt", limit: 2, configure: followNone,
+			listed: []string{"/missing-1.xml", "/missing-2.xml"}, leftOut: true,
+		},
+		{
+			name: "as many sitemaps in a robots.txt as the limit allows", path: "/missing/robots.txt", limit: 3, configure: followNone,
+			listed: []string{"/missing-1.xml", "/missing-2.xml", "/a1.xml"},
+		},
+		{
+			name: "more sitemaps in a sitemap index than the limit allows", path: "/index-b.xml", limit: 2, configure: followNone,
+			listed: []string{"/b1.xml", "/index-c.xml"}, leftOut: true,
+		},
+		{
+			name: "as many sitemaps in a sitemap index as the limit allows", path: "/index-b.xml", limit: 3, configure: followNone,
+			listed: []string{"/b1.xml", "/index-c.xml", "/b2.xml"},
+		},
+		{
+			// Each of the documents lists fewer sitemaps than the limit allows.
+			name: "more sitemaps in the documents together than the limit allows", path: "/robots.txt", limit: 4,
+			configure: func(s *S) { s.SetFollow([]string{`/index-`}) },
+			listed:    []string{"/index-a.xml", "/index-b.xml", "/a1.xml", "/a2.xml"}, fetched: 3, leftOut: true,
+		},
+		{
+			name: "a sitemap listed again is not left out", path: "/repeated/robots.txt", limit: 2, configure: followNone,
+			listed: []string{"/a1.xml", "/a2.xml"},
+		},
+		{
+			name: "a sitemap listed again does not count", path: "/repeated/robots.txt", limit: 1, configure: followNone,
+			listed: []string{"/a1.xml"}, leftOut: true,
+		},
+	}
+
+	for _, tt := range tests {
+		for _, multiThread := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, multiThread=%v", tt.name, multiThread), func(t *testing.T) {
+				url := site.URL + tt.path
+				s := New().SetMaxSitemaps(tt.limit).SetMultiThread(multiThread)
+				if tt.configure != nil {
+					tt.configure(s)
+				}
+				// The limit is one of the call, so the second call has to do what the first did.
+				for call := 1; call <= 2; call++ {
+					site.fetched()
+					// A limit that is reached does not fail the call.
+					requireParse(t, s, url, nil)
+
+					listed := listedPaths(site, s)
+					if multiThread {
+						// Which sitemaps are listed depends on timing, how many does not.
+						mustEqual(t, "sitemaps listed", len(listed), len(tt.listed))
+					} else {
+						assertStringSlice(t, "sitemaps listed", listed, tt.listed)
+					}
+					mustEqual(t, "GetSitemapCount", s.GetSitemapCount(), int64(len(tt.listed)))
+					// The first request is the one for the document of the call.
+					mustEqual(t, "sitemaps fetched", len(site.fetched())-1, tt.fetched)
+
+					limits, _ := limitErrors(t, s, url)
+					wantLimits := []string{}
+					if tt.leftOut {
+						wantLimits = append(wantLimits, fmt.Sprintf("limit of %d sitemaps reached", tt.limit))
+					}
+					assertStringSlice(t, "limit errors", limits, wantLimits)
+				}
+			})
+		}
+	}
+}
+
+// TestS_GetSitemaps_MaxURLs verifies that the sitemaps that are not fetched
+// because the call has collected as many URLs as it may are listed like the
+// others, as far as the documents that list them were read.
+func TestS_GetSitemaps_MaxURLs(t *testing.T) {
+	site := newSiteServer(t, limitTestLists, nil)
+	url := site.URL + "/robots.txt"
+
+	s := New().SetMaxURLs(3).SetMultiThread(false)
+	requireParse(t, s, url, nil)
+
+	assertStringSlice(t, "sitemaps fetched", site.fetched()[1:], []string{"/index-a.xml", "/a1.xml", "/a2.xml"})
+	assertStringSlice(t, "sitemaps listed", listedPaths(site, s), []string{"/index-a.xml", "/index-b.xml", "/a1.xml", "/a2.xml", "/a3.xml"})
+	limits, others := limitErrors(t, s, url)
+	assertStringSlice(t, "limit errors", limits, []string{"limit of 3 URLs reached"})
+	assertStringSlice(t, "other errors", others, []string{})
+}
+
+// TestS_GetSitemaps_Locations verifies what the location of a sitemap that is
+// listed is: the URL the sitemap is requested by, which is the one the
+// document gives in strict mode and one that can be requested as it is in
+// tolerant mode. A location that is rejected is reported and not listed, and a
+// sitemap that is listed in two spellings of the same URL is listed once.
+func TestS_GetSitemaps_Locations(t *testing.T) {
+	const index = `<sitemapindex>` +
+		`<sitemap><loc> https://example.com/padded.xml </loc></sitemap>` +
+		`<sitemap><loc>/root.xml</loc></sitemap>` +
+		`<sitemap><loc>relative.xml</loc></sitemap>` +
+		`<sitemap><loc>https://bücher.example/sitemap.xml</loc></sitemap>` +
+		`<sitemap><loc>https://xn--bcher-kva.example/sitemap.xml</loc></sitemap>` +
+		`<sitemap><loc>https://example.com/site map.xml</loc></sitemap>` +
+		`<sitemap><loc></loc></sitemap>` +
+		`<sitemap><loc>ftp://example.com/sitemap.xml</loc></sitemap>` +
+		`<sitemap><loc>https://example.com/padded.xml</loc></sitemap>` +
+		`</sitemapindex>`
+	const robotsTXT = "Sitemap: https://example.com/sitemap.xml # the first one\n" +
+		"sitemap: /root.xml\n" +
+		"Sitemap: https://bücher.example/sitemap.xml\n" +
+		"Sitemap: ftp://example.com/sitemap.xml\n" +
+		"Sitemap: https://example.com/sitemap.xml\n"
+
+	tests := []struct {
+		name     string
+		url      string
+		content  string
+		strict   bool
+		listed   []string
+		wantErrs int64
+	}{
+		{
+			name: "sitemap index, tolerant", url: "https://example.com/maps/index.xml", content: index,
+			listed: []string{
+				"https://example.com/padded.xml",
+				"https://example.com/root.xml",
+				"https://example.com/maps/relative.xml",
+				"https://xn--bcher-kva.example/sitemap.xml",
+				"https://example.com/site%20map.xml",
+			},
+			wantErrs: 2,
+		},
+		{
+			// A sitemap index may list the sitemaps of its own host only, and strict mode
+			// takes a URL as the document gives it.
+			name: "sitemap index, strict", url: "https://example.com/maps/index.xml", content: index, strict: true,
+			listed:   []string{"https://example.com/padded.xml"},
+			wantErrs: 7,
+		},
+		{
+			name: "robots.txt, tolerant", url: "https://example.com/robots.txt", content: robotsTXT,
+			listed: []string{
+				"https://example.com/sitemap.xml",
+				"https://example.com/root.xml",
+				"https://xn--bcher-kva.example/sitemap.xml",
+			},
+			wantErrs: 1,
+		},
+		{
+			// A robots.txt may name a sitemap of any host.
+			name: "robots.txt, strict", url: "https://example.com/robots.txt", content: robotsTXT, strict: true,
+			listed: []string{
+				"https://example.com/sitemap.xml",
+				"https://bücher.example/sitemap.xml",
+			},
+			wantErrs: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New().SetStrict(tt.strict)
+			followNone(s)
+			requireParse(t, s, tt.url, &tt.content)
+
+			assertStringSlice(t, "sitemaps listed", listedLocs(s), tt.listed)
+			mustEqual(t, "GetSitemapCount", s.GetSitemapCount(), int64(len(tt.listed)))
+			assertCounts(t, s, 0, tt.wantErrs)
+		})
+	}
+}
+
+// TestS_GetSitemaps_Redirect verifies that a sitemap is listed by the URL the
+// document gives for it, whichever URL the request for it is redirected to.
+func TestS_GetSitemaps_Redirect(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/index.xml":
+			_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%s/moved.xml</loc></sitemap></sitemapindex>`, server.URL)
+		case "/moved.xml":
+			http.Redirect(w, r, "/new/sitemap.xml", http.StatusMovedPermanently)
+		default:
+			_, _ = fmt.Fprintf(w, `<urlset><url><loc>%s/page</loc></url></urlset>`, server.URL)
+		}
+	}))
+	defer server.Close()
+
+	s := New()
+	requireParse(t, s, server.URL+"/index.xml", nil)
+
+	assertCounts(t, s, 1, 0)
+	assertStringSlice(t, "sitemaps listed", listedLocs(s), []string{server.URL + "/moved.xml"})
+}
+
+// TestS_GetSitemaps_Copy verifies that GetSitemaps returns a slice of its own
+// every time: what the caller does with it does not show in what the next call
+// returns.
+func TestS_GetSitemaps_Copy(t *testing.T) {
+	site := newSiteServer(t, limitTestLists, nil)
+	s := New().SetMultiThread(false)
+	requireParse(t, s, site.URL+"/index-a.xml", nil)
+	want := []string{"/a1.xml", "/a2.xml", "/a3.xml"}
+
+	sitemaps := s.GetSitemaps()
+	mustEqual(t, "sitemaps listed", len(sitemaps), 3)
+	for i := range sitemaps {
+		sitemaps[i].Loc = "changed"
+	}
+	sitemaps = append(sitemaps[:1], Sitemap{Loc: "added"})
+
+	assertStringSlice(t, "sitemaps listed", listedPaths(site, s), want)
+	mustEqual(t, "GetSitemapCount", s.GetSitemapCount(), 3)
+	mustEqual(t, "the slice of the caller", len(sitemaps), 2)
+}
+
+// TestS_GetSitemaps_None verifies what GetSitemaps and GetSitemapCount return
+// when there is no sitemap to return: an empty slice that is not nil, and 0.
+// That is the case for a nil instance, for one that has parsed nothing yet,
+// for a document that lists none, for a sitemap index that cannot be parsed,
+// and for a call that fails after one that listed sitemaps.
+func TestS_GetSitemaps_None(t *testing.T) {
+	site := newSiteServer(t, limitTestLists, nil)
+	assertNone := func(t *testing.T, s *S) {
+		t.Helper()
+		sitemaps := s.GetSitemaps()
+		if sitemaps == nil || len(sitemaps) != 0 {
+			t.Errorf("expected an empty slice that is not nil, got %#v", sitemaps)
+		}
+		mustEqual(t, "GetSitemapCount", s.GetSitemapCount(), 0)
+	}
+
+	t.Run("nil instance", func(t *testing.T) {
+		assertNone(t, nil)
+	})
+
+	t.Run("nothing parsed yet", func(t *testing.T) {
+		assertNone(t, New())
+	})
+
+	t.Run("document that lists no sitemap", func(t *testing.T) {
+		for path, content := range documentsListing([]string{"https://example.com/page"}) {
+			s := New()
+			requireParse(t, s, "https://example.com"+path, &content)
+			assertCounts(t, s, 1, 0)
+			assertNone(t, s)
+		}
+	})
+
+	t.Run("sitemap index that cannot be parsed", func(t *testing.T) {
+		// The document is cut off after its first entry.
+		content := `<sitemapindex><sitemap><loc>https://example.com/sitemap-1.xml</loc></sitemap>`
+		s := New()
+		if _, err := s.Parse("https://example.com/index.xml", &content); err == nil {
+			t.Fatal("expected the call to fail")
+		}
+		assertCounts(t, s, 0, 1)
+		assertNone(t, s)
+	})
+
+	t.Run("call that fails after one that listed sitemaps", func(t *testing.T) {
+		s := New()
+		requireParse(t, s, site.URL+"/index-a.xml", nil)
+		mustEqual(t, "GetSitemapCount", s.GetSitemapCount(), 3)
+
+		if _, err := s.Parse("ftp://example.com/sitemap.xml", nil); err == nil {
+			t.Fatal("expected the call to fail")
+		}
+		assertNone(t, s)
+	})
+}
+
+// TestS_listSitemap verifies how the room a call has for the sitemaps it lists
+// is shared between documents that are processed at the same time. Each may
+// list as many sitemaps as the call may in all, and no more: which of them the
+// call has listed already is only known when the document is added. What there
+// is no room for then is left out, and so is what a document had to leave out
+// itself.
+func TestS_listSitemap(t *testing.T) {
+	const url = "https://example.com/index.xml"
+	index := func(names ...string) string {
+		var content strings.Builder
+		content.WriteString(`<sitemapindex>`)
+		for _, name := range names {
+			_, _ = fmt.Fprintf(&content, `<sitemap><loc>https://example.com/%s.xml</loc></sitemap>`, name)
+		}
+		content.WriteString(`</sitemapindex>`)
+		return content.String()
+	}
+	locs := func(names ...string) []string {
+		list := []string{}
+		for _, name := range names {
+			list = append(list, fmt.Sprintf("https://example.com/%s.xml", name))
+		}
+		return list
+	}
+
+	t.Run("document that lists more than the call may", func(t *testing.T) {
+		s := New()
+		s.limits.maxSitemaps = 2
+
+		document := s.newDocument()
+		mustEqual(t, "room of the document", document.limits.maxSitemaps, 2)
+		// Every sitemap the document lists is to be fetched, whether it is listed or not.
+		assertStringSlice(t, "sitemaps to fetch", document.parse(url, index("s1", "s1", "s2", "s3", "s2")), locs("s1", "s1", "s2", "s3", "s2"))
+		assertStringSlice(t, "sitemaps of the document", listedLocs(document), locs("s1", "s2"))
+		mustEqual(t, "sitemaps left out of the document", document.limits.sitemapsLeftOut, true)
+
+		s.addDocument(document)
+		assertStringSlice(t, "sitemaps listed", listedLocs(s), locs("s1", "s2"))
+		mustEqual(t, "sitemaps left out", s.limits.sitemapsLeftOut, true)
+	})
+
+	t.Run("documents that list more together than the call may", func(t *testing.T) {
+		s := New()
+		s.limits.maxSitemaps = 3
+
+		first, second := s.newDocument(), s.newDocument()
+		first.parse(url, index("s1", "s2"))
+		second.parse(url, index("s2", "s3", "s4"))
+		mustEqual(t, "sitemaps left out of the first document", first.limits.sitemapsLeftOut, false)
+		mustEqual(t, "sitemaps left out of the second document", second.limits.sitemapsLeftOut, false)
+
+		s.addDocument(first)
+		assertStringSlice(t, "sitemaps listed", listedLocs(s), locs("s1", "s2"))
+		mustEqual(t, "sitemaps left out", s.limits.sitemapsLeftOut, false)
+
+		s.addDocument(second)
+		assertStringSlice(t, "sitemaps listed", listedLocs(s), locs("s1", "s2", "s3"))
+		mustEqual(t, "sitemaps left out", s.limits.sitemapsLeftOut, true)
+	})
+
+	t.Run("document begun after the other is added", func(t *testing.T) {
+		s := New()
+		s.limits.maxSitemaps = 3
+
+		first := s.newDocument()
+		first.parse(url, index("s1", "s2"))
+		s.addDocument(first)
+
+		// The sitemaps the call has listed take up no room in the document: it may list
+		// them again.
+		second := s.newDocument()
+		mustEqual(t, "room of the second document", second.limits.maxSitemaps, 3)
+		second.parse(url, index("s2", "s1", "s3"))
+		s.addDocument(second)
+		assertStringSlice(t, "sitemaps listed", listedLocs(s), locs("s1", "s2", "s3"))
+		mustEqual(t, "sitemaps left out", s.limits.sitemapsLeftOut, false)
+	})
+
+	t.Run("documents that list what is listed already", func(t *testing.T) {
+		s := New()
+		s.limits.maxSitemaps = 2
+
+		first, second := s.newDocument(), s.newDocument()
+		first.parse(url, index("s1", "s2"))
+		second.parse(url, index("s2", "s1"))
+		s.addDocument(first)
+		s.addDocument(second)
+		assertStringSlice(t, "sitemaps listed", listedLocs(s), locs("s1", "s2"))
+		mustEqual(t, "sitemaps left out", s.limits.sitemapsLeftOut, false)
+	})
+
+	t.Run("no limit", func(t *testing.T) {
+		s := New()
+
+		first, second := s.newDocument(), s.newDocument()
+		mustEqual(t, "room of a document", first.limits.maxSitemaps, 0)
+		first.parse(url, index("s1", "s2"))
+		second.parse(url, index("s3", "s2", "s4"))
+		s.addDocument(first)
+		s.addDocument(second)
+		assertStringSlice(t, "sitemaps listed", listedLocs(s), locs("s1", "s2", "s3", "s4"))
+		mustEqual(t, "sitemaps left out", s.limits.sitemapsLeftOut, false)
 	})
 }
 

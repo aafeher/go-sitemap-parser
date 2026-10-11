@@ -47,7 +47,7 @@ A sitemap document can reference tens of thousands of child sitemaps or URLs. Wi
 
 - `SetMaxResponseSize()` caps the response body size per fetch and the decompressed size of gzip content (default: 50 MB, matching the sitemaps.org protocol limit).
 - `SetMaxDepth()` limits sitemap index recursion depth (default: 10). On its own it does not bound a call: an index may list up to 50,000 sitemaps on every level.
-- `SetMaxSitemaps()` limits the number of sitemaps a call fetches, on all levels together (default: 50,000), and with it the number of requests a document can make the parser send. `0` lifts the limit.
+- `SetMaxSitemaps()` limits the number of sitemaps a call fetches, on all levels together (default: 50,000), and with it the number of requests a document can make the parser send. The same limit is on the sitemaps a call lists for `GetSitemaps()`, which are kept in memory until the next call like the URLs are. `0` lifts the limit.
 - `SetMaxURLs()` limits the number of URLs a call collects (default: 10,000,000), and with it the memory the results take up. `0` lifts the limit.
 - `SetMaxConcurrency()` bounds the number of sitemaps that are fetched and parsed at the same time (default: 16), and with it the number of documents held in memory and of goroutines running at once. A sitemap that waits for its turn takes up neither. `0` lifts the bound: a goroutine is then started, and a request sent, for every sitemap a document lists.
 - Pass a `context.Context` with a deadline via `ParseContext()` to enforce a wall-clock time limit.

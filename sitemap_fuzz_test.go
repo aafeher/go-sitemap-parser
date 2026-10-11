@@ -229,6 +229,66 @@ func assertURLLimit(t *testing.T, mode string, strict bool, content string) {
 	}
 }
 
+// unique returns the values of list in the order they are in it, each of them
+// once.
+func unique(list []string) []string {
+	values := []string{}
+	for _, value := range list {
+		if !slices.Contains(values, value) {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+// assertSitemapsListed checks the sitemaps a call lists for content. With no
+// pattern set with SetFollow they are the sitemaps the call is to fetch: each
+// of them once, in the order the document lists them. A limit on the sitemaps
+// takes nothing but the end off them, and is reported whenever there are more
+// of them and at no other time.
+func assertSitemapsListed(t *testing.T, mode string, strict bool, content string) {
+	t.Helper()
+
+	parse := func(limit int) *S {
+		s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(offlineClient).SetMaxSitemaps(limit)
+		_, _ = s.Parse(fuzzBaseURL, &content)
+		return s
+	}
+
+	toFetch, _ := New().SetStrict(strict).parseDocument(fuzzBaseURL, content)
+	unlimited := parse(0)
+	all := listedLocs(unlimited)
+	if want := unique(toFetch); !slicesEqual(all, want) {
+		t.Fatalf("%s mode: the sitemaps listed are %q, the ones to fetch are %q", mode, all, want)
+	}
+	if count := unlimited.GetSitemapCount(); count != int64(len(all)) {
+		t.Fatalf("%s mode: GetSitemapCount returns %d for %d sitemaps", mode, count, len(all))
+	}
+
+	limit := len(all)/2 + 1
+	limited := parse(limit)
+
+	want := all
+	if len(all) > limit {
+		want = all[:limit]
+	}
+	if got := listedLocs(limited); !slicesEqual(got, want) {
+		t.Fatalf("%s mode: with a limit of %d sitemaps, expected the first %d of %d sitemaps, got %d: %q",
+			mode, limit, len(want), len(all), len(got), got)
+	}
+
+	reported := false
+	for _, err := range limited.GetErrors() {
+		var parseErr *ParseError
+		if errors.As(err, &parseErr) && parseErr.URL == fuzzBaseURL && strings.HasSuffix(parseErr.Err.Error(), " sitemaps reached") {
+			reported = true
+		}
+	}
+	if reported != (len(all) > limit) {
+		t.Fatalf("%s mode: with a limit of %d sitemaps and %d sitemaps listed, the limit being reported is %v", mode, limit, len(all), reported)
+	}
+}
+
 // assertTextValues checks the text values of the URLs collected from content:
 // none of them has whitespace around it, a change frequency that is set names
 // one, tolerant mode holds a change frequency of the protocol the way its
@@ -361,8 +421,9 @@ func assertStrictExtensionURLs(t *testing.T, content string) {
 // document must change nothing, no text value may have whitespace around it,
 // tolerant mode must percent-encode the URLs of the extensions that it can,
 // strict mode must accept or report each of them,
-// the call must fail exactly when the document cannot be parsed, and a limit
-// on the URLs must leave the first ones as they are.
+// the call must fail exactly when the document cannot be parsed, a limit
+// on the URLs must leave the first ones as they are, and the sitemaps the call
+// lists must be the ones it is to fetch, up to the limit on them.
 func FuzzParse(f *testing.F) {
 	seeds := []string{
 		`<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://example.com/sitemap-1.xml</loc><lastmod>2024-01-01</lastmod></sitemap></sitemapindex>`,
@@ -464,6 +525,7 @@ func FuzzParse(f *testing.F) {
 			}
 			assertReturnedError(t, mode, strict, content)
 			assertURLLimit(t, mode, strict, content)
+			assertSitemapsListed(t, mode, strict, content)
 		}
 	})
 }
@@ -652,6 +714,12 @@ func FuzzParseRobotsTXT(f *testing.F) {
 			if again := robotsTXTLocs(strict, content); !slicesEqual(locs, again) {
 				t.Fatalf("%s mode: result is not deterministic: %q vs %q", mode, locs, again)
 			}
+
+			// With no pattern set with SetFollow, the sitemaps that are listed
+			// are the ones that are fetched, each of them once.
+			if listed, want := robotsTXTListed(strict, content), unique(locs); !slicesEqual(listed, want) {
+				t.Fatalf("%s mode: the sitemaps listed are %q, the ones to fetch are %q", mode, listed, want)
+			}
 		}
 	})
 }
@@ -724,6 +792,16 @@ func robotsTXTLocs(strict bool, content string) []string {
 	s.parseRobotsTXT(content)
 
 	return s.robotsTXTSitemapLocations(fuzzRobotsTXTURL)
+}
+
+// robotsTXTListed returns the sitemaps that are listed of the ones the given
+// robots.txt content names.
+func robotsTXTListed(strict bool, content string) []string {
+	s := New().SetStrict(strict)
+	s.parseRobotsTXT(content)
+	s.robotsTXTSitemapLocations(fuzzRobotsTXTURL)
+
+	return listedLocs(s)
 }
 
 // slicesEqual reports whether two string slices hold the same values in the

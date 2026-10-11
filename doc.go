@@ -16,6 +16,10 @@
 // The document at the URL can be handed to the call in place of nil. It is not
 // fetched then; the sitemaps it lists are.
 //
+// The sitemaps the call found on its way, the ones a robots.txt names and a
+// sitemap index lists, are returned by [S.GetSitemaps], whether or not they
+// were fetched, see [Sitemap].
+//
 // # Formats
 //
 // A sitemap is a <urlset> of the sitemaps.org protocol, an RSS 2.0 feed, an
@@ -46,10 +50,11 @@
 //
 // What a call may take up is bounded: the size of a response by
 // [S.SetMaxResponseSize], the depth of nested sitemap indexes by
-// [S.SetMaxDepth], the number of sitemaps it fetches by [S.SetMaxSitemaps],
-// the number of URLs it collects by [S.SetMaxURLs], and the sitemaps it works
-// on at a time by [S.SetMaxConcurrency]. [S.SetFollow] restricts the sitemaps
-// that are fetched, [S.SetRules] the URLs that are collected.
+// [S.SetMaxDepth], the number of sitemaps it fetches and of sitemaps it lists
+// by [S.SetMaxSitemaps], the number of URLs it collects by [S.SetMaxURLs], and
+// the sitemaps it works on at a time by [S.SetMaxConcurrency]. [S.SetFollow]
+// restricts the sitemaps that are fetched, [S.SetRules] the URLs that are
+// collected.
 //
 // # Errors
 //
