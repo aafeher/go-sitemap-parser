@@ -54,6 +54,8 @@ A sitemap document can reference tens of thousands of child sitemaps or URLs. Wi
 
 Versions up to and including v1.1.0 had no limit on the sitemaps and URLs of a call: against a server that lists sitemaps without end, a `Parse()` call without a deadline went on, and its results grew, for as long as the server answered.
 
+Versions up to and including v1.2.2 kept the location of every sitemap the sitemap indexes of a call listed, in a list of their own that no limit bounded: the list grew to the number of indexes fetched times the entries of each, and was kept until the next call. Against a server that answers every request with a large sitemap index, a call took up gigabytes of memory within the limits of `SetMaxSitemaps()` and `SetMaxURLs()`.
+
 The defaults make every call come to an end, but they are sized for the largest sitemaps the protocol allows, not for untrusted input: a call may still send 50,000 requests and collect 10,000,000 URLs, which take up gigabytes of memory. When the documents are not trusted:
 
 - set `SetMaxSitemaps()` and `SetMaxURLs()` to what the application expects at most, and

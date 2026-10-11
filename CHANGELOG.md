@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- A call no longer keeps the location of every sitemap the sitemap indexes it fetches list. The parser collected them in a list of its own that nothing read: the URL of each index a call fetched and every entry of it that was to be followed, the ones an earlier index had listed already among them, and it kept the list until the next call. `SetMaxSitemaps()` bounds the sitemaps a call fetches, not what each of them lists, so the list grew to the number of indexes fetched times the entries of each, and no setting bounded it. Measured against a local server that answers every request with a sitemap index of the same 20,000 entries: a call with the default settings held 2.5 GB after 20 seconds, for 84 MB of gzip responses, and a call with `SetMaxSitemaps(200)` held 266 MB when it returned. The same calls hold 1.3 MB and 0.1 MB now. The list is gone: of a sitemap index nothing is kept but the sitemaps that are still to be fetched, and those only until they are. No result of a call changes. `SECURITY.md` names the versions this goes for
+
 ## [1.2.2] - 2026-10-11
 
 ### Added
