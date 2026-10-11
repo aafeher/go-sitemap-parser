@@ -14406,6 +14406,708 @@ func TestS_newDocument_addDocument_ValidationErrors(t *testing.T) {
 	})
 }
 
+// timeType is the type of a time.Time, which the helpers below take for a value
+// rather than for the struct of unexported fields that it is.
+var timeType = reflect.TypeOf(time.Time{})
+
+// fillValue sets v and everything it holds to values made up from next, which
+// is counted up for each of them, so that no two are the same: every pointer
+// is set, and every slice has two elements.
+func fillValue(v reflect.Value, next *int) {
+	*next++
+	switch {
+	case v.Type() == timeType:
+		v.Set(reflect.ValueOf(time.Date(2000+*next, time.January, 1, 0, 0, 0, 0, time.UTC)))
+	case v.Kind() == reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fillValue(v.Elem(), next)
+	case v.Kind() == reflect.Slice:
+		v.Set(reflect.MakeSlice(v.Type(), 2, 2))
+		for i := 0; i < v.Len(); i++ {
+			fillValue(v.Index(i), next)
+		}
+	case v.Kind() == reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			fillValue(v.Field(i), next)
+		}
+	case v.Kind() == reflect.String:
+		v.SetString(fmt.Sprintf("value-%d", *next))
+	case v.CanInt():
+		v.SetInt(int64(*next))
+	case v.CanFloat():
+		v.SetFloat(float64(*next))
+	default:
+		panic(fmt.Sprintf("fillValue: no value for a %s", v.Type()))
+	}
+}
+
+// filledURL returns a URL whose every field is set, down to the fields of its
+// videos. Two of them are equal, and share nothing.
+func filledURL() URL {
+	var u URL
+	next := 0
+	fillValue(reflect.ValueOf(&u).Elem(), &next)
+	return u
+}
+
+// scribble changes every value that can be reached from v: the ones v holds,
+// and the ones its pointers and its slices lead to. It leaves the pointers
+// and the slices themselves as they are, so what it changes is changed for
+// everything that shares them.
+func scribble(v reflect.Value) {
+	switch {
+	case v.Type() == timeType:
+		v.Set(reflect.ValueOf(time.Date(1999, time.December, 31, 23, 59, 59, 0, time.UTC)))
+	case v.Kind() == reflect.Pointer:
+		if !v.IsNil() {
+			scribble(v.Elem())
+		}
+	case v.Kind() == reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			scribble(v.Index(i))
+		}
+	case v.Kind() == reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			scribble(v.Field(i))
+		}
+	case v.Kind() == reflect.String:
+		v.SetString("scribbled")
+	case v.CanInt():
+		v.SetInt(-12345)
+	case v.CanFloat():
+		v.SetFloat(-123.5)
+	default:
+		panic(fmt.Sprintf("scribble: no value for a %s", v.Type()))
+	}
+}
+
+// scribbleURLs changes everything that can be reached from urls, see scribble.
+func scribbleURLs(urls []URL) {
+	scribble(reflect.ValueOf(urls))
+}
+
+// assertNothingShared verifies that a and b, two values of the same type, share
+// nothing that can be changed: that no pointer of one points to what a pointer
+// of the other points to, and no slice of one holds the elements of a slice of
+// the other. path names the values. With allSet, every pointer has to be set
+// and every slice has to have an element as well, so that nothing is left
+// unchecked.
+func assertNothingShared(t *testing.T, path string, a, b reflect.Value, allSet bool) {
+	t.Helper()
+
+	switch {
+	case a.Type() == timeType:
+	case a.Kind() == reflect.Pointer:
+		if a.IsNil() || b.IsNil() {
+			if allSet {
+				t.Errorf("%s: expected a pointer that is set", path)
+			}
+			return
+		}
+		if a.Pointer() == b.Pointer() {
+			t.Errorf("%s: the pointers point to the same value", path)
+		}
+		assertNothingShared(t, path, a.Elem(), b.Elem(), allSet)
+	case a.Kind() == reflect.Slice:
+		if a.Len() == 0 || b.Len() == 0 {
+			if allSet {
+				t.Errorf("%s: expected a slice with an element", path)
+			}
+			return
+		}
+		if a.Pointer() == b.Pointer() {
+			t.Errorf("%s: the slices hold the same elements", path)
+		}
+		for i := 0; i < min(a.Len(), b.Len()); i++ {
+			assertNothingShared(t, fmt.Sprintf("%s[%d]", path, i), a.Index(i), b.Index(i), allSet)
+		}
+	case a.Kind() == reflect.Struct:
+		for i := 0; i < a.NumField(); i++ {
+			assertNothingShared(t, path+"."+a.Type().Field(i).Name, a.Field(i), b.Field(i), allSet)
+		}
+	}
+}
+
+// Test_cloneURL verifies that the copy of a URL is equal to the URL and shares
+// nothing with it, whichever of its fields are set. The URL it is tried with
+// is filled field by field, so a field that is added to a type and not copied
+// fails the test.
+func Test_cloneURL(t *testing.T) {
+	t.Run("every field set", func(t *testing.T) {
+		original, want := filledURL(), filledURL()
+		if !reflect.DeepEqual(original, want) {
+			t.Fatalf("expected two URLs that are filled to be equal, got %+v and %+v", original, want)
+		}
+		assertNothingShared(t, "filled", reflect.ValueOf(original), reflect.ValueOf(want), true)
+
+		clone := cloneURL(original)
+		if !reflect.DeepEqual(clone, want) {
+			t.Errorf("expected the copy to equal the URL, got %+v, want %+v", clone, want)
+		}
+		assertNothingShared(t, "URL", reflect.ValueOf(clone), reflect.ValueOf(original), true)
+
+		// Whatever is done to the copy, the URL is what it was.
+		scribble(reflect.ValueOf(&clone).Elem())
+		if reflect.DeepEqual(clone, want) {
+			t.Fatal("expected the copy to be changed")
+		}
+		if !reflect.DeepEqual(original, want) {
+			t.Errorf("expected the URL to be unchanged, got %+v, want %+v", original, want)
+		}
+
+		// And whatever is done to the URL, a copy of it is what it was.
+		clone = cloneURL(original)
+		scribble(reflect.ValueOf(&original).Elem())
+		if !reflect.DeepEqual(clone, want) {
+			t.Errorf("expected the copy to be unchanged, got %+v, want %+v", clone, want)
+		}
+	})
+
+	t.Run("fields that are not set", func(t *testing.T) {
+		tests := []struct {
+			name string
+			url  URL
+		}{
+			{"no field", URL{}},
+			{"the location", URL{Loc: "https://example.com/page"}},
+			{"empty slices", URL{Loc: "https://example.com/page", Images: []Image{}, Videos: []Video{}, Hreflangs: []AlternateLink{}}},
+			{"news without a date", URL{News: &News{Title: "Title"}}},
+			{"a video with nothing but a thumbnail", URL{Videos: []Video{{ThumbnailLoc: "https://example.com/t.jpg"}}}},
+			{"a video with no tag", URL{Videos: []Video{{Tags: []string{}}}}},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				clone := cloneURL(tt.url)
+				// A pointer that is nil stays nil, and an empty slice is not turned into nil.
+				if !reflect.DeepEqual(clone, tt.url) {
+					t.Errorf("expected the copy to equal the URL, got %#v, want %#v", clone, tt.url)
+				}
+				assertNothingShared(t, "URL", reflect.ValueOf(clone), reflect.ValueOf(tt.url), false)
+			})
+		}
+	})
+}
+
+// everyFieldURLSet is a <urlset> whose first entry has every field of a URL
+// set, down to the fields of its video, and whose other entries have fewer.
+const everyFieldURLSet = `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"` +
+	` xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"` +
+	` xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"` +
+	` xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"` +
+	` xmlns:xhtml="http://www.w3.org/1999/xhtml">` +
+	`<url><loc>https://example.com/page-1</loc><lastmod>2024-01-15</lastmod><changefreq>daily</changefreq><priority>0.8</priority>` +
+	`<image:image><image:loc>https://example.com/a.jpg</image:loc><image:title>A</image:title></image:image>` +
+	`<image:image><image:loc>https://example.com/b.jpg</image:loc></image:image>` +
+	`<news:news><news:publication><news:name>Example News</news:name><news:language>en</news:language></news:publication>` +
+	`<news:publication_date>2024-01-14</news:publication_date><news:title>A title</news:title></news:news>` +
+	`<video:video><video:thumbnail_loc>https://example.com/t.jpg</video:thumbnail_loc><video:title>A video</video:title>` +
+	`<video:description>What the video is about</video:description><video:content_loc>https://example.com/v.mp4</video:content_loc>` +
+	`<video:player_loc>https://example.com/player</video:player_loc><video:duration>600</video:duration>` +
+	`<video:expiration_date>2030-01-01</video:expiration_date><video:rating>4.5</video:rating><video:view_count>1234</video:view_count>` +
+	`<video:publication_date>2024-01-10</video:publication_date><video:family_friendly>yes</video:family_friendly>` +
+	`<video:restriction relationship="allow">HU AT</video:restriction><video:platform relationship="allow">web tv</video:platform>` +
+	`<video:requires_subscription>no</video:requires_subscription><video:uploader info="https://example.com/uploader">An uploader</video:uploader>` +
+	`<video:live>no</video:live><video:tag>one</video:tag><video:tag>two</video:tag></video:video>` +
+	`<xhtml:link rel="alternate" hreflang="de" href="https://example.com/de/page-1"/></url>` +
+	`<url><loc>https://example.com/page-2</loc></url>` +
+	`<url><loc>https://example.com/page-3</loc><lastmod>2024-02-01T10:00:00+01:00</lastmod></url>` +
+	`<url><loc>https:///bad-1</loc></url><url><loc>https:///bad-2</loc></url><url><loc>https:///bad-3</loc></url>` +
+	`</urlset>`
+
+// otherURLSet is a <urlset> of other entries than those of everyFieldURLSet.
+const otherURLSet = `<urlset><url><loc>https://example.com/other-1</loc><lastmod>2025-05-05</lastmod></url>` +
+	`<url><loc>https://example.com/other-2</loc></url><url><loc>https:///other-bad</loc></url></urlset>`
+
+// parsedEveryField returns an instance that has parsed everyFieldURLSet: three
+// URLs, the first of which has every field set, and three errors.
+func parsedEveryField(t *testing.T) *S {
+	t.Helper()
+
+	content := everyFieldURLSet
+	s := New()
+	requireParse(t, s, "https://example.com/sitemap.xml", &content)
+	assertCounts(t, s, 3, 3)
+	return s
+}
+
+// TestS_URLs verifies the iterator over the URLs of a call: that it yields the
+// URLs GetURLs returns, in their order, each as a copy that shares nothing
+// with the URL the instance keeps, and that it goes through the URLs as they
+// are when a loop starts.
+func TestS_URLs(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	other := otherURLSet
+	otherLocs := []string{"https://example.com/other-1", "https://example.com/other-2"}
+	locs := []string{"https://example.com/page-1", "https://example.com/page-2", "https://example.com/page-3"}
+
+	t.Run("the URLs of the call, as copies", func(t *testing.T) {
+		s := parsedEveryField(t)
+		want := parsedEveryField(t).GetURLs()
+
+		urls := slices.Collect(s.URLs())
+		if !reflect.DeepEqual(urls, want) {
+			t.Fatalf("expected the URLs GetURLs returns, got %+v, want %+v", urls, want)
+		}
+		// The first entry has every field set, so every field is looked at.
+		assertNothingShared(t, "URL", reflect.ValueOf(urls[0]), reflect.ValueOf(s.GetURLs()[0]), true)
+		for i := range urls {
+			assertNothingShared(t, fmt.Sprintf("URL %d", i), reflect.ValueOf(urls[i]), reflect.ValueOf(s.GetURLs()[i]), false)
+		}
+
+		// Whatever is done to the copies, the URLs of the instance are what they were.
+		scribbleURLs(urls)
+		slices.Reverse(urls)
+		if got := s.GetURLs(); !reflect.DeepEqual(got, want) {
+			t.Errorf("expected the URLs of the instance to be unchanged, got %+v, want %+v", got, want)
+		}
+		// A loop is given copies of its own, not the ones of the loop before it.
+		if got := slices.Collect(s.URLs()); !reflect.DeepEqual(got, want) {
+			t.Errorf("expected the next loop to yield the URLs unchanged, got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("a loop that ends early", func(t *testing.T) {
+		s := parsedEveryField(t)
+
+		var got []string
+		for u := range s.URLs() {
+			got = append(got, u.Loc)
+			if len(got) == 2 {
+				break
+			}
+		}
+		assertStringSlice(t, "URLs", got, locs[:2])
+
+		// Nothing is yielded once the loop has ended.
+		yielded := 0
+		s.URLs()(func(URL) bool {
+			yielded++
+			return false
+		})
+		mustEqual(t, "URLs yielded", yielded, 1)
+	})
+
+	t.Run("no URLs", func(t *testing.T) {
+		var none *S
+		for u := range none.URLs() {
+			t.Errorf("expected no URL of a nil instance, got %v", u)
+		}
+		for u := range New().URLs() {
+			t.Errorf("expected no URL of an instance that has parsed nothing, got %v", u)
+		}
+		if urls := slices.Collect(New().URLs()); urls != nil {
+			t.Errorf("expected nothing to be collected, got %v", urls)
+		}
+	})
+
+	t.Run("a loop starts anew", func(t *testing.T) {
+		s := parsedEveryField(t)
+		seq := s.URLs()
+
+		first, second := []string{}, []string{}
+		for u := range seq {
+			first = append(first, u.Loc)
+		}
+		for u := range seq {
+			second = append(second, u.Loc)
+		}
+		assertStringSlice(t, "URLs of the first loop", first, locs)
+		assertStringSlice(t, "URLs of the second loop", second, locs)
+
+		// The URLs are those of the instance when the loop starts, not the ones it
+		// had when the iterator was made.
+		requireParse(t, s, url, &other)
+		after := []string{}
+		for u := range seq {
+			after = append(after, u.Loc)
+		}
+		assertStringSlice(t, "URLs after another call", after, otherLocs)
+	})
+
+	t.Run("a call that starts while a loop runs", func(t *testing.T) {
+		s := parsedEveryField(t)
+
+		got := []string{}
+		for u := range s.URLs() {
+			if len(got) == 0 {
+				// No lock is held while the loop runs: the instance can be used in it,
+				// for another call as well.
+				requireParse(t, s, url, &other)
+				mustEqual(t, "URLs of the instance", s.GetURLCount(), 2)
+			}
+			got = append(got, u.Loc)
+		}
+		// The loop goes on with the URLs it started with.
+		assertStringSlice(t, "URLs of the loop", got, locs)
+		assertStringSlice(t, "URLs of the instance", locsOf(s), otherLocs)
+	})
+}
+
+// TestS_Errors verifies the iterator over the errors of an instance: that it
+// yields the errors GetErrors returns, the very values and in their order, and
+// that it goes through the errors as they are when a loop starts.
+func TestS_Errors(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	other := otherURLSet
+	invalid := func(names ...string) []string {
+		list := []string{}
+		for _, name := range names {
+			list = append(list, fmt.Sprintf(`validate "https:///%s": missing host`, name))
+		}
+		return list
+	}
+	texts := func(seq func(func(error) bool)) []string {
+		list := []string{}
+		for err := range seq {
+			list = append(list, err.Error())
+		}
+		return list
+	}
+
+	t.Run("the errors of the instance", func(t *testing.T) {
+		s := parsedEveryField(t)
+		s.SetMaxDepth(-1)
+		want := s.GetErrors()
+		mustEqual(t, "errors", len(want), 4)
+
+		errs := slices.Collect(s.Errors())
+		mustEqual(t, "errors yielded", len(errs), len(want))
+		for i := range errs {
+			// The errors are the ones of the instance, not errors that read the same.
+			if errs[i] != want[i] {
+				t.Errorf("error %d: expected the error of the instance, got %v, want %v", i, errs[i], want[i])
+			}
+		}
+
+		// What is done to the list that was collected is not done to the instance.
+		slices.Reverse(errs)
+		errs[0] = errors.New("an error of the caller")
+		assertStringSlice(t, "errors of the instance", errorsOf(s), append(invalid("bad-1", "bad-2", "bad-3"), `config "maxDepth": must be greater than 0, got -1`))
+	})
+
+	t.Run("the error a call returns", func(t *testing.T) {
+		content := `<urlset><url>`
+		s := New()
+		_, err := s.Parse(url, &content)
+		if err == nil {
+			t.Fatal("expected the call to fail")
+		}
+
+		errs := slices.Collect(s.Errors())
+		if len(errs) != 1 || errs[0] != err {
+			t.Errorf("expected the error the call returned, got %v, want %v", errs, err)
+		}
+	})
+
+	t.Run("a loop that ends early", func(t *testing.T) {
+		s := parsedEveryField(t)
+
+		var got []string
+		for err := range s.Errors() {
+			got = append(got, err.Error())
+			if len(got) == 2 {
+				break
+			}
+		}
+		assertStringSlice(t, "errors", got, invalid("bad-1", "bad-2"))
+
+		yielded := 0
+		s.Errors()(func(error) bool {
+			yielded++
+			return false
+		})
+		mustEqual(t, "errors yielded", yielded, 1)
+	})
+
+	t.Run("no errors", func(t *testing.T) {
+		var none *S
+		for err := range none.Errors() {
+			t.Errorf("expected no error of a nil instance, got %v", err)
+		}
+		if errs := slices.Collect(New().Errors()); errs != nil {
+			t.Errorf("expected nothing to be collected, got %v", errs)
+		}
+	})
+
+	t.Run("a loop starts anew", func(t *testing.T) {
+		s := parsedEveryField(t)
+		seq := s.Errors()
+
+		assertStringSlice(t, "errors of the first loop", texts(seq), invalid("bad-1", "bad-2", "bad-3"))
+		assertStringSlice(t, "errors of the second loop", texts(seq), invalid("bad-1", "bad-2", "bad-3"))
+
+		requireParse(t, s, url, &other)
+		assertStringSlice(t, "errors after another call", texts(seq), invalid("other-bad"))
+	})
+
+	t.Run("errors that are recorded while a loop runs", func(t *testing.T) {
+		s := parsedEveryField(t)
+
+		got := []string{}
+		for err := range s.Errors() {
+			if len(got) == 0 {
+				// No lock is held while the loop runs.
+				s.SetMaxDepth(-1)
+				mustEqual(t, "errors of the instance", s.GetErrorsCount(), 4)
+				requireParseFails := func() {
+					if _, err := s.Parse(url, &other); err == nil {
+						t.Error("expected a call to fail while a setting is not valid")
+					}
+				}
+				requireParseFails()
+				mustEqual(t, "errors of the instance", s.GetErrorsCount(), 1)
+			}
+			got = append(got, err.Error())
+		}
+		// The loop goes on with the errors it started with.
+		assertStringSlice(t, "errors of the loop", got, invalid("bad-1", "bad-2", "bad-3"))
+	})
+}
+
+// TestS_GetURLs_GetErrors_NoSpareCapacity verifies that the slices GetURLs
+// and GetErrors return are the lists of the instance, which costs nothing
+// however long they are, and that appending to them all the same writes
+// neither to those lists nor to what another caller was given.
+func TestS_GetURLs_GetErrors_NoSpareCapacity(t *testing.T) {
+	const url = "https://example.com/sitemap.xml"
+	mine := URL{Loc: "https://example.com/mine"}
+	myError := errors.New("an error of the caller")
+
+	// parsed returns an instance whose lists have room for another element,
+	// which is what makes appending to them a danger.
+	parsed := func(t *testing.T) *S {
+		t.Helper()
+		s := parsedEveryField(t)
+		if cap(s.urls) <= len(s.urls) || cap(s.errs) <= len(s.errs) {
+			t.Fatalf("the test needs lists with room to spare, got %d of %d URLs and %d of %d errors", len(s.urls), cap(s.urls), len(s.errs), cap(s.errs))
+		}
+		return s
+	}
+
+	t.Run("the lists of the instance, without room to spare", func(t *testing.T) {
+		s := parsed(t)
+
+		urls, errs := s.GetURLs(), s.GetErrors()
+		mustEqual(t, "URLs", len(urls), 3)
+		mustEqual(t, "capacity of the URLs", cap(urls), 3)
+		mustEqual(t, "errors", len(errs), 3)
+		mustEqual(t, "capacity of the errors", cap(errs), 3)
+		if &urls[0] != &s.urls[0] || &errs[0] != &s.errs[0] {
+			t.Error("expected the lists of the instance, not copies of them")
+		}
+
+		// Handing them out copies nothing.
+		if allocs := testing.AllocsPerRun(100, func() { _, _ = s.GetURLs(), s.GetErrors() }); allocs != 0 {
+			t.Errorf("expected GetURLs and GetErrors to allocate nothing, got %v allocations", allocs)
+		}
+	})
+
+	t.Run("two callers that append", func(t *testing.T) {
+		s := parsed(t)
+
+		first := append(s.GetURLs(), mine)
+		second := append(s.GetURLs(), URL{Loc: "https://example.com/yours"})
+		mustEqual(t, "last URL of the first caller", first[len(first)-1].Loc, "https://example.com/mine")
+		mustEqual(t, "last URL of the second caller", second[len(second)-1].Loc, "https://example.com/yours")
+		assertCounts(t, s, 3, 3)
+
+		firstErrs := append(s.GetErrors(), myError)
+		secondErrs := append(s.GetErrors(), errors.New("an error of another caller"))
+		mustEqual(t, "last error of the first caller", firstErrs[len(firstErrs)-1].Error(), "an error of the caller")
+		mustEqual(t, "last error of the second caller", secondErrs[len(secondErrs)-1].Error(), "an error of another caller")
+		assertCounts(t, s, 3, 3)
+	})
+
+	t.Run("a caller that appends to what it was given earlier", func(t *testing.T) {
+		s := parsed(t)
+		urls, errs := s.GetURLs(), s.GetErrors()
+
+		// The call goes on: a URL and an error of another document are added to the
+		// lists, in the room they have.
+		content := `<urlset><url><loc>https://example.com/other-1</loc></url><url><loc>https:///other-bad</loc></url></urlset>`
+		document := s.newDocument()
+		document.parse(url, content)
+		s.addDocument(document)
+		assertCounts(t, s, 4, 4)
+		if &s.urls[0] != &urls[0] || &s.errs[0] != &errs[0] {
+			t.Fatal("the test needs lists that are added to where they are")
+		}
+
+		// What the caller appends takes the place of nothing that was added.
+		_ = append(urls, mine)
+		_ = append(errs, myError)
+		assertStringSlice(t, "URLs", locsOf(s), []string{
+			"https://example.com/page-1", "https://example.com/page-2", "https://example.com/page-3",
+			"https://example.com/other-1",
+		})
+		mustEqual(t, "last error", errorsOf(s)[3], `validate "https:///other-bad": missing host`)
+
+		// And what the caller was given is what it was.
+		mustEqual(t, "URLs the caller was given", len(urls), 3)
+		mustEqual(t, "errors the caller was given", len(errs), 3)
+	})
+
+	t.Run("no URLs and no errors", func(t *testing.T) {
+		s := New()
+		if urls := s.GetURLs(); urls == nil || len(urls) != 0 {
+			t.Errorf("expected an empty slice of URLs, got %#v", urls)
+		}
+		if errs := s.GetErrors(); errs != nil {
+			t.Errorf("expected no slice of errors, got %#v", errs)
+		}
+	})
+}
+
+// TestS_GetRandomURLs_Copies verifies that the URLs GetRandomURLs returns are
+// copies that share nothing with the URLs the instance keeps.
+func TestS_GetRandomURLs_Copies(t *testing.T) {
+	s := parsedEveryField(t)
+	want := parsedEveryField(t).GetURLs()
+
+	for n := 1; n <= 4; n++ {
+		random := s.GetRandomURLs(n)
+		mustEqual(t, fmt.Sprintf("URLs returned for %d", n), len(random), min(n, 3))
+
+		for _, u := range random {
+			i := slices.IndexFunc(want, func(other URL) bool { return other.Loc == u.Loc })
+			if i < 0 || !reflect.DeepEqual(u, want[i]) {
+				t.Fatalf("expected a URL of the call, got %+v", u)
+			}
+			assertNothingShared(t, u.Loc, reflect.ValueOf(u), reflect.ValueOf(s.GetURLs()[i]), i == 0)
+		}
+
+		scribbleURLs(random)
+		if got := s.GetURLs(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("expected the URLs of the instance to be unchanged, got %+v, want %+v", got, want)
+		}
+	}
+}
+
+// TestS_Results_WhileParsing verifies that the results of a call can be gone
+// through, and appended to, while the call runs, without either getting in
+// the way of the other: what the call collects is what it collects with
+// nobody looking.
+func TestS_Results_WhileParsing(t *testing.T) {
+	lists := map[string][]string{"/index.xml": {}}
+	pages := map[string]int{}
+	var want []string
+	site := newSiteServer(t, lists, pages)
+	for i := 1; i <= 40; i++ {
+		path := fmt.Sprintf("/sitemap-%d.xml", i)
+		lists["/index.xml"] = append(lists["/index.xml"], path)
+		pages[path] = 25
+		want = append(want, site.pagesOf(path)...)
+	}
+	lists["/index.xml"] = append(lists["/index.xml"], "/missing-1.xml", "/missing-2.xml", "/missing-3.xml")
+
+	for _, multiThread := range []bool{false, true} {
+		t.Run(fmt.Sprintf("multiThread=%v", multiThread), func(t *testing.T) {
+			s := New().SetMultiThread(multiThread)
+
+			done := make(chan struct{})
+			var wg sync.WaitGroup
+			for reader := 0; reader < 4; reader++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for {
+						select {
+						case <-done:
+							return
+						default:
+						}
+
+						seen := 0
+						for u := range s.URLs() {
+							u.Loc = "changed"
+							seen++
+						}
+						for err := range s.Errors() {
+							_ = err.Error()
+						}
+						urls := append(s.GetURLs(), URL{Loc: "https://example.com/mine"})
+						errs := append(s.GetErrors(), errors.New("an error of the caller"))
+						if len(urls) < seen+1 || len(errs) < 1 {
+							t.Errorf("expected the results to grow, got %d URLs after %d, %d errors", len(urls)-1, seen, len(errs)-1)
+						}
+						_ = s.GetRandomURLs(3)
+					}
+				}()
+			}
+
+			requireParse(t, s, site.URL+"/index.xml", nil)
+			close(done)
+			wg.Wait()
+
+			assertStringSlice(t, "URLs", sortedCopy(locsOf(s)), sortedCopy(want))
+			mustEqual(t, "errors", s.GetErrorsCount(), 3)
+			for err := range s.Errors() {
+				if _, ok := err.(*NetworkError); !ok {
+					t.Errorf("expected the errors of the sitemaps that are not found, got %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestS_Results_ListsNotCopied verifies that a loop over the URLs or over the
+// errors takes up the memory of what it yields, not that of a copy of the
+// list: what is allocated for it is a small part of what the list takes up.
+func TestS_Results_ListsNotCopied(t *testing.T) {
+	// allocated returns the number of bytes that are allocated while loop runs.
+	allocated := func(loop func()) uint64 {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		loop()
+		runtime.ReadMemStats(&after)
+		return after.TotalAlloc - before.TotalAlloc
+	}
+
+	t.Run("URLs", func(t *testing.T) {
+		// A URL with nothing but a location has nothing to be copied with it.
+		const count = 100000
+		s := &S{urls: make([]URL, count)}
+		for i := range s.urls {
+			s.urls[i].Loc = "https://example.com/page"
+		}
+		list := uint64(count) * uint64(reflect.TypeOf(URL{}).Size())
+
+		seen := 0
+		got := allocated(func() {
+			for u := range s.URLs() {
+				seen += len(u.Loc) / len("https://example.com/page")
+			}
+		})
+		mustEqual(t, "URLs yielded", seen, count)
+		if got > list/10 {
+			t.Errorf("expected a loop to allocate a small part of the %d bytes of the list, got %d bytes", list, got)
+		}
+	})
+
+	t.Run("errors", func(t *testing.T) {
+		const count = 1000000
+		s := &S{errs: make([]error, count)}
+		for i := range s.errs {
+			s.errs[i] = io.EOF
+		}
+		list := uint64(count) * uint64(reflect.TypeOf(s.errs).Elem().Size())
+
+		seen := 0
+		got := allocated(func() {
+			for err := range s.Errors() {
+				if err == io.EOF {
+					seen++
+				}
+			}
+		})
+		mustEqual(t, "errors yielded", seen, count)
+		if got > list/10 {
+			t.Errorf("expected a loop to allocate a small part of the %d bytes of the list, got %d bytes", list, got)
+		}
+	})
+}
+
 func configsEqual(c1, c2 config) bool {
 	return c1.fetchTimeout == c2.fetchTimeout &&
 		c1.userAgent == c2.userAgent &&
