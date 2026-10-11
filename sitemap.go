@@ -762,9 +762,12 @@ func (s *S) GetStrict() bool {
 //
 // It sets the mainURL field to the given URL. The content is the given URL
 // content or, if that is nil, what the URL serves.
-// If the URL ends with "/robots.txt", it parses the robots.txt file and
-// fetches URLs from the sitemap files mentioned in the robots.txt.
-// If the URL does not end with "/robots.txt", the content is checked
+// If the URL is that of a robots.txt, it parses the robots.txt file and
+// fetches URLs from the sitemap files mentioned in the robots.txt. A URL is
+// that of a robots.txt when the last segment of its path is "robots.txt", in
+// whichever letter case it is written and whether or not a query or a fragment
+// follows it: "https://example.com/robots.txt?v=2" is one.
+// If the URL is not that of a robots.txt, the content is checked
 // and unzipped if necessary, then parsed and fetched.
 // The content of a document is not kept once the document is parsed.
 //
@@ -886,7 +889,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 		return s, err
 	}
 
-	if strings.HasSuffix(s.mainURL, "/robots.txt") {
+	if namesRobotsTXT(s.mainURL) {
 		s.mu.Lock()
 		s.parseRobotsTXT(content)
 		locations := s.robotsTXTSitemapLocations(servedFrom)
@@ -1031,6 +1034,31 @@ func (s *S) setContent(ctx context.Context, urlContent *string) (string, string,
 	}
 
 	return s.fetch(ctx, s.mainURL)
+}
+
+// robotsTXTName is the name of the file a URL has to name to be that of a robots.txt.
+const robotsTXTName = "robots.txt"
+
+// namesRobotsTXT tells whether rawURL is the URL of a robots.txt: whether the last segment of
+// its path is "robots.txt". The query and the fragment of the URL are no part of its path, so
+// "https://example.com/robots.txt?v=2" is one, and "https://example.com/sitemap.xml?from=/robots.txt"
+// is none. The letter case makes no difference: a server that does not tell the cases apart
+// serves the file as "/ROBOTS.TXT" as well, and what it serves is a robots.txt whatever it is
+// asked for as. A host of that name is no file: "https://robots.txt" has no path. A URL that
+// cannot be parsed, which only a call that passes the content in can have, is none either.
+func namesRobotsTXT(rawURL string) bool {
+	parsed, err := neturl.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	// The segment is cut from the path as the URL gives it and decoded then, so that a slash
+	// that is percent-encoded ends no segment: "/a%2Frobots.txt" names another file. What
+	// EscapedPath returns can be decoded, so there is no error to look at.
+	path := parsed.EscapedPath()
+	name, _ := neturl.PathUnescape(path[strings.LastIndexByte(path, '/')+1:])
+	// A letter that is not in ASCII takes more than one byte, so the length rules out the
+	// letters of other alphabets that fold to these: "ſ", the long s, is no "s" here.
+	return len(name) == len(robotsTXTName) && strings.EqualFold(name, robotsTXTName)
 }
 
 // parseRobotsTXT retrieves the sitemap URLs from the provided robots.txt content.

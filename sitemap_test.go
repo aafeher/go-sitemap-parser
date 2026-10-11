@@ -10488,6 +10488,251 @@ func TestS_robotsTXTSitemapLocations(t *testing.T) {
 	}
 }
 
+// TestNamesRobotsTXT verifies which URLs are taken for that of a robots.txt: the ones whose
+// path ends in a segment that reads "robots.txt". The letter case makes no difference, and
+// neither does what follows the path, a query or a fragment.
+func TestNamesRobotsTXT(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"https://example.com/robots.txt", true},
+		{"http://example.com/robots.txt", true},
+		{"https://example.com:8443/robots.txt", true},
+		{"https://user@example.com/robots.txt", true},
+		{"https://example.com/robots.txt?v=2", true},
+		{"https://example.com/robots.txt?", true},
+		{"https://example.com/robots.txt#x", true},
+		{"https://example.com/robots.txt#", true},
+		{"https://example.com/robots.txt?v=2#x", true},
+		{"https://example.com/robots.txt?next=/sitemap.xml", true},
+		{"https://example.com/robots.txt#/sitemap.xml", true},
+		{"https://example.com/ROBOTS.TXT", true},
+		{"https://example.com/Robots.txt", true},
+		{"https://example.com/robots.TXT?v=2", true},
+		{"https://example.com/rObOtS.tXt#x", true},
+		{"https://example.com/sub/robots.txt", true},
+		{"https://example.com/a/b/Robots.Txt?v=2", true},
+		{"https://example.com//robots.txt", true},
+		// A character that need not be percent-encoded is the same character encoded.
+		{"https://example.com/robots%2Etxt", true},
+		{"https://example.com/%72obots.txt", true},
+		{"https://example.com/%52OBOTS.TXT", true},
+		// With the content passed in, the URL may be a relative one.
+		{"/robots.txt", true},
+		{"robots.txt", true},
+		{"ROBOTS.TXT", true},
+		{"robots.txt?v=2", true},
+		{"//example.com/robots.txt", true},
+
+		{"https://example.com/sitemap.xml", false},
+		{"https://example.com/", false},
+		{"https://example.com", false},
+		{"", false},
+		// What stands in the query or in the fragment is no part of the path.
+		{"https://example.com/sitemap.xml?from=/robots.txt", false},
+		{"https://example.com/sitemap.xml#/robots.txt", false},
+		{"https://example.com/sitemap.xml?/robots.txt", false},
+		{"https://example.com/?robots.txt", false},
+		{"https://example.com/#robots.txt", false},
+		// A host of that name is no file.
+		{"https://robots.txt", false},
+		{"https://robots.txt/", false},
+		{"https://robots.txt/sitemap.xml", false},
+		{"https://example.com:8443", false},
+		{"//robots.txt", false},
+		// The segment has to read "robots.txt" and nothing else.
+		{"https://example.com/robots.txt/", false},
+		{"https://example.com/robots.txt/sitemap.xml", false},
+		{"https://example.com/my-robots.txt", false},
+		{"https://example.com/robots.txt.gz", false},
+		{"https://example.com/robots.txt;v=2", false},
+		{"https://example.com/robots.txt%20", false},
+		{"https://example.com/robots", false},
+		{"https://example.com/robots.tx", false},
+		{"https://example.com/obots.txt", false},
+		{"https://example.com/robots_txt", false},
+		{"https://example.com/robots.txtx", false},
+		{"https://example.com/xrobots.txt", false},
+		// A slash that is percent-encoded ends no segment.
+		{"https://example.com/a%2Frobots.txt", false},
+		{"https://example.com/robots.txt%2F", false},
+		{"https://example.com/%2Frobots.txt", false},
+		// A letter of another alphabet is none of these, whatever it folds to: the long s.
+		{"https://example.com/robotſ.txt", false},
+		{"https://example.com/robot%C5%BF.txt", false},
+		// A URL that cannot be parsed.
+		{"https://example.com/%zz/robots.txt", false},
+		{"%zz/robots.txt", false},
+		{"https://exa mple.com/robots.txt", false},
+		{"mailto:robots.txt", false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.url, func(t *testing.T) {
+			mustEqual(t, "namesRobotsTXT", namesRobotsTXT(test.url), test.want)
+		})
+	}
+}
+
+// TestS_Parse_RobotsTXT_Recognised verifies that Parse takes a document for a robots.txt
+// by the path of the URL it is given: with a query or a fragment after it and in another
+// letter case the document is read as a robots.txt, and the sitemaps it names are fetched.
+// A sitemap is read as a sitemap although its URL holds "/robots.txt" after its path.
+// It makes no difference whether the content is fetched or passed in.
+func TestS_Parse_RobotsTXT_Recognised(t *testing.T) {
+	const (
+		robotsTXT = "User-agent: *\nDisallow: /private\nSitemap: https://example.com/sitemap.xml\nSitemap: /relative.xml\n"
+		sitemap   = `<urlset><url><loc>https://example.com/page</loc></url></urlset>`
+		relative  = `<urlset><url><loc>https://example.com/relative</loc></url></urlset>`
+		direct    = `<urlset><url><loc>https://example.com/direct</loc></url></urlset>`
+	)
+
+	tests := []struct {
+		name string
+		url  string
+		// content is what the URL serves.
+		content string
+		// requested holds the requests for what the document names, in their order.
+		requested []string
+		want      []string
+	}{
+		{"robots.txt", "https://example.com/robots.txt", robotsTXT, []string{"/sitemap.xml", "/relative.xml"}, []string{"https://example.com/page", "https://example.com/relative"}},
+		{"robots.txt with a query", "https://example.com/robots.txt?v=2", robotsTXT, []string{"/sitemap.xml", "/relative.xml"}, []string{"https://example.com/page", "https://example.com/relative"}},
+		{"robots.txt with a fragment", "https://example.com/robots.txt#x", robotsTXT, []string{"/sitemap.xml", "/relative.xml"}, []string{"https://example.com/page", "https://example.com/relative"}},
+		{"robots.txt with a query and a fragment", "https://example.com/robots.txt?v=2#x", robotsTXT, []string{"/sitemap.xml", "/relative.xml"}, []string{"https://example.com/page", "https://example.com/relative"}},
+		{"robots.txt in capitals", "https://example.com/ROBOTS.TXT", robotsTXT, []string{"/sitemap.xml", "/relative.xml"}, []string{"https://example.com/page", "https://example.com/relative"}},
+		{"robots.txt in mixed case with a query", "https://example.com/Robots.txt?v=2", robotsTXT, []string{"/sitemap.xml", "/relative.xml"}, []string{"https://example.com/page", "https://example.com/relative"}},
+		{"robots.txt in a directory", "https://example.com/sub/robots.txt?v=2", robotsTXT, []string{"/sitemap.xml", "/relative.xml"}, []string{"https://example.com/page", "https://example.com/relative"}},
+		{"sitemap", "https://example.com/direct.xml", direct, nil, []string{"https://example.com/direct"}},
+		{"sitemap with /robots.txt in its query", "https://example.com/direct.xml?from=/robots.txt", direct, nil, []string{"https://example.com/direct"}},
+		{"sitemap with /robots.txt in its fragment", "https://example.com/direct.xml#/robots.txt", direct, nil, []string{"https://example.com/direct"}},
+		{"sitemap on a host named robots.txt", "https://robots.txt", direct, nil, []string{"https://example.com/direct"}},
+	}
+
+	withoutFragment := func(url string) string { return strings.SplitN(url, "#", 2)[0] }
+
+	for _, test := range tests {
+		for _, fetched := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s, fetched=%v", test.name, fetched), func(t *testing.T) {
+				var requested []string
+				client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					body := test.content
+					switch {
+					case withoutFragment(req.URL.String()) == withoutFragment(test.url):
+						// The document itself. A fragment is no part of a request.
+						if !fetched {
+							t.Errorf("unexpected request for %s, the content of which is passed in", req.URL)
+						}
+					case req.URL.Path == "/sitemap.xml":
+						requested = append(requested, req.URL.RequestURI())
+						body = sitemap
+					case req.URL.Path == "/relative.xml":
+						requested = append(requested, req.URL.RequestURI())
+						body = relative
+					default:
+						t.Errorf("unexpected request for %s", req.URL)
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{},
+						Body:       io.NopCloser(strings.NewReader(body)),
+						Request:    req,
+					}, nil
+				})}
+				s := New().SetMultiThread(false).SetHTTPClient(client)
+				var content *string
+				if !fetched {
+					content = &test.content
+				}
+				requireParse(t, s, test.url, content)
+
+				assertStringSlice(t, "requests", requested, test.requested)
+				assertStringSlice(t, "URLs", locsOf(s), test.want)
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+			})
+		}
+	}
+}
+
+// TestS_Parse_RobotsTXT_RecognisedByTheURLPassed verifies that it is the URL passed to
+// Parse that tells whether the document is a robots.txt, not the URL a redirect leads to.
+// The sitemaps a robots.txt names are resolved against the URL it was served from.
+func TestS_Parse_RobotsTXT_RecognisedByTheURLPassed(t *testing.T) {
+	const robotsTXT = "Sitemap: /sitemap.xml\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/robots.txt":
+			http.Redirect(w, r, "/moved/rules", http.StatusMovedPermanently)
+		case "/rules":
+			http.Redirect(w, r, "/moved/robots.txt", http.StatusMovedPermanently)
+		case "/moved/rules", "/moved/robots.txt":
+			_, _ = fmt.Fprint(w, robotsTXT)
+		case "/sitemap.xml":
+			_, _ = fmt.Fprintf(w, `<urlset><url><loc>http://%s/page</loc></url></urlset>`, r.Host)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Run("a robots.txt that redirects to a URL of another name", func(t *testing.T) {
+		s := New().SetMultiThread(false)
+		requireParse(t, s, server.URL+"/robots.txt?v=2", nil)
+
+		assertStringSlice(t, "URLs", locsOf(s), []string{server.URL + "/page"})
+		assertStringSlice(t, "errors", errorsOf(s), []string{})
+	})
+
+	t.Run("a URL of another name that redirects to a robots.txt", func(t *testing.T) {
+		s := New().SetMultiThread(false)
+		_, err := s.Parse(server.URL+"/rules", nil)
+
+		var parseErr *ParseError
+		if !errors.As(err, &parseErr) {
+			t.Fatalf("expected a *ParseError, got %T: %v", err, err)
+		}
+		mustEqual(t, "URL of the error", parseErr.URL, server.URL+"/moved/robots.txt")
+		mustEqual(t, "error", parseErr.Err.Error(), `unrecognized sitemap format (root element: "")`)
+		assertStringSlice(t, "URLs", locsOf(s), []string{})
+	})
+}
+
+// TestS_Parse_RobotsTXT_ListedByASitemapIndex verifies that only the document passed to
+// Parse can be a robots.txt: one that a sitemap index lists is parsed as a sitemap, which it
+// is none, and the sitemaps it names are not fetched.
+func TestS_Parse_RobotsTXT_ListedByASitemapIndex(t *testing.T) {
+	var requested []string
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		requested = append(requested, req.URL.Path)
+		body := `<urlset><url><loc>https://example.com/page</loc></url></urlset>`
+		switch req.URL.Path {
+		case "/index.xml":
+			body = `<sitemapindex>
+				<sitemap><loc>https://example.com/robots.txt</loc></sitemap>
+				<sitemap><loc>https://example.com/pages.xml</loc></sitemap>
+			</sitemapindex>`
+		case "/robots.txt":
+			body = "Sitemap: https://example.com/named.xml\n"
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+	s := New().SetMultiThread(false).SetHTTPClient(client)
+	requireParse(t, s, "https://example.com/index.xml", nil)
+
+	assertStringSlice(t, "requests", requested, []string{"/index.xml", "/robots.txt", "/pages.xml"})
+	assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page"})
+	assertStringSlice(t, "errors", errorsOf(s), []string{
+		`parse "https://example.com/robots.txt": unrecognized sitemap format (root element: "")`,
+	})
+}
+
 // TestS_Parse_RobotsTXT_Follow verifies that the sitemaps a robots.txt names
 // pass the checks the sitemaps of a sitemap index pass before a request is
 // made for them: a Sitemap line that does not hold a URL to fetch is reported

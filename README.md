@@ -40,6 +40,10 @@ XML documents do not have to be UTF-8 encoded, and a document may begin with a U
 
 A document of any of these formats may be gzip compressed. A gzip file is read to the end of its last member: a file that was appended to, or put together from several (`cat a.gz b.gz`), holds a member for each part, and its content is that of all of them. What follows the last member and is no member, such as a newline, is ignored. Content that cannot be decompressed to its end is not parsed, and is reported once, as a `*ParseError` (`gzip decompression failed: unexpected EOF`). See [`examples/gzip`](examples/gzip/main.go) for a runnable example.
 
+A `robots.txt` is recognised by the URL passed to `Parse()`: the document is read as one when the last segment of the path of that URL is `robots.txt`. The letter case makes no difference, and neither does a query or a fragment that follows the path, so `https://example.com/robots.txt?v=2` and `https://example.com/ROBOTS.TXT` are read as a `robots.txt` too. What follows the path is no part of it: `https://example.com/sitemap.xml?from=/robots.txt` is the URL of a sitemap, and is parsed as one. It is the URL passed in that decides, not the one a redirect leads to, and only the document passed to `Parse()` can be a `robots.txt`: one that a sitemap index lists is parsed as a sitemap.
+
+Of a `robots.txt` only the `Sitemap:` lines are read. The name of the directive is not case-sensitive, the line may be indented, and what follows a `#` is a comment. The sitemaps the lines name are fetched and parsed; how their URLs are checked is described under [Strict mode](#strict-mode). See [`examples/robots`](examples/robots/main.go) for a runnable example.
+
 Only the location of a page is taken from a feed or a text sitemap, so `LastMod`, `ChangeFreq` and `Priority` are `nil` for their URLs:
 - RSS: the `<link>` of every `<item>`, see [`examples/rss`](examples/rss/main.go)
 - Atom: for every `<entry>`, the first `<link>` with `rel="alternate"` or without a `rel` attribute, see [`examples/atom`](examples/atom/main.go)
@@ -510,6 +514,7 @@ Once you have properly initialized and configured your instance, you can parse s
 The `Parse()` function takes in two parameters:
  - `url`: the URL of the sitemap to be parsed,
    - `url` can be a robots.txt or sitemapindex or sitemap (urlset)
+   - it is taken for that of a robots.txt when its path ends in `robots.txt`, with or without a query after it and in any letter case, see [Formats supported](#formats-supported)
  - `urlContent`: an optional string pointer for the content of the URL.
 
 If you wish to provide the content yourself, pass the content as the second parameter. If not, simply pass nil and the function will fetch the content on its own.

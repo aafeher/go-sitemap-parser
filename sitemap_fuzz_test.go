@@ -656,6 +656,67 @@ func FuzzParseRobotsTXT(f *testing.F) {
 	})
 }
 
+// FuzzNamesRobotsTXT checks what tells a robots.txt from a sitemap, the URL
+// passed to Parse, against arbitrary URLs. A URL that is taken for that of a
+// robots.txt can be parsed and has a path that ends in "robots.txt", and
+// neither a query, nor a fragment, nor the case of its letters makes a URL
+// one or keeps it from being one.
+func FuzzNamesRobotsTXT(f *testing.F) {
+	seeds := []string{
+		"https://example.com/robots.txt",
+		"https://example.com/robots.txt?v=2#x",
+		"https://example.com/ROBOTS.TXT",
+		"https://example.com/sub/Robots.txt",
+		"https://example.com/robots%2Etxt",
+		"https://example.com/a%2Frobots.txt",
+		"https://example.com/robots.txt/",
+		"https://example.com/sitemap.xml?from=/robots.txt",
+		"https://example.com/sitemap.xml#/robots.txt",
+		"https://robots.txt",
+		"https://example.com/robot\xc5\xbf.txt",
+		"https://example.com/%zz/robots.txt",
+		"/robots.txt",
+		"robots.txt",
+		"mailto:robots.txt",
+		"",
+	}
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, url string) {
+		got := namesRobotsTXT(url)
+		if got {
+			parsed, err := neturl.Parse(url)
+			if err != nil {
+				t.Fatalf("namesRobotsTXT(%q) is true for a URL that cannot be parsed: %v", url, err)
+			}
+			if path := strings.ToLower(parsed.Path); path != "robots.txt" && !strings.HasSuffix(path, "/robots.txt") {
+				t.Fatalf("namesRobotsTXT(%q) is true for the path %q", url, parsed.Path)
+			}
+		}
+
+		// The path is what precedes the query and the fragment.
+		path, _, _ := strings.Cut(url, "#")
+		path, _, _ = strings.Cut(path, "?")
+		want := namesRobotsTXT(path)
+		for _, suffix := range []string{"?v=2", "#x", "?v=2#x", "?from=/sitemap.xml", "#/sitemap.xml"} {
+			if got := namesRobotsTXT(path + suffix); got != want {
+				t.Fatalf("namesRobotsTXT(%q) = %v, but namesRobotsTXT(%q) = %v", path+suffix, got, path, want)
+			}
+		}
+		upper := []byte(path)
+		for i, c := range upper {
+			if 'a' <= c && c <= 'z' {
+				upper[i] = c - 'a' + 'A'
+			}
+		}
+		if got := namesRobotsTXT(string(upper)); got != want {
+			t.Fatalf("namesRobotsTXT(%q) = %v, but namesRobotsTXT(%q) = %v", upper, got, path, want)
+		}
+	})
+}
+
 // robotsTXTLocs returns the sitemaps that are fetched of the ones the given
 // robots.txt content names.
 func robotsTXTLocs(strict bool, content string) []string {
