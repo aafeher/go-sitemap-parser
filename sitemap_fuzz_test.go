@@ -229,6 +229,83 @@ func assertURLLimit(t *testing.T, mode string, strict bool, content string) {
 	}
 }
 
+// assertValidationErrorLimit checks that a limit on the validation errors of
+// a call takes nothing off the call but validation errors: the URLs and the
+// sitemaps are those of a call without the limit, the call fails with what it
+// fails with then, and the errors are those it records without the limit less
+// the validation errors there is no room for. The limit is the last error
+// whenever one of them was left out, and is reported at no other time.
+func assertValidationErrorLimit(t *testing.T, mode string, strict bool, content string) {
+	t.Helper()
+
+	parse := func(limit int) (*S, error) {
+		s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(offlineClient).SetMaxValidationErrors(limit)
+		_, err := s.Parse(fuzzBaseURL, &content)
+		return s, err
+	}
+	isValidationError := func(err error) bool {
+		_, ok := err.(*ValidationError)
+		return ok
+	}
+
+	all, allErr := parse(0)
+	count := 0
+	for _, err := range all.GetErrors() {
+		if isValidationError(err) {
+			count++
+		}
+	}
+	limit := count/2 + 1
+	limited, limitedErr := parse(limit)
+
+	if got, want := limited.GetURLs(), all.GetURLs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s mode: a limit of %d validation errors changes the URLs: got %v, want %v", mode, limit, got, want)
+	}
+	if got, want := limited.GetSitemaps(), all.GetSitemaps(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s mode: a limit of %d validation errors changes the sitemaps: got %v, want %v", mode, limit, got, want)
+	}
+	if (allErr == nil) != (limitedErr == nil) || allErr != nil && allErr.Error() != limitedErr.Error() {
+		t.Fatalf("%s mode: a limit of %d validation errors changes the error returned: got %v, want %v", mode, limit, limitedErr, allErr)
+	}
+
+	want := []string{}
+	recorded := 0
+	for _, err := range all.GetErrors() {
+		if errors.Is(err, ErrMaxValidationErrors) {
+			t.Fatalf("%s mode: the limit on the validation errors was reported without a limit: %v", mode, err)
+		}
+		if isValidationError(err) {
+			if recorded == limit {
+				continue
+			}
+			recorded++
+		}
+		want = append(want, err.Error())
+	}
+
+	got := []string{}
+	reported := 0
+	for _, err := range limited.GetErrors() {
+		if errors.Is(err, ErrMaxValidationErrors) {
+			reported++
+			continue
+		}
+		got = append(got, err.Error())
+	}
+	if !slicesEqual(got, want) {
+		t.Fatalf("%s mode: with a limit of %d of %d validation errors, expected the errors %q, got %q", mode, limit, count, want, got)
+	}
+
+	switch errs := limited.GetErrors(); {
+	case count > limit && reported != 1:
+		t.Fatalf("%s mode: %d of %d validation errors were left out, and the limit was reported %d times", mode, count-limit, count, reported)
+	case count > limit && !errors.Is(errs[len(errs)-1], ErrMaxValidationErrors):
+		t.Fatalf("%s mode: the limit of %d validation errors is not the last error: %v", mode, limit, errs)
+	case count <= limit && reported != 0:
+		t.Fatalf("%s mode: the limit of %d validation errors was reported with %d of them", mode, limit, count)
+	}
+}
+
 // unique returns the values of list in the order they are in it, each of them
 // once.
 func unique(list []string) []string {
@@ -563,6 +640,7 @@ func FuzzParse(f *testing.F) {
 			}
 			assertReturnedError(t, mode, strict, content)
 			assertURLLimit(t, mode, strict, content)
+			assertValidationErrorLimit(t, mode, strict, content)
 			assertSitemapsListed(t, mode, strict, content)
 			assertInvalidDates(t, mode, strict, content)
 		}
@@ -632,6 +710,13 @@ func FuzzUnzip(f *testing.F) {
 		if err != nil && out != "" {
 			t.Fatalf("unzip returned %d bytes together with an error: %v", len(out), err)
 		}
+		// The limit is what the error is about if, and only if, content that can
+		// be read to its end is over it.
+		if full, fullErr := unzip(string(data), defaultMaxResponseSize); fullErr == nil {
+			if over := len(full) > fuzzUnzipLimit; errors.Is(err, ErrMaxResponseSize) != over {
+				t.Fatalf("unzip returned %v for %d bytes with a limit of %d", err, len(full), fuzzUnzipLimit)
+			}
+		}
 
 		// Round trip: whatever we compress must come back byte-for-byte.
 		var buf bytes.Buffer
@@ -660,6 +745,8 @@ func FuzzUnzip(f *testing.F) {
 			}
 		} else if err == nil || limited != "" {
 			t.Fatalf("unzip accepted a %d-byte payload over the %d-byte limit (returned %d bytes, err %v)", len(data), fuzzUnzipLimit, len(limited), err)
+		} else if !errors.Is(err, ErrMaxResponseSize) {
+			t.Fatalf("unzip rejected a %d-byte payload over the %d-byte limit with an error that is not about the limit: %v", len(data), fuzzUnzipLimit, err)
 		}
 
 		// Members: data compressed in two members, cut wherever its length puts
@@ -678,6 +765,8 @@ func FuzzUnzip(f *testing.F) {
 		// A member that is cut short must not pass for the end of the content.
 		if _, err = unzip(members[:len(members)-1], defaultMaxResponseSize); err == nil {
 			t.Fatal("unzip accepted content whose last member is cut short")
+		} else if errors.Is(err, ErrMaxResponseSize) {
+			t.Fatalf("unzip took a member that is cut short for content over the limit: %v", err)
 		}
 
 		// checkAndUnzipContent must agree with unzip on well-formed input.

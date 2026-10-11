@@ -1,6 +1,67 @@
 package sitemap
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// The errors below stand for the limits of a Parse or ParseContext call. The error that is
+// recorded when a limit is reached wraps the one of that limit, so errors.Is tells which
+// limit it was without the message of the error being read:
+//
+//	for _, err := range s.GetErrors() {
+//	    if errors.Is(err, sitemap.ErrMaxURLs) {
+//	        fmt.Println("the URLs are not all there:", err)
+//	    }
+//	}
+//
+// The message of the recorded error tells the limit and its value, as in
+// `parse "https://example.com/sitemap.xml": limit of 100000 URLs reached`.
+var (
+	// ErrMaxResponseSize is wrapped by the error of a document that is larger than the limit
+	// set with SetMaxResponseSize: the *NetworkError of a response that exceeds it, and the
+	// *ParseError of gzip content that exceeds it once it is decompressed.
+	ErrMaxResponseSize = errors.New("sitemap: maximum response size exceeded")
+
+	// ErrMaxDepth is wrapped by the *ParseError of a sitemap index whose sitemaps were not
+	// followed because the limit set with SetMaxDepth is reached.
+	ErrMaxDepth = errors.New("sitemap: maximum depth reached")
+
+	// ErrMaxSitemaps is wrapped by the *ParseError which tells that the limit set with
+	// SetMaxSitemaps kept the call from fetching or from listing a sitemap.
+	ErrMaxSitemaps = errors.New("sitemap: maximum number of sitemaps reached")
+
+	// ErrMaxURLs is wrapped by the *ParseError which tells that the limit set with SetMaxURLs
+	// kept the call from collecting a URL.
+	ErrMaxURLs = errors.New("sitemap: maximum number of URLs reached")
+
+	// ErrMaxValidationErrors is wrapped by the *ParseError which tells that the limit set with
+	// SetMaxValidationErrors kept the call from recording a *ValidationError.
+	ErrMaxValidationErrors = errors.New("sitemap: maximum number of validation errors reached")
+)
+
+// limitError is the error of a limit that was reached. Its message tells the limit and the
+// value the limit has, and errors.Is matches it with the error that stands for the limit: one
+// of the Err variables above.
+type limitError struct {
+	limit   error
+	message string
+}
+
+// limitErrorf returns the error of a limit that was reached, with the message format and args
+// make up.
+func limitErrorf(limit error, format string, args ...any) error {
+	return &limitError{limit: limit, message: fmt.Sprintf(format, args...)}
+}
+
+func (e *limitError) Error() string {
+	return e.message
+}
+
+// Unwrap returns the error that stands for the limit.
+func (e *limitError) Unwrap() error {
+	return e.limit
+}
 
 // ConfigError is returned when a configuration setter receives an invalid value.
 // Callers can inspect the Field to determine which configuration setting caused the error.
@@ -32,6 +93,9 @@ func (e *ConfigError) Unwrap() error {
 // NetworkError is returned when an HTTP fetch fails.
 // Callers can inspect URL to determine which resource could not be retrieved.
 //
+// A response that is larger than the limit set with SetMaxResponseSize is such a failure: Err
+// wraps ErrMaxResponseSize then, which errors.Is matches.
+//
 // Example usage:
 //
 //	var netErr *sitemap.NetworkError
@@ -61,10 +125,13 @@ func (e *NetworkError) Unwrap() error {
 //
 // It is also the error of a parse that was not carried through for another reason: the
 // sitemaps a sitemap index lists were not followed because the depth limit is reached,
-// sitemaps or URLs were left out because the limit on the sitemaps or on the URLs of a call
-// is reached, or the call was cut short because its context is done. In the latter case Err
-// is the error of the context, so errors.Is matches context.Canceled and
-// context.DeadlineExceeded.
+// sitemaps, URLs or validation errors were left out because the limit on the sitemaps, on the
+// URLs or on the validation errors of a call is reached, or the call was cut short because
+// its context is done. In the latter case Err is the error of the context, so errors.Is
+// matches context.Canceled and context.DeadlineExceeded. When a limit is reached, Err wraps
+// the error that stands for the limit, which errors.Is matches as well: ErrMaxDepth,
+// ErrMaxSitemaps, ErrMaxURLs or ErrMaxValidationErrors, and ErrMaxResponseSize for gzip
+// content that is too large.
 //
 // Example usage:
 //
@@ -76,8 +143,8 @@ type ParseError struct {
 	// URL is the sitemap URL that was being parsed when the error occurred. For a sitemap
 	// reached through a redirect it is the URL the sitemap was served from.
 	// When the depth limit is reached, it is the sitemap index whose sitemaps were not
-	// followed. When the limit on the sitemaps or on the URLs of a call is reached, or the
-	// call was cut short, it is the URL the call was made for.
+	// followed. When the limit on the sitemaps, on the URLs or on the validation errors of a
+	// call is reached, or the call was cut short, it is the URL the call was made for.
 	URL string
 	// Err is the underlying parse error.
 	Err error
@@ -96,6 +163,9 @@ func (e *ParseError) Unwrap() error {
 
 // ValidationError is returned when a URL or field value fails validation.
 // Callers can inspect URL to determine which value was rejected.
+//
+// How many entries of a document are not valid is up to the document, so a call records no
+// more errors of this type than the limit set with SetMaxValidationErrors allows.
 //
 // Example usage:
 //

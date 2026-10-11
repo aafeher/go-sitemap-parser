@@ -57,21 +57,28 @@ type (
 		// concurrency is unlimited.
 		sem chan struct{}
 		// limits holds the limits of the current Parse call on the sitemaps it
-		// fetches and lists and on the URLs it collects, and whether they were reached.
+		// fetches and lists, on the URLs it collects and on the validation errors it
+		// records, and whether they were reached.
 		limits callLimits
 	}
 
-	// callLimits are the limits of a Parse call on what it fetches and collects. They are the
-	// values set with SetMaxSitemaps and SetMaxURLs as they stand when the call starts, so
-	// that one limit applies to the whole call; 0 means no limit.
-	// sitemapsLeftOut and urlsLeftOut tell that a limit was not only reached, but kept the
-	// call from fetching or listing a sitemap or from collecting a URL: the results are not
-	// complete.
+	// callLimits are the limits of a Parse call on what it fetches, collects and records.
+	// They are the values set with SetMaxSitemaps, SetMaxURLs and SetMaxValidationErrors as
+	// they stand when the call starts, so that one limit applies to the whole call; 0 means
+	// no limit.
+	// sitemapsLeftOut, urlsLeftOut and validationErrorsLeftOut tell that a limit was not only
+	// reached, but kept the call from fetching or listing a sitemap, from collecting a URL or
+	// from recording a validation error: the results are not complete.
+	// validationErrors is the number of validation errors that count towards their limit, see
+	// addError.
 	callLimits struct {
-		maxSitemaps     int
-		maxURLs         int
-		sitemapsLeftOut bool
-		urlsLeftOut     bool
+		maxSitemaps             int
+		maxURLs                 int
+		maxValidationErrors     int
+		validationErrors        int
+		sitemapsLeftOut         bool
+		urlsLeftOut             bool
+		validationErrorsLeftOut bool
 	}
 
 	// config is a structure that holds configuration settings.
@@ -83,20 +90,21 @@ type (
 	// The rules field is a slice of strings that contains regular expressions to match URLs to include.
 	// The rulesRegexes field is a slice of *regexp.Regexp that stores the compiled regular expressions for the rules field.
 	config struct {
-		userAgent       string
-		fetchTimeout    uint16
-		maxResponseSize int64
-		maxDepth        int
-		maxConcurrency  int
-		maxSitemaps     int
-		maxURLs         int
-		multiThread     bool
-		strict          bool
-		httpClient      *http.Client
-		follow          []string
-		followRegexes   []*regexp.Regexp
-		rules           []string
-		rulesRegexes    []*regexp.Regexp
+		userAgent           string
+		fetchTimeout        uint16
+		maxResponseSize     int64
+		maxDepth            int
+		maxConcurrency      int
+		maxSitemaps         int
+		maxURLs             int
+		maxValidationErrors int
+		multiThread         bool
+		strict              bool
+		httpClient          *http.Client
+		follow              []string
+		followRegexes       []*regexp.Regexp
+		rules               []string
+		rulesRegexes        []*regexp.Regexp
 	}
 
 	// sitemapIndex is a structure of <sitemapindex>. The <lastmod> of an entry is read as
@@ -391,16 +399,17 @@ func New() *S {
 // This method does not return any value.
 func (s *S) setConfigDefaults() {
 	s.cfg = config{
-		userAgent:       "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
-		fetchTimeout:    3,
-		maxResponseSize: defaultMaxResponseSize,
-		maxDepth:        10,
-		maxConcurrency:  defaultMaxConcurrency,
-		maxSitemaps:     defaultMaxSitemaps,
-		maxURLs:         defaultMaxURLs,
-		multiThread:     true,
-		follow:          []string{},
-		rules:           []string{},
+		userAgent:           "go-sitemap-parser (+https://github.com/aafeher/go-sitemap-parser/blob/main/README.md)",
+		fetchTimeout:        3,
+		maxResponseSize:     defaultMaxResponseSize,
+		maxDepth:            10,
+		maxConcurrency:      defaultMaxConcurrency,
+		maxSitemaps:         defaultMaxSitemaps,
+		maxURLs:             defaultMaxURLs,
+		maxValidationErrors: defaultMaxValidationErrors,
+		multiThread:         true,
+		follow:              []string{},
+		rules:               []string{},
 	}
 }
 
@@ -454,6 +463,7 @@ func (s *S) SetMultiThread(multiThread bool) *S {
 // The same limit caps the decompressed size of gzip-compressed content, of all the members
 // of a gzip file together, whether it was fetched or supplied through the urlContent argument
 // of Parse; content that expands beyond it is rejected with a *ParseError.
+// Both errors wrap ErrMaxResponseSize, which errors.Is matches.
 // The default is 50 MB, matching the sitemaps.org protocol limit.
 // The value must be greater than 0; invalid values are ignored and a *ConfigError is recorded.
 // A later call with a valid value clears it.
@@ -476,6 +486,8 @@ func (s *S) SetMaxResponseSize(maxResponseSize int64) *S {
 // SetMaxDepth sets the maximum recursion depth for following sitemap indexes.
 // A sitemap index may reference other sitemap indexes; this limits how many levels deep
 // the parser will follow. The default is 10.
+// When the limit is reached, a *ParseError is recorded for every sitemap index whose sitemaps
+// are not followed. It names that sitemap index and wraps ErrMaxDepth, which errors.Is matches.
 // The value must be greater than 0; invalid values are ignored and a *ConfigError is recorded.
 // A later call with a valid value clears it.
 // The function returns a pointer to the S structure to allow method chaining.
@@ -524,10 +536,11 @@ func (s *S) SetMaxConcurrency(maxConcurrency int) *S {
 // once is requested and counted once. The document the call is made for does not count.
 //
 // Once the limit is reached, the sitemaps that are left are not fetched, and a *ParseError
-// naming the URL the call was made for is recorded, once for the call. The call does not
-// fail: what the sitemaps fetched until then yielded is returned. With multi-threading off,
-// the sitemaps are fetched in the order they are listed, so it is the first ones that are
-// fetched; with multi-threading on, which ones are depends on how fast the server answers.
+// naming the URL the call was made for is recorded, once for the call. It wraps
+// ErrMaxSitemaps, which errors.Is matches. The call does not fail: what the sitemaps fetched
+// until then yielded is returned. With multi-threading off, the sitemaps are fetched in the
+// order they are listed, so it is the first ones that are fetched; with multi-threading on,
+// which ones are depends on how fast the server answers.
 // Nothing is recorded if no sitemap had to be left out.
 //
 // The same limit is on the sitemaps GetSitemaps returns, which are the ones the documents
@@ -565,9 +578,10 @@ func (s *S) SetMaxSitemaps(maxSitemaps int) *S {
 // Once the limit is reached, the call stops collecting: what is left of the document that
 // reached the limit is left out unread, so it adds no errors either, the sitemaps that are
 // left are not fetched, and a *ParseError naming the URL the call was made for is recorded,
-// once for the call. The call does not fail: the URLs collected until then are returned. With
-// multi-threading off, they are the first ones in the order the sitemaps list them; with
-// multi-threading on, which ones they are depends on how fast the server answers.
+// once for the call. It wraps ErrMaxURLs, which errors.Is matches. The call does not fail:
+// the URLs collected until then are returned. With multi-threading off, they are the first
+// ones in the order the sitemaps list them; with multi-threading on, which ones they are
+// depends on how fast the server answers.
 // Nothing is recorded if nothing had to be left out.
 //
 // The limit bounds the memory the URLs of a call take up, whatever the documents list. The
@@ -586,6 +600,48 @@ func (s *S) SetMaxURLs(maxURLs int) *S {
 		return s
 	}
 	s.cfg.maxURLs = maxURLs
+
+	return s
+}
+
+// SetMaxValidationErrors sets the maximum number of validation errors a Parse or ParseContext
+// call records. The default is 100,000. A value of 0 means no limit.
+//
+// What is wrong with an entry of a document is recorded as a *ValidationError: a location
+// that is no URL, a value that cannot be parsed, a field strict mode requires. How many
+// entries of a document are not valid is up to the server, and such an entry does not count
+// towards the limit set with SetMaxURLs. The errors of this type that GetErrors returns
+// count, whatever they are about.
+//
+// Once the limit is reached, the validation errors that are left are not recorded, and a
+// *ParseError naming the URL the call was made for is recorded, once for the call. It wraps
+// ErrMaxValidationErrors, which errors.Is matches. Nothing else changes: the documents are
+// read to their end, and the URLs and the sitemaps of the call are the ones a call without
+// the limit returns. With multi-threading off, the errors recorded are the first ones in the
+// order the sitemaps list the entries; with multi-threading on, which ones they are depends
+// on how fast the server answers.
+// Nothing is recorded if no error had to be left out.
+//
+// The errors of the other types do not count and are recorded whatever the limit is: a
+// *NetworkError and a *ParseError are about a sitemap or about the call as a whole, so there
+// is at most one of them for a sitemap the call fetches, and a few for the call. A call
+// therefore still tells every sitemap it could not fetch or parse.
+//
+// The limit bounds the memory the errors of a call take up, whatever the documents hold,
+// together with the limit set with SetMaxSitemaps.
+//
+// Negative values are rejected and a *ConfigError is recorded; a later call with a valid
+// value clears it. The value that applies to a call is the one set when the call starts.
+// The function returns a pointer to the S structure to allow method chaining.
+func (s *S) SetMaxValidationErrors(maxValidationErrors int) *S {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clearConfigErrors("maxValidationErrors")
+	if maxValidationErrors < 0 {
+		s.errs = append(s.errs, &ConfigError{Field: "maxValidationErrors", Err: fmt.Errorf("must be >= 0, got %d", maxValidationErrors)})
+		return s
+	}
+	s.cfg.maxValidationErrors = maxValidationErrors
 
 	return s
 }
@@ -770,6 +826,15 @@ func (s *S) GetMaxURLs() int {
 	return s.cfg.maxURLs
 }
 
+// GetMaxValidationErrors returns the maximum number of validation errors a Parse or
+// ParseContext call records, see SetMaxValidationErrors.
+// A value of 0 means no limit.
+func (s *S) GetMaxValidationErrors() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.maxValidationErrors
+}
+
 // GetFollow returns a copy of the current follow regex pattern strings.
 func (s *S) GetFollow() []string {
 	s.mu.Lock()
@@ -833,7 +898,8 @@ func (s *S) GetStrict() bool {
 //
 // A call fetches no more sitemaps than SetMaxSitemaps allows, and collects no
 // more URLs than SetMaxURLs allows, so that it comes to an end whatever the
-// documents list.
+// documents list. It records no more validation errors than
+// SetMaxValidationErrors allows.
 //
 // The sitemaps the documents of the call list are returned by GetSitemaps,
 // whether or not they were fetched.
@@ -849,7 +915,9 @@ func (s *S) GetStrict() bool {
 // Except for the first, the error returned is the one GetErrors() holds about
 // it. What goes wrong further on is in GetErrors() only and does not fail the
 // call: a sitemap the document lists that cannot be fetched or parsed, a limit
-// that is reached, an entry that is not valid.
+// that is reached, an entry that is not valid. The error of a limit wraps the
+// error that stands for it, such as ErrMaxURLs, so errors.Is tells which limit
+// was reached.
 func (s *S) Parse(url string, urlContent *string) (*S, error) {
 	return s.ParseContext(context.Background(), url, urlContent)
 }
@@ -913,9 +981,13 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	s.listedURLs = nil
 	s.urls = nil
 	s.errs = filterErrors(s.errs, isConfigError)
-	// The limits of the call are those set by now: a SetMaxSitemaps or SetMaxURLs call made
-	// while this one runs applies to the next one.
-	s.limits = callLimits{maxSitemaps: s.cfg.maxSitemaps, maxURLs: s.cfg.maxURLs}
+	// The limits of the call are those set by now: a SetMaxSitemaps, SetMaxURLs or
+	// SetMaxValidationErrors call made while this one runs applies to the next one.
+	s.limits = callLimits{
+		maxSitemaps:         s.cfg.maxSitemaps,
+		maxURLs:             s.cfg.maxURLs,
+		maxValidationErrors: s.cfg.maxValidationErrors,
+	}
 
 	if len(s.errs) > 0 {
 		s.mu.Unlock()
@@ -924,7 +996,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 
 	if urlContent == nil {
 		if vErr := s.validateInputURL(url); vErr != nil {
-			s.errs = append(s.errs, vErr)
+			s.addError(vErr)
 			s.mu.Unlock()
 			return s, vErr
 		}
@@ -948,7 +1020,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	content, servedFrom, err := s.setContent(ctx, urlContent)
 	if err != nil {
 		s.mu.Lock()
-		s.errs = append(s.errs, err)
+		s.addError(err)
 		s.mu.Unlock()
 		return s, err
 	}
@@ -982,7 +1054,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 		// way the sitemaps are fetched and wherever the cancellation caught them.
 		err := &ParseError{URL: url, Err: ctxErr}
 		s.mu.Lock()
-		s.errs = append(s.errs, err)
+		s.addError(err)
 		s.mu.Unlock()
 		return s, err
 	}
@@ -1011,6 +1083,14 @@ func (s *S) GetErrorsCount() int64 {
 // told apart with errors.As. They are in the order they were recorded in. With multi-threading
 // on, see SetMultiThread, that order is not the same from one call to the next for the errors
 // of different sitemaps.
+//
+// An error that tells a limit of the call was reached wraps the error that stands for the
+// limit, to be told with errors.Is: ErrMaxResponseSize, ErrMaxDepth, ErrMaxSitemaps,
+// ErrMaxURLs or ErrMaxValidationErrors.
+//
+// No more *ValidationError values are among them than the limit set with
+// SetMaxValidationErrors allows. If a call had more to record, it left the later ones out and
+// recorded the error of that limit.
 //
 // The error Parse or ParseContext returned is among them, unless it tells that configuration
 // errors are outstanding: then the configuration errors are. A call that returns a nil error
@@ -1235,7 +1315,7 @@ func (s *S) robotsTXTSitemapLocations(url string) []string {
 		// owner of a host approve of a sitemap kept elsewhere.
 		location, err := s.resolveAndValidate(sitemapURL, url, false)
 		if err != nil {
-			s.errs = append(s.errs, err)
+			s.addError(err)
 			continue
 		}
 		s.listSitemap(Sitemap{Loc: location})
@@ -1330,7 +1410,7 @@ func (s *S) fetch(ctx context.Context, url string) (string, string, error) {
 	}
 
 	if int64(len(body)) > maxResponseSize {
-		return "", "", &NetworkError{URL: url, Err: fmt.Errorf("response size exceeds limit of %d bytes", maxResponseSize)}
+		return "", "", &NetworkError{URL: url, Err: limitErrorf(ErrMaxResponseSize, "response size exceeds limit of %d bytes", maxResponseSize)}
 	}
 
 	return body, finalURL(url, req, response), nil
@@ -1416,7 +1496,7 @@ func (s *S) checkAndUnzipContent(url string, content string) (unzipped string, o
 	}
 	uncompressed, err := unzip(content, maxSize)
 	if err != nil {
-		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+		s.addError(&ParseError{URL: url, Err: err})
 		return "", false
 	}
 	return uncompressed, true
@@ -1500,17 +1580,48 @@ func (s *S) hasRoomForURL() bool {
 	return true
 }
 
+// addError records err as an error of the call.
+//
+// What is wrong with an entry of a document is a *ValidationError, and a document may hold
+// any number of entries. No more errors of that type are therefore recorded than the limit
+// set with SetMaxValidationErrors allows: one there is no room for is left out, and it is
+// noted that one had to be. An error of another type is about a sitemap or about the call as
+// a whole, so the sitemaps the call fetches bound their number, and it is recorded in any
+// case: which sitemaps a call could not fetch or parse is not lost for the entries of another.
+//
+// Must be called with s.mu held, unless no other goroutine has access to s.
+func (s *S) addError(err error) {
+	if _, ok := err.(*ValidationError); ok {
+		if s.limits.maxValidationErrors > 0 && s.limits.validationErrors >= s.limits.maxValidationErrors {
+			s.limits.validationErrorsLeftOut = true
+			return
+		}
+		s.limits.validationErrors++
+	}
+	s.errs = append(s.errs, err)
+}
+
+// addErrors records errs as errors of the call, see addError.
+func (s *S) addErrors(errs []error) {
+	for _, err := range errs {
+		s.addError(err)
+	}
+}
+
 // reportLimits records the limits that kept the call for url from fetching or listing a
-// sitemap or from collecting a URL. Each is recorded once, however many sitemaps and URLs
-// were left out, and names the URL the call was made for: it is the call as a whole that the
-// limits are about.
+// sitemap, from collecting a URL or from recording a validation error. Each is recorded once,
+// however many sitemaps, URLs and errors were left out, and names the URL the call was made
+// for: it is the call as a whole that the limits are about.
 // Must be called with s.mu held.
 func (s *S) reportLimits(url string) {
 	if s.limits.sitemapsLeftOut {
-		s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("limit of %d sitemaps reached", s.limits.maxSitemaps)})
+		s.addError(&ParseError{URL: url, Err: limitErrorf(ErrMaxSitemaps, "limit of %d sitemaps reached", s.limits.maxSitemaps)})
 	}
 	if s.limits.urlsLeftOut {
-		s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("limit of %d URLs reached", s.limits.maxURLs)})
+		s.addError(&ParseError{URL: url, Err: limitErrorf(ErrMaxURLs, "limit of %d URLs reached", s.limits.maxURLs)})
+	}
+	if s.limits.validationErrorsLeftOut {
+		s.addError(&ParseError{URL: url, Err: limitErrorf(ErrMaxValidationErrors, "limit of %d validation errors reached", s.limits.maxValidationErrors)})
 	}
 }
 
@@ -1526,7 +1637,7 @@ func (s *S) withinMaxDepth(url string, depth int) bool {
 	if depth < s.cfg.maxDepth {
 		return true
 	}
-	s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("max recursion depth of %d reached", s.cfg.maxDepth)})
+	s.addError(&ParseError{URL: url, Err: limitErrorf(ErrMaxDepth, "max recursion depth of %d reached", s.cfg.maxDepth)})
 	return false
 }
 
@@ -1577,7 +1688,7 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, url string, locati
 			s.releaseSlot()
 			if err != nil {
 				s.mu.Lock()
-				s.errs = append(s.errs, err)
+				s.addError(err)
 				s.mu.Unlock()
 				return
 			}
@@ -1615,7 +1726,7 @@ func (s *S) parseAndFetchUrlsSequential(ctx context.Context, url string, locatio
 		servedFrom, parsedLocations, err := s.fetchAndParse(ctx, location)
 		if err != nil {
 			s.mu.Lock()
-			s.errs = append(s.errs, err)
+			s.addError(err)
 			s.mu.Unlock()
 			continue
 		}
@@ -1678,7 +1789,9 @@ func (s *S) parseDocument(url string, content string) ([]string, error) {
 // The instance may collect as many URLs as s has room for at this point, so that a document
 // does not pile up URLs only to have them dropped when they are added to s. It may list as
 // many sitemaps as the call may in all: which of them s has listed already is only known when
-// they are added to it, and one that is listed already takes up no room there.
+// they are added to it, and one that is listed already takes up no room there. It counts its
+// validation errors on from those s has recorded at this point, for the reason it has for
+// the URLs: it records as many as s has room for.
 //
 // Must be called without s.mu held.
 func (s *S) newDocument() *S {
@@ -1693,6 +1806,8 @@ func (s *S) newDocument() *S {
 	if s.limits.maxURLs > 0 {
 		document.limits.maxURLs = s.limits.maxURLs - len(s.urls)
 	}
+	document.limits.maxValidationErrors = s.limits.maxValidationErrors
+	document.limits.validationErrors = s.limits.validationErrors
 	return document
 }
 
@@ -1724,7 +1839,10 @@ func (s *S) addDocument(document *S) {
 		s.listSitemap(sitemap)
 	}
 	s.limits.sitemapsLeftOut = s.limits.sitemapsLeftOut || document.limits.sitemapsLeftOut
-	s.errs = append(s.errs, document.errs...)
+	// There was room for these errors when the document was begun as well, and the ones there
+	// is no room for any more are left out here.
+	s.addErrors(document.errs)
+	s.limits.validationErrorsLeftOut = s.limits.validationErrorsLeftOut || document.limits.validationErrorsLeftOut
 }
 
 // documentError returns the error that tells a document could not be parsed, out of errs, the
@@ -1835,14 +1953,14 @@ func (s *S) parseSitemapIndexContent(url, content string) []string {
 	var added []string
 	smIndex, err := s.parseSitemapIndex(content)
 	if err != nil {
-		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+		s.addError(&ParseError{URL: url, Err: err})
 		return added
 	}
 	for _, sm := range smIndex.Sitemap {
 		sm.Loc = strings.TrimSpace(sm.Loc)
 		resolvedLoc, err := s.resolveAndValidateLoc(sm.Loc, url)
 		if err != nil {
-			s.errs = append(s.errs, err)
+			s.addError(err)
 			continue
 		}
 		sm.Loc = resolvedLoc
@@ -1859,14 +1977,15 @@ func (s *S) parseSitemapIndexContent(url, content string) []string {
 func (s *S) parseURLSetContent(url, content string) {
 	// The entries are dealt with one by one while the document is read, yet a document that
 	// cannot be read to its end yields nothing but the error: what its entries added until
-	// then is dropped again, and with it the note that a URL of it had to be left out.
+	// then is dropped again, and with it the note that a URL or an error of it had to be left
+	// out.
 	urls, errs, limits := s.urls, s.errs, s.limits
 	err := s.parseURLSet(content, func(entry *urlEntry) {
 		s.addURLEntry(entry, url)
 	})
 	if err != nil {
 		s.urls, s.errs, s.limits = urls, errs, limits
-		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+		s.addError(&ParseError{URL: url, Err: err})
 	}
 }
 
@@ -1882,7 +2001,7 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 	u.Loc = strings.TrimSpace(u.Loc)
 	resolvedLoc, err := s.resolveAndValidateLoc(u.Loc, baseURL)
 	if err != nil {
-		s.errs = append(s.errs, err)
+		s.addError(err)
 		return
 	}
 	u.Loc = resolvedLoc
@@ -1895,7 +2014,7 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 	// entry when the value is one of its own, as it does for a priority out of range; a
 	// value of an extension costs the entry nothing more in either mode.
 	for _, invalid := range entry.invalid {
-		s.errs = append(s.errs, &ValidationError{URL: u.Loc, Err: invalid.err()})
+		s.addError(&ValidationError{URL: u.Loc, Err: invalid.err()})
 	}
 	if s.cfg.strict && entry.invalidOwn {
 		return
@@ -1904,11 +2023,11 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 	// either. Each such value is reported.
 	changeFreqErr := s.validateChangeFreq(u.Loc, u.ChangeFreq)
 	if changeFreqErr != nil {
-		s.errs = append(s.errs, changeFreqErr)
+		s.addError(changeFreqErr)
 	}
 	priorityErr := s.validatePriority(u.Loc, u.Priority)
 	if priorityErr != nil {
-		s.errs = append(s.errs, priorityErr)
+		s.addError(priorityErr)
 	}
 	if changeFreqErr != nil || priorityErr != nil {
 		return
@@ -1920,16 +2039,16 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 	}
 	validImages, imageErrs := s.validateAndFilterImages(u.Loc, u.Images)
 	u.Images = validImages
-	s.errs = append(s.errs, imageErrs...)
+	s.addErrors(imageErrs)
 	validNews, newsErrs := s.validateNews(u.Loc, u.News, entry.newsDateText())
 	u.News = validNews
-	s.errs = append(s.errs, newsErrs...)
+	s.addErrors(newsErrs)
 	validVideos, videoErrs := s.validateAndFilterVideos(u.Loc, u.Videos)
 	u.Videos = validVideos
-	s.errs = append(s.errs, videoErrs...)
+	s.addErrors(videoErrs)
 	validHreflangs, hreflangErrs := s.validateAndFilterHreflangs(u.Loc, u.Hreflangs)
 	u.Hreflangs = validHreflangs
-	s.errs = append(s.errs, hreflangErrs...)
+	s.addErrors(hreflangErrs)
 	if !s.matchesRulesFilter(u.Loc) {
 		return
 	}
@@ -1939,7 +2058,7 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 func (s *S) parseRSSContent(url, content string) {
 	rssFeed, err := s.parseRSS(content)
 	if err != nil {
-		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+		s.addError(&ParseError{URL: url, Err: err})
 		return
 	}
 	for _, item := range rssFeed.Channel.Item {
@@ -1950,7 +2069,7 @@ func (s *S) parseRSSContent(url, content string) {
 func (s *S) parseFeedContent(url, content string) {
 	atomFeed, err := s.parseAtom(content)
 	if err != nil {
-		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
+		s.addError(&ParseError{URL: url, Err: err})
 		return
 	}
 	for _, entry := range atomFeed.Entry {
@@ -1996,9 +2115,9 @@ func (s *S) parseTextContent(url, rootElement, content string) {
 		return
 	}
 	if len(content) == 0 {
-		s.errs = append(s.errs, &ParseError{URL: url, Err: errors.New("sitemap content is empty")})
+		s.addError(&ParseError{URL: url, Err: errors.New("sitemap content is empty")})
 	} else {
-		s.errs = append(s.errs, &ParseError{URL: url, Err: fmt.Errorf("unrecognized sitemap format (root element: %q)", rootElement)})
+		s.addError(&ParseError{URL: url, Err: fmt.Errorf("unrecognized sitemap format (root element: %q)", rootElement)})
 	}
 }
 
@@ -2039,7 +2158,7 @@ func (s *S) addURL(loc string, baseURL string, date dateElement) {
 	}
 	resolvedLoc, err := s.resolveAndValidateLoc(loc, baseURL)
 	if err != nil {
-		s.errs = append(s.errs, err)
+		s.addError(err)
 		return
 	}
 	// A date that cannot be parsed is reported whether or not the rules take the URL, as the
@@ -2065,7 +2184,7 @@ func (s *S) lastMod(loc string, date dateElement) *LastModTime {
 	}
 	parsed, err := date.parse(*date.text)
 	if err != nil {
-		s.errs = append(s.errs, &ValidationError{URL: loc, Err: invalidValue{element: date.name, text: *date.text}.err()})
+		s.addError(&ValidationError{URL: loc, Err: invalidValue{element: date.name, text: *date.text}.err()})
 		return nil
 	}
 	return &parsed
@@ -2372,6 +2491,12 @@ const defaultMaxSitemaps = 50000
 // all but the largest sites list, and there to keep a call from collecting URLs without end.
 // Pass 0 to SetMaxURLs to lift the limit.
 const defaultMaxURLs = 10000000
+
+// defaultMaxValidationErrors is the default maximum number of validation errors a Parse call
+// records. It is more than a call has a use for one by one, and there to keep the errors of a
+// call from growing without end.
+// Pass 0 to SetMaxValidationErrors to lift the limit.
+const defaultMaxValidationErrors = 100000
 
 // robotsTXTDepth is the depth at which the sitemaps listed in a robots.txt are fetched: one
 // level above 0, the depth of the sitemaps a sitemap index names. A sitemap listed in a
@@ -3036,8 +3161,8 @@ func (m *gzipMembers) Close() error {
 // It returns the uncompressed content, or the error that kept the content from being
 // decompressed. No content is returned together with an error.
 // At most maxSize bytes are decompressed, for all members together. If the payload is larger,
-// decompression stops and an error is returned, so a small compressed input cannot exhaust
-// memory (decompression bomb).
+// decompression stops and an error that wraps ErrMaxResponseSize is returned, so a small
+// compressed input cannot exhaust memory (decompression bomb).
 func unzip(content string, maxSize int64) (string, error) {
 	members, err := newGzipMembers(content)
 	if err != nil {
@@ -3053,7 +3178,7 @@ func unzip(content string, maxSize int64) (string, error) {
 	}
 
 	if int64(len(uncompressed)) > maxSize {
-		return "", fmt.Errorf("decompressed size exceeds limit of %d bytes", maxSize)
+		return "", limitErrorf(ErrMaxResponseSize, "decompressed size exceeds limit of %d bytes", maxSize)
 	}
 
 	return uncompressed, nil

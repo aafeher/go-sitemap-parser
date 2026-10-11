@@ -49,6 +49,7 @@ A sitemap document can reference tens of thousands of child sitemaps or URLs. Wi
 - `SetMaxDepth()` limits sitemap index recursion depth (default: 10). On its own it does not bound a call: an index may list up to 50,000 sitemaps on every level.
 - `SetMaxSitemaps()` limits the number of sitemaps a call fetches, on all levels together (default: 50,000), and with it the number of requests a document can make the parser send. The same limit is on the sitemaps a call lists for `GetSitemaps()`, which are kept in memory until the next call like the URLs are. `0` lifts the limit.
 - `SetMaxURLs()` limits the number of URLs a call collects (default: 10,000,000), and with it the memory the results take up. `0` lifts the limit.
+- `SetMaxValidationErrors()` limits the number of validation errors a call records (default: 100,000), and with it the number of errors the entries of a document can make a call keep. The errors about a sitemap that could not be fetched or parsed are recorded whatever this limit is, and are bounded by `SetMaxSitemaps()`. `0` lifts the limit.
 - `SetMaxConcurrency()` bounds the number of sitemaps that are fetched and parsed at the same time (default: 16), and with it the number of documents held in memory and of goroutines running at once. A sitemap that waits for its turn takes up neither. `0` lifts the bound: a goroutine is then started, and a request sent, for every sitemap a document lists.
 - Pass a `context.Context` with a deadline via `ParseContext()` to enforce a wall-clock time limit.
 
@@ -56,12 +57,14 @@ Versions up to and including v1.1.0 had no limit on the sitemaps and URLs of a c
 
 Versions up to and including v1.2.2 kept the location of every sitemap the sitemap indexes of a call listed, in a list of their own that no limit bounded: the list grew to the number of indexes fetched times the entries of each, and was kept until the next call. Against a server that answers every request with a large sitemap index, a call took up gigabytes of memory within the limits of `SetMaxSitemaps()` and `SetMaxURLs()`.
 
+Versions up to and including v1.2.2 had no limit on the errors of a call either. An entry that is not valid is recorded as an error and does not count towards `SetMaxURLs()`, so a document of 50 MB could add some three million errors, and every sitemap of the call as many again: the errors were bounded only by the number of sitemaps and the response size limit.
+
 The defaults make every call come to an end, but they are sized for the largest sitemaps the protocol allows, not for untrusted input: a call may still send 50,000 requests and collect 10,000,000 URLs, which take up gigabytes of memory. When the documents are not trusted:
 
-- set `SetMaxSitemaps()` and `SetMaxURLs()` to what the application expects at most, and
+- set `SetMaxSitemaps()`, `SetMaxURLs()` and `SetMaxValidationErrors()` to what the application expects at most, and
 - pass a deadline, as the limits bound what a call fetches and collects, not how long a server may take to answer.
 
-The errors of a call are not limited. An entry that is not valid is recorded as an error and does not count towards `SetMaxURLs()`, so the number of errors is bounded only by the number of sitemaps and the response size limit. Lower `SetMaxSitemaps()` and `SetMaxResponseSize()` to bound it.
+The limits on the URLs and on the validation errors are on their number, not on their size. A URL is returned with what the extensions say about the page, and an error names the URL, or quotes the value, it is about in full, however long that is: either can be as large as the entry it comes from. What bounds the size of everything a call reads is the number of sitemaps and the response size limit, so lower `SetMaxSitemaps()` and `SetMaxResponseSize()` to bound it.
 
 ### XML security
 

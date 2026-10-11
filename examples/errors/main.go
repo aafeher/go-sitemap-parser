@@ -19,12 +19,18 @@ import (
 //   - *sitemap.ConfigError    — a configuration setter received an invalid value
 //   - *sitemap.NetworkError   — an HTTP fetch failed
 //   - *sitemap.ParseError     — a sitemap document could not be parsed, or the
-//     parse was not carried through: the depth limit was reached, or the call
-//     was cut short by its context
+//     parse was not carried through: a limit was reached, or the call was cut
+//     short by its context
 //   - *sitemap.ValidationError — a URL or field value failed validation
 //
 // Each typed error exposes a URL / Field for context and an Err for the root
 // cause, so that errors.Is can still match on well-known sentinel errors.
+//
+// The error of a limit that was reached wraps the error that stands for the
+// limit: sitemap.ErrMaxResponseSize, sitemap.ErrMaxDepth,
+// sitemap.ErrMaxSitemaps, sitemap.ErrMaxURLs or
+// sitemap.ErrMaxValidationErrors. errors.Is tells which limit it was, with no
+// need to read the message.
 //
 // Parse() / ParseContext() fail when the document they are called for cannot
 // be fetched or parsed, and return the error that GetErrors() holds about it.
@@ -126,4 +132,47 @@ func main() {
 			fmt.Printf("  cause: %s\n", valErr.Err)
 		}
 	}
+
+	// ── 5. Limits ─────────────────────────────────────────────────────────────
+	// A limit that is reached does not fail the call. What it left out is told
+	// by an error in GetErrors(), and errors.Is tells which limit that error is
+	// about.
+	fmt.Println("\n=== Errors of the limits ===")
+	pages := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><lastmod>2024-01-15</lastmod></url>
+  <url><lastmod>2024-01-16</lastmod></url>
+  <url><loc>https://example.com/page-1</loc></url>
+  <url><loc>https://example.com/page-2</loc></url>
+  <url><loc>https://example.com/page-3</loc></url>
+</urlset>`
+	// The document has an entry without a location and a page more than the
+	// limits allow.
+	s = sitemap.New().SetMaxURLs(2).SetMaxValidationErrors(1)
+	if _, err := s.Parse("https://example.com/sitemap.xml", &pages); err != nil {
+		log.Printf("parse error: %v", err)
+	}
+	fmt.Printf("  %d URL(s), %d error(s)\n", s.GetURLCount(), s.GetErrorsCount())
+	for _, e := range s.GetErrors() {
+		if limit := limitOf(e); limit != "" {
+			fmt.Printf("  %s: %v\n", limit, e)
+		}
+	}
+}
+
+// limitOf returns the name of the limit err is about, and "" if it is about
+// none.
+func limitOf(err error) string {
+	switch {
+	case errors.Is(err, sitemap.ErrMaxResponseSize):
+		return "ErrMaxResponseSize"
+	case errors.Is(err, sitemap.ErrMaxDepth):
+		return "ErrMaxDepth"
+	case errors.Is(err, sitemap.ErrMaxSitemaps):
+		return "ErrMaxSitemaps"
+	case errors.Is(err, sitemap.ErrMaxURLs):
+		return "ErrMaxURLs"
+	case errors.Is(err, sitemap.ErrMaxValidationErrors):
+		return "ErrMaxValidationErrors"
+	}
+	return ""
 }
