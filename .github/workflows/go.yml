@@ -31,6 +31,22 @@ jobs:
     - name: Vet
       run: go vet ./...
 
+    # Nothing else looks at the formatting: golangci-lint runs no formatter and
+    # leaves out the examples. The gofmt of one Go release may format a file
+    # differently from that of another, so the check runs on one leg of the
+    # matrix only: `stable`, the release a contributor formats with.
+    - name: Format
+      if: matrix.go-version == 'stable'
+      run: |
+        unformatted="$(gofmt -l .)"
+        if [ -n "$unformatted" ]; then
+          while IFS= read -r file; do
+            echo "::error file=$file::$file is not formatted, run 'gofmt -w $file'"
+          done <<< "$unformatted"
+          gofmt -d . || true
+          exit 1
+        fi
+
     # golangci-lint's minimum Go version tracks the latest Go release, so the
     # oldest leg of the matrix periodically becomes too old to build it while
     # setup-go pins GOTOOLCHAIN=local. Gating the step to `stable` keeps that
@@ -47,6 +63,14 @@ jobs:
 
     - name: Test
       run: go test -v -race -coverprofile=coverage.txt -covermode=atomic .
+
+    # `go test` runs no benchmark unless it is asked to, so one that fails is
+    # not noticed by the step above. Each benchmark is run once here: not to
+    # measure anything, which a shared runner is no place for, but to see that
+    # it still passes.
+    - name: Benchmarks
+      run: go test -run '^$' -bench . -benchtime 1x .
+
     - name: Vulnerability scan
       if: matrix.go-version == 'stable'
       run: |
