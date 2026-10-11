@@ -45,7 +45,7 @@ A URL found in a document is requested only if it is an `http` or `https` URL of
 
 A sitemap document can reference tens of thousands of child sitemaps or URLs. Without limits, parsing an adversarial document could exhaust memory or connections:
 
-- `SetMaxResponseSize()` caps the response body size per fetch and the decompressed size of gzip content (default: 50 MB, matching the sitemaps.org protocol limit).
+- `SetMaxResponseSize()` caps the response body size per fetch and the decompressed size of gzip content (default: 50 MB, matching the sitemaps.org protocol limit). While a document is read it takes up its size in memory, or twice its size if it does not say how large it is or is larger than 50 MB; a document over the limit takes up the limit until it is rejected. A gzip file is in memory together with its decompressed content.
 - `SetMaxDepth()` limits sitemap index recursion depth (default: 10). On its own it does not bound a call: an index may list up to 50,000 sitemaps on every level.
 - `SetMaxSitemaps()` limits the number of sitemaps a call fetches, on all levels together (default: 50,000), and with it the number of requests a document can make the parser send. The same limit is on the sitemaps a call lists for `GetSitemaps()`, which are kept in memory until the next call like the URLs are. `0` lifts the limit.
 - `SetMaxURLs()` limits the number of URLs a call collects (default: 10,000,000), and with it the memory the results take up. `0` lifts the limit.

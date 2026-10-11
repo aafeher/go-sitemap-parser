@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
+	"io"
+	"math"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -814,6 +816,91 @@ func FuzzUnzip(f *testing.F) {
 		s := New()
 		if got, ok := s.checkAndUnzipContent(fuzzBaseURL, buf.String()); !ok || got != string(data) {
 			t.Fatalf("checkAndUnzipContent returned %d bytes and %v, want %d", len(got), ok, len(data))
+		}
+	})
+}
+
+// pieces is a source that hands out its content in pieces of the given sizes, one
+// after the other and over again, whatever it is asked for.
+type pieces struct {
+	content []byte
+	sizes   []byte
+	reads   int
+	// read is the number of bytes that were read from the source.
+	read int
+}
+
+func (p *pieces) Read(b []byte) (int, error) {
+	if p.read == len(p.content) {
+		return 0, io.EOF
+	}
+	n := len(b)
+	if len(p.sizes) > 0 {
+		n = min(n, int(p.sizes[p.reads%len(p.sizes)])+1)
+	}
+	p.reads++
+	n = copy(b[:n], p.content[p.read:])
+	p.read += n
+	return n, nil
+}
+
+// FuzzReadAtMost reads content that comes in pieces of arbitrary sizes, with an
+// arbitrary limit and an arbitrary size the content is said to have. The content
+// must come back as it is if it fits the limit and not at all if it does not,
+// the source must be read one byte past the limit at most and not after its end,
+// and none of that may depend on the size the content is said to have.
+func FuzzReadAtMost(f *testing.F) {
+	const content = "0123456789"
+	for _, limit := range []int64{-1, 0, 4, 9, 10, 11, math.MaxInt64} {
+		for _, size := range []int64{math.MinInt64, -1, 0, 1, 9, 10, 11, 1000, math.MaxInt64} {
+			f.Add([]byte(content), limit, size, []byte(nil))
+			f.Add([]byte(content), limit, size, []byte{0, 2})
+		}
+	}
+	f.Add([]byte(nil), int64(0), int64(10), []byte{0})
+	// Content of more than two of the buffers it is read into.
+	long := bytes.Repeat([]byte(content), 7000)
+	f.Add(long, int64(len(long)), int64(-1), []byte{255, 0, 100})
+	f.Add(long, int64(len(long)), int64(len(long)), []byte(nil))
+	f.Add(long, int64(len(long))-1, int64(len(long)/2), []byte(nil))
+	f.Add(long, int64(math.MaxInt64), int64(len(long)/3), []byte{255})
+	f.Add(long, int64(math.MaxInt64), int64(2*len(long)), []byte{255})
+
+	f.Fuzz(func(t *testing.T, data []byte, limit, size int64, sizes []byte) {
+		// A string is allocated for a size that is believed. A megabyte for every
+		// input is as much as a run can spare.
+		if size > 1024*1024 && size <= limit && size <= presizeLimit {
+			t.Skip()
+		}
+		source := &pieces{content: data, sizes: sizes}
+
+		// A source that is read after it reported its end fails the read.
+		got, exceeded, err := readAtMost(&endsOnce{source: source}, limit, size)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := int64(len(data)) > limit; exceeded != want {
+			t.Fatalf("%d bytes with a limit of %d: exceeded is %t", len(data), limit, exceeded)
+		}
+		if exceeded {
+			if got != "" {
+				t.Fatalf("%d bytes were returned of content that exceeds the limit", len(got))
+			}
+			if want := max(limit+1, 0); int64(source.read) != want {
+				t.Fatalf("%d bytes were read with a limit of %d", source.read, limit)
+			}
+		} else if got != string(data) {
+			t.Fatalf("content came back altered: got %d bytes, want %d", len(got), len(data))
+		}
+
+		// The size is not to be relied on, and changes nothing.
+		unsized, unsizedExceeded, err := readAtMost(&pieces{content: data, sizes: sizes}, limit, -1)
+		if err != nil {
+			t.Fatalf("unexpected error without a size: %v", err)
+		}
+		if unsized != got || unsizedExceeded != exceeded {
+			t.Fatalf("said to be %d bytes: %d bytes and %t, without a size: %d bytes and %t", size, len(got), exceeded, len(unsized), unsizedExceeded)
 		}
 	})
 }
