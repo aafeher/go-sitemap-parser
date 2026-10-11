@@ -604,8 +604,10 @@ func (s *S) SetHTTPClient(client *http.Client) *S {
 
 // SetStrict enables or disables strict mode for URL validation.
 // In strict mode, all URLs in sitemap <loc> elements must be absolute HTTP(S) URLs
-// on the same host and protocol as the sitemap file, must hold neither a space nor a control
-// character and must not exceed 2048 characters, as required by the sitemaps.org specification.
+// on the same host and protocol as the sitemap file, must hold neither a space, nor a control
+// character, nor one of the characters " < > \ ^ ` { | }, which a URL has to give
+// percent-encoded, and must not exceed 2048 characters, as required by the sitemaps.org
+// specification.
 // The host is compared without regard to letter case, and the default port of the protocol is
 // the same as no port.
 // In tolerant mode (default), relative URLs are resolved against the parent sitemap URL, and
@@ -1718,16 +1720,16 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 	if !s.cfg.strict {
 		u.encodeExtensionURLs()
 	}
-	validImages, imageErrs := s.validateAndFilterImages(u.Images)
+	validImages, imageErrs := s.validateAndFilterImages(u.Loc, u.Images)
 	u.Images = validImages
 	s.errs = append(s.errs, imageErrs...)
 	validNews, newsErrs := s.validateNews(u.Loc, u.News, entry.newsDateText())
 	u.News = validNews
 	s.errs = append(s.errs, newsErrs...)
-	validVideos, videoErrs := s.validateAndFilterVideos(u.Videos)
+	validVideos, videoErrs := s.validateAndFilterVideos(u.Loc, u.Videos)
 	u.Videos = validVideos
 	s.errs = append(s.errs, videoErrs...)
-	validHreflangs, hreflangErrs := s.validateAndFilterHreflangs(u.Hreflangs)
+	validHreflangs, hreflangErrs := s.validateAndFilterHreflangs(u.Loc, u.Hreflangs)
 	u.Hreflangs = validHreflangs
 	s.errs = append(s.errs, hreflangErrs...)
 	if !s.matchesRulesFilter(u.Loc) {
@@ -2194,13 +2196,18 @@ func (s *S) validatePriority(loc string, priority *float32) error {
 // In tolerant mode, images with an empty Loc are silently dropped. In strict mode,
 // an empty Loc is an error. In both modes, a Loc exceeding maxLocLength characters
 // is rejected. In strict mode, Loc must additionally be an absolute HTTP or HTTPS URL,
-// see validateAbsoluteURL. In tolerant mode the URLs of the images have been
+// see extensionURLError. In tolerant mode the URLs of the images have been
 // percent-encoded by the time they get here, see URL.encodeExtensionURLs, as have those
 // of the videos and of the alternate links.
 //
+// For an image that is kept, strict mode also validates License, a URL the image need not
+// give, see secondaryURLErrors. A License that is no URL is reported and the image is kept.
+//
 // Note: image Loc values are not required to share the host of the parent page URL —
 // CDN-hosted images are explicitly permitted by the Google Image Sitemap specification.
-func (s *S) validateAndFilterImages(images []Image) ([]Image, []error) {
+// loc is the parent page URL: the error for an image without a Loc names it, there being
+// no URL of the image to name.
+func (s *S) validateAndFilterImages(loc string, images []Image) ([]Image, []error) {
 	if len(images) == 0 {
 		return images, nil
 	}
@@ -2209,19 +2216,16 @@ func (s *S) validateAndFilterImages(images []Image) ([]Image, []error) {
 	for _, img := range images {
 		if img.Loc == "" {
 			if s.cfg.strict {
-				errs = append(errs, &ValidationError{URL: "", Err: errors.New("strict mode: image <loc> is empty")})
+				errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: image <loc> is empty")})
 			}
 			continue
 		}
-		if len(img.Loc) > maxLocLength {
-			errs = append(errs, &ValidationError{URL: img.Loc, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(img.Loc))})
+		if err := extensionURLError(img.Loc, s.cfg.strict); err != nil {
+			errs = append(errs, err)
 			continue
 		}
 		if s.cfg.strict {
-			if err := validateAbsoluteURL(img.Loc); err != nil {
-				errs = append(errs, err)
-				continue
-			}
+			errs = append(errs, secondaryURLErrors(img.License)...)
 		}
 		valid = append(valid, img)
 	}
@@ -2276,13 +2280,16 @@ func (s *S) validateNews(loc string, news *News, dateText *string) (*News, []err
 // ThumbnailLoc is treated as the primary key: videos with an empty ThumbnailLoc
 // are silently dropped in tolerant mode or produce an error in strict mode.
 // In both modes, a ThumbnailLoc exceeding maxLocLength is rejected. In strict mode,
-// ThumbnailLoc must additionally be an absolute HTTP or HTTPS URL, see validateAbsoluteURL.
+// ThumbnailLoc must additionally be an absolute HTTP or HTTPS URL, see extensionURLError.
 //
 // For videos that pass the ThumbnailLoc check, strict mode also validates the
 // remaining required fields (Title, Description, at least one of ContentLoc or
-// PlayerLoc) and optional numeric fields (Duration range 1–28800, Rating range
-// 0.0–5.0, Tags count ≤ 32). These failures record errors but keep the video entry.
-func (s *S) validateAndFilterVideos(videos []Video) ([]Video, []error) {
+// PlayerLoc), the optional numeric fields (Duration range 1–28800, Rating range
+// 0.0–5.0, Tags count ≤ 32) and the other URLs of the video (ContentLoc, PlayerLoc,
+// Uploader.Info), see validateVideoFieldsStrict. These failures record errors but keep
+// the video entry.
+// loc is the parent page URL, which the errors that are not about a URL name.
+func (s *S) validateAndFilterVideos(loc string, videos []Video) ([]Video, []error) {
 	if len(videos) == 0 {
 		return videos, nil
 	}
@@ -2291,20 +2298,16 @@ func (s *S) validateAndFilterVideos(videos []Video) ([]Video, []error) {
 	for _, v := range videos {
 		if v.ThumbnailLoc == "" {
 			if s.cfg.strict {
-				errs = append(errs, &ValidationError{URL: "", Err: errors.New("strict mode: video <thumbnail_loc> is empty")})
+				errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: video <thumbnail_loc> is empty")})
 			}
 			continue
 		}
-		if len(v.ThumbnailLoc) > maxLocLength {
-			errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(v.ThumbnailLoc))})
+		if err := extensionURLError(v.ThumbnailLoc, s.cfg.strict); err != nil {
+			errs = append(errs, err)
 			continue
 		}
 		if s.cfg.strict {
-			if err := validateAbsoluteURL(v.ThumbnailLoc); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			errs = append(errs, s.validateVideoFieldsStrict(v)...)
+			errs = append(errs, validateVideoFieldsStrict(loc, v)...)
 		}
 		valid = append(valid, v)
 	}
@@ -2312,27 +2315,34 @@ func (s *S) validateAndFilterVideos(videos []Video) ([]Video, []error) {
 }
 
 // validateVideoFieldsStrict checks non-fatal strict-mode constraints on a video entry.
-func (s *S) validateVideoFieldsStrict(v Video) []error {
+// A field that is missing or out of range is no URL that is rejected, so its error names loc,
+// the page the video is on, as the errors of a news entry do. The other URLs of the video
+// have to be URLs where they are given, see secondaryURLErrors; the error of one names it.
+func validateVideoFieldsStrict(loc string, v Video) []error {
 	var errs []error
 	if v.Title == "" {
-		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video <title> is empty")})
+		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: video <title> is empty")})
 	}
 	if v.Description == "" {
-		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video <description> is empty")})
+		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: video <description> is empty")})
 	}
 	if v.ContentLoc == "" && v.PlayerLoc == "" {
-		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: errors.New("strict mode: video must have at least one of <content_loc> or <player_loc>")})
+		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: video must have at least one of <content_loc> or <player_loc>")})
 	}
 	if v.Duration != nil && (*v.Duration < 1 || *v.Duration > maxVideoDuration) {
-		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video <duration> %d is out of range [1, %d]", *v.Duration, maxVideoDuration)})
+		errs = append(errs, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: video <duration> %d is out of range [1, %d]", *v.Duration, maxVideoDuration)})
 	}
 	if v.Rating != nil && (*v.Rating < 0.0 || *v.Rating > maxVideoRating) {
-		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video <rating> %g is out of range [0.0, %g]", *v.Rating, maxVideoRating)})
+		errs = append(errs, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: video <rating> %g is out of range [0.0, %g]", *v.Rating, maxVideoRating)})
 	}
 	if len(v.Tags) > maxVideoTags {
-		errs = append(errs, &ValidationError{URL: v.ThumbnailLoc, Err: fmt.Errorf("strict mode: video has %d tags, maximum is %d", len(v.Tags), maxVideoTags)})
+		errs = append(errs, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: video has %d tags, maximum is %d", len(v.Tags), maxVideoTags)})
 	}
-	return errs
+	var uploaderInfo string
+	if v.Uploader != nil {
+		uploaderInfo = v.Uploader.Info
+	}
+	return append(errs, secondaryURLErrors(v.ContentLoc, v.PlayerLoc, uploaderInfo)...)
 }
 
 // validateAndFilterHreflangs validates the alternate link (hreflang) entries on a parsed URL
@@ -2341,8 +2351,10 @@ func (s *S) validateVideoFieldsStrict(v Video) []error {
 // In tolerant mode, links with an empty Href are silently dropped. In strict mode,
 // an empty Href is an error. In both modes, an Href exceeding maxLocLength characters
 // is rejected. In strict mode, Href must additionally be an absolute HTTP or HTTPS URL,
-// see validateAbsoluteURL, and Hreflang must not be empty.
-func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, []error) {
+// see validateAbsoluteURL, Rel must be "alternate" and Hreflang must not be empty.
+// loc is the parent page URL: the error for a link without an Href names it, there being
+// no URL of the link to name.
+func (s *S) validateAndFilterHreflangs(loc string, links []AlternateLink) ([]AlternateLink, []error) {
 	if len(links) == 0 {
 		return links, nil
 	}
@@ -2351,7 +2363,7 @@ func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, 
 	for _, link := range links {
 		if link.Href == "" {
 			if s.cfg.strict {
-				errs = append(errs, &ValidationError{URL: "", Err: errors.New("strict mode: alternate link <href> is empty")})
+				errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: alternate link <href> is empty")})
 			}
 			continue
 		}
@@ -2390,8 +2402,9 @@ func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, 
 // internationalised host name is returned in ASCII, see asciiHost. What is returned is a URL
 // neturl.Parse accepts: a location that does not resolve to one is rejected.
 // In strict mode (strict=true), URLs must additionally be absolute HTTP(S) URLs without a
-// space or a control character in them, see strictURLError, on the same host and protocol as
-// baseURL, see sameHost. The URL is returned as the document gives it.
+// space, a control character or another character in them that a URL may not hold, see
+// strictURLError, on the same host and protocol as baseURL, see sameHost. The URL is returned
+// as the document gives it.
 // baseURL is the URL the sitemap was served from: the location of the sitemap, whichever URL
 // the request for it began at.
 // Returns the resolved URL string and an error if validation fails.
@@ -2580,11 +2593,17 @@ func namesNoHost(loc string, parsed *neturl.URL) bool {
 	return strings.HasPrefix(loc, "//") && parsed.Hostname() == ""
 }
 
+// excludedFromURLs holds the printable ASCII characters that RFC 3986 gives no place in a URL:
+// a URL may not hold one anywhere, and has to give it percent-encoded, "|" as "%7C". The
+// square brackets are not among them, as they have a place, around an IPv6 address.
+const excludedFromURLs = "\"<>\\^`{|}"
+
 // strictURLError tells what keeps rawURL from being a URL strict mode accepts: an absolute
-// HTTP or HTTPS URL that names a host and has neither a space nor a control character in it.
-// A URL has to give these percent-encoded, a space as "%20". A port is no host:
-// "https://:8080/" names none. parsed is rawURL as neturl.Parse reads it. It returns nil for a
-// URL that is one.
+// HTTP or HTTPS URL that names a host and has neither a space, nor a control character, nor a
+// character of excludedFromURLs in it. A URL has to give these percent-encoded, a space as
+// "%20". A port is no host: "https://:8080/" names none. A character that is not in ASCII is
+// accepted, as it is in an IRI (RFC 3987). parsed is rawURL as neturl.Parse reads it. It
+// returns nil for a URL that is one.
 func strictURLError(rawURL string, parsed *neturl.URL) error {
 	switch {
 	case parsed.Scheme != "http" && parsed.Scheme != "https":
@@ -2597,6 +2616,11 @@ func strictURLError(rawURL string, parsed *neturl.URL) error {
 		// neturl.Parse turns down a control character itself, except in the fragment.
 		return errors.New("strict mode: URL contains a control character")
 	}
+	// neturl.Parse turns down these in the user information and some of them in the name of
+	// the host, and none of them in the path, in the query and in the fragment.
+	if i := strings.IndexAny(rawURL, excludedFromURLs); i >= 0 {
+		return fmt.Errorf("strict mode: URL contains the character '%c', which it has to give as \"%%%02X\"", rawURL[i], rawURL[i])
+	}
 	return nil
 }
 
@@ -2606,8 +2630,9 @@ func isControl(r rune) bool {
 }
 
 // validateAbsoluteURL validates a URL of an extension in strict mode: the location of an
-// image, the thumbnail of a video, the target of an alternate link. It has to be a URL
-// strictURLError has nothing against; unlike the location of the page, it may be on any host.
+// image, the thumbnail of a video, the target of an alternate link, and the other URLs of an
+// image and of a video, see secondaryURLErrors. It has to be a URL strictURLError has nothing
+// against; unlike the location of the page, it may be on any host.
 // It returns a *ValidationError for rawURL, or nil.
 func validateAbsoluteURL(rawURL string) error {
 	parsed, err := neturl.Parse(rawURL)
@@ -2618,6 +2643,40 @@ func validateAbsoluteURL(rawURL string) error {
 		return &ValidationError{URL: rawURL, Err: err}
 	}
 	return nil
+}
+
+// extensionURLError tells what keeps rawURL from being a URL of an image or of a video that is
+// accepted. In both modes it must not exceed maxLocLength characters; when strict is set it
+// has to be an absolute HTTP or HTTPS URL as well, see validateAbsoluteURL. It returns a
+// *ValidationError for rawURL, or nil.
+func extensionURLError(rawURL string, strict bool) error {
+	if len(rawURL) > maxLocLength {
+		return &ValidationError{URL: rawURL, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(rawURL))}
+	}
+	if strict {
+		return validateAbsoluteURL(rawURL)
+	}
+	return nil
+}
+
+// secondaryURLErrors validates, in strict mode, the URLs an image or a video gives besides the
+// one it is known by: the licence of an image, the content, the player and the page about the
+// uploader of a video. None of them has to be there, and one that is not is not validated.
+// One that is has to be what the URL the entry is known by has to be in strict mode: an
+// absolute HTTP or HTTPS URL of at most maxLocLength characters, see extensionURLError.
+// It returns a *ValidationError for each URL that is not one. Such a URL costs the entry
+// nothing: the entry is returned with it, as the document gives it.
+func secondaryURLErrors(urls ...string) []error {
+	var errs []error
+	for _, u := range urls {
+		if u == "" {
+			continue
+		}
+		if err := extensionURLError(u, true); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
 }
 
 // defaultPorts holds the port a protocol is served on when a URL names none.

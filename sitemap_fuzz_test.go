@@ -130,6 +130,19 @@ func assertOnSitemapHost(t *testing.T, locs []string) {
 	}
 }
 
+// assertNoExcludedCharacter checks what strict mode guarantees for every URL it
+// hands back on top of that: the URL holds none of the printable ASCII
+// characters that have no place in a URL.
+func assertNoExcludedCharacter(t *testing.T, locs []string) {
+	t.Helper()
+
+	for _, loc := range locs {
+		if i := strings.IndexAny(loc, "\"<>\\^`{|}"); i >= 0 {
+			t.Fatalf("strict mode: accepted URL with the character %q in it: %q", loc[i], loc)
+		}
+	}
+}
+
 // collectLocs runs parse over content and returns every location derived from
 // it: the sitemap locations returned for a sitemap index, plus the URLs
 // collected into s.urls. The base URL itself is not included, so the result
@@ -288,13 +301,66 @@ func assertExtensionURLs(t *testing.T, content string) {
 	}
 }
 
+// assertStrictExtensionURLs checks the URLs of the extensions of the URLs strict
+// mode collects from content. The URL an entry is known by, the location of an
+// image, the thumbnail of a video and the target of an alternate link, is what
+// a location is, except that it may be on any host. Each of the other URLs of
+// an image and of a video is one too, is not there, or is named by an error.
+func assertStrictExtensionURLs(t *testing.T, content string) {
+	t.Helper()
+
+	s := New().SetStrict(true)
+	s.parse(fuzzBaseURL, content)
+	reported := map[string]bool{}
+	for _, err := range s.errs {
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
+			reported[validationErr.URL] = true
+		}
+	}
+	// isURL tells whether url is what strict mode requires a URL to be, which
+	// is decided here independently of the parser.
+	isURL := func(url string) bool {
+		parsed, err := neturl.Parse(url)
+		return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != "" &&
+			len(url) <= maxLocLength && !strings.ContainsFunc(url, func(r rune) bool { return r <= ' ' || r == 0x7f }) &&
+			!strings.ContainsAny(url, "\"<>\\^`{|}")
+	}
+	for _, u := range s.urls {
+		var known, others []string
+		for _, image := range u.Images {
+			known = append(known, image.Loc)
+			others = append(others, image.License)
+		}
+		for _, video := range u.Videos {
+			known = append(known, video.ThumbnailLoc)
+			others = append(others, video.ContentLoc, video.PlayerLoc)
+			if video.Uploader != nil {
+				others = append(others, video.Uploader.Info)
+			}
+		}
+		for _, link := range u.Hreflangs {
+			known = append(known, link.Href)
+		}
+		assertLocInvariants(t, "strict", known)
+		assertNoExcludedCharacter(t, known)
+		for _, other := range others {
+			if other != "" && !isURL(other) && !reported[other] {
+				t.Fatalf("strict mode: URL %q of an extension of %q is no URL and is not reported", other, u.Loc)
+			}
+		}
+	}
+}
+
 // FuzzParse exercises the full format-dispatch path — sitemap index, urlset,
 // RSS, Atom and plain text — with untrusted content. Every location the parser
 // hands back must satisfy the documented URL invariants in both tolerant and
-// strict mode, in strict mode it must be on the host of the sitemap as well,
-// parsing must be deterministic, a byte order mark put before the
+// strict mode, in strict mode it must be on the host of the sitemap as well
+// and hold no character that has no place in a URL, parsing must be
+// deterministic, a byte order mark put before the
 // document must change nothing, no text value may have whitespace around it,
 // tolerant mode must percent-encode the URLs of the extensions that it can,
+// strict mode must accept or report each of them,
 // the call must fail exactly when the document cannot be parsed, and a limit
 // on the URLs must leave the first ones as they are.
 func FuzzParse(f *testing.F) {
@@ -346,6 +412,10 @@ func FuzzParse(f *testing.F) {
 		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://example.com/p</loc><image:image><image:loc>https://cdn.example.net/a b.jpg?alt=café</image:loc><image:license>https://bücher.example/licence é</image:license></image:image><video:video><video:thumbnail_loc>https://BÜCHER.example:8443/t h.jpg</video:thumbnail_loc><video:content_loc>https://cdn.example.net/v.mp4#a&#9;b</video:content_loc><video:player_loc>https://cdn.example.net/player?v=é</video:player_loc><video:uploader info="https://example.com/u ser">u</video:uploader></video:video><xhtml:link rel="alternate" hreflang="de" href="https://example.com/de/über uns"/></url></urlset>`,
 		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://example.com/p</loc><image:image><image:loc>/images/a b.jpg</image:loc><image:license>Creative Commons, café</image:license></image:image><image:image><image:loc>ftp://cdn.example.net/a b.jpg</image:loc></image:image><image:image><image:loc>https:///a b.jpg</image:loc></image:image><image:image><image:loc>https://cdn.example.net/100%-cotton shirt.jpg</image:loc></image:image><video:video><video:thumbnail_loc>//cdn.example.net/t h.jpg</video:thumbnail_loc><video:content_loc>data:video/mp4;base64,AAAA BBBB</video:content_loc><video:player_loc>https://cdn example.net/player</video:player_loc></video:video><xhtml:link rel="alternate" hreflang="de" href="https://bücher_x.example/de é"/></url></urlset>`,
 		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"><url><loc>https://example.com/p</loc><image:image><image:loc>https://cdn.example.net/a b.jpg?alt=` + strings.Repeat("c", maxLocLength-37) + `</image:loc></image:image></url></urlset>`,
+		"<urlset><url><loc>https://example.com/a|b</loc></url><url><loc>https://example.com/search?q={a}&amp;r=&lt;b&gt;</loc></url><url><loc>https://example.com/c#&quot;d&quot;</loc></url><url><loc>https://example.com/e\\f^g`h</loc></url><url><loc>https://example.com/i%7Cj?k[]=1</loc></url></urlset>",
+		"https://example.com/text|one\nhttps://example.com/text?q=^two\nhttps://exa\"mple.com/three\nhttps://example.com/four#`\n",
+		`<sitemapindex><sitemap><loc>https://example.com/sitemap|1.xml</loc></sitemap><sitemap><loc>https://example.com/sitemap.xml?tags=a|b</loc></sitemap></sitemapindex>`,
+		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://example.com/p</loc><image:image><image:loc>https://cdn.example.net/a|b.jpg</image:loc></image:image><image:image><image:loc>https://cdn.example.net/c.jpg</image:loc><image:license>CC BY 4.0</image:license></image:image><video:video><video:thumbnail_loc>https://cdn.example.net/t.jpg</video:thumbnail_loc><video:content_loc>ftp://cdn.example.net/v.mp4</video:content_loc><video:player_loc>/player?v={id}</video:player_loc><video:uploader info="uploaders/u">u</video:uploader></video:video><video:video><video:thumbnail_loc>https://cdn.example.net/{t}.jpg</video:thumbnail_loc></video:video><xhtml:link rel="alternate" hreflang="de" href="https://example.com/de/^"/></url></urlset>`,
 		`<sitemapindex><sitemap><loc>`,
 		"",
 		"not xml at all",
@@ -367,6 +437,7 @@ func FuzzParse(f *testing.F) {
 			assertLocInvariants(t, mode, locs)
 			if strict {
 				assertOnSitemapHost(t, locs)
+				assertNoExcludedCharacter(t, locs)
 			} else {
 				assertASCII(t, locs)
 			}
@@ -386,7 +457,9 @@ func FuzzParse(f *testing.F) {
 			}
 
 			assertTextValues(t, mode, strict, content)
-			if !strict {
+			if strict {
+				assertStrictExtensionURLs(t, content)
+			} else {
 				assertExtensionURLs(t, content)
 			}
 			assertReturnedError(t, mode, strict, content)
@@ -536,6 +609,7 @@ func FuzzParseRobotsTXT(f *testing.F) {
 		"Sitemap: https:///no-host.xml\nSitemap: https://:8080/port-only.xml\nSitemap: https:no-slash.xml\nSitemap: https://user@/user-only.xml\n",
 		"Sitemap: https://bücher.example/sitemap.xml\nSitemap: https://xn--bcher-kva.example:8443/sitemap.xml\nSitemap: //BÜCHER.example/sitemap.xml\nSitemap: https://bücher_x.example/sitemap.xml\n",
 		"Sitemap: https://example.com/sitemap.xml?city=münchen\nSitemap: /sitemap.xml?city=m%C3%BCnchen&q=café au lait\n",
+		"Sitemap: https://example.com/sitemap|1.xml\nSitemap: https://example.com/sitemap.xml?tags={a}^\nSitemap: https://cdn.example.net/<sitemap>.xml\n",
 		"",
 	}
 	for _, seed := range seeds {
@@ -569,7 +643,9 @@ func FuzzParseRobotsTXT(f *testing.F) {
 
 			locs := robotsTXTLocs(strict, content)
 			assertLocInvariants(t, mode, locs)
-			if !strict {
+			if strict {
+				assertNoExcludedCharacter(t, locs)
+			} else {
 				assertASCII(t, locs)
 			}
 
