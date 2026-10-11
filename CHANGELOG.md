@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-10-11
+
 ### Added
 - `examples/gzip`: runnable example of parsing gzip compressed sitemaps: a file of one member, one of two, one with a newline after its last member, and one that is cut short. `README.md` describes the same under `Formats supported` and links the example
 - `examples/idn`: runnable example of a sitemap on an internationalised host: how tolerant mode and strict mode return URLs whose host is written in Unicode, in capitals or in Punycode, and which of them strict mode takes to be on the host of the sitemap. `README.md` describes the same under `Internationalised host names` and links the example
@@ -334,7 +336,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Each parsed `URL` exposes `Loc`, `LastMod`, `ChangeFreq`, and `Priority`
 - Method chaining (fluent interface) on all setters
 
-[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/aafeher/go-sitemap-parser/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/aafeher/go-sitemap-parser/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/aafeher/go-sitemap-parser/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/aafeher/go-sitemap-parser/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/aafeher/go-sitemap-parser/compare/v1.0.2...v1.1.0
