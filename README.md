@@ -1068,4 +1068,10 @@ errCount := s.GetErrorsCount()
 
 ## Examples
 
-Examples can be found in [/examples](https://github.com/aafeher/go-sitemap-parser/tree/main/examples).
+Examples can be found in [/examples](https://github.com/aafeher/go-sitemap-parser/tree/main/examples): programs to be run with `go run`, one in a directory.
+
+Shorter ones are part of the [package documentation](https://pkg.go.dev/github.com/aafeher/go-sitemap-parser#pkg-examples), where each is shown with its output next to the function, the method or the type it is an example of. They are the `Example` functions of [example_test.go](example_test.go), which `go test` runs, and none of them needs a network:
+
+```bash
+go test -run '^Example' -v .
+```

@@ -26,13 +26,16 @@ import (
 
 type (
 
-	// S is a structure that holds various data related to processing URLs.
-	// It contains a cfg field of type `config`, which stores configuration settings.
-	// The mainURL field of type string represents the main URL being processed.
-	// The robotsTxtSitemapURLs field is a slice of strings that contains the URLs present in the robots.txt file's sitemap directive.
-	// The sitemaps field is a slice of Sitemap structs that holds the sitemaps the documents list.
-	// The urls field is a slice of URL structs that stores the URLs to be processed.
-	// The errs field is a slice of errors that holds any encountered errors during processing.
+	// S is a sitemap parser. An instance holds the configuration of the parser, which its Set
+	// methods change and its Get methods of the same names return, and the results of its most
+	// recent Parse or ParseContext call: the URLs the call collected, the sitemaps it found on
+	// its way and the errors it recorded, see GetURLs, GetSitemaps and GetErrors.
+	//
+	// An instance is made with New, which gives the configuration its defaults. The zero value
+	// has none of them and is not meant to be used.
+	//
+	// The methods of an instance may be called from several goroutines. An instance carries
+	// out one call at a time, and can be used for any number of calls one after the other.
 	S struct {
 		parseMu              sync.Mutex
 		mu                   sync.Mutex
@@ -197,78 +200,187 @@ type (
 
 	// Image is a structure of <image:image> in <url>, per the Google Image Sitemap extension.
 	// Reference: https://developers.google.com/search/docs/crawling-indexing/sitemaps/image-sitemaps
+	//
+	// An image is known by its Loc, and one without a Loc is not among the images of a URL.
+	// Every other field is empty when the image has no element for it.
 	Image struct {
-		Loc         string `xml:"http://www.google.com/schemas/sitemap-image/1.1 loc"`
-		Title       string `xml:"http://www.google.com/schemas/sitemap-image/1.1 title"`
-		Caption     string `xml:"http://www.google.com/schemas/sitemap-image/1.1 caption"`
+		// Loc is the URL of the image, the content of <image:loc>. It is never empty, and it
+		// may be on another host than the page. Strict mode requires an absolute HTTP or
+		// HTTPS URL: an image whose Loc is not one is left out and reported.
+		Loc string `xml:"http://www.google.com/schemas/sitemap-image/1.1 loc"`
+		// Title is the title of the image, the content of <image:title>.
+		Title string `xml:"http://www.google.com/schemas/sitemap-image/1.1 title"`
+		// Caption is the caption of the image, the content of <image:caption>.
+		Caption string `xml:"http://www.google.com/schemas/sitemap-image/1.1 caption"`
+		// GeoLocation is the place the image shows, the content of <image:geo_location>,
+		// such as "Limerick, Ireland".
 		GeoLocation string `xml:"http://www.google.com/schemas/sitemap-image/1.1 geo_location"`
-		License     string `xml:"http://www.google.com/schemas/sitemap-image/1.1 license"`
+		// License is the URL of the licence of the image, the content of <image:license>.
+		// Strict mode reports one that is no absolute HTTP or HTTPS URL; the image is
+		// returned all the same, with the value as the document gives it.
+		License string `xml:"http://www.google.com/schemas/sitemap-image/1.1 license"`
 	}
 
 	// VideoRestriction is a structure of <video:restriction> in <video:video>.
 	// It captures the element text and the required "relationship" attribute.
 	VideoRestriction struct {
+		// Relationship tells whether the video may be shown in the countries Value names or
+		// may not be shown there, the value of the relationship attribute: "allow" or
+		// "deny" by the extension. Neither mode checks the value.
 		Relationship string `xml:"relationship,attr"`
-		Value        string `xml:",chardata"`
+		// Value names the countries, as the content of the element gives them: country
+		// codes with a space between them by the extension, such as "IE GB US".
+		Value string `xml:",chardata"`
 	}
 
 	// VideoPlatform is a structure of <video:platform> in <video:video>.
 	// It captures the element text and the required "relationship" attribute.
 	VideoPlatform struct {
+		// Relationship tells whether the video may be shown on the platforms Value names or
+		// may not be shown there, the value of the relationship attribute: "allow" or
+		// "deny" by the extension. Neither mode checks the value.
 		Relationship string `xml:"relationship,attr"`
-		Value        string `xml:",chardata"`
+		// Value names the platforms, as the content of the element gives them: "web",
+		// "mobile" and "tv" with a space between them by the extension, such as "web tv".
+		Value string `xml:",chardata"`
 	}
 
 	// VideoUploader is a structure of <video:uploader> in <video:video>.
 	// It captures the uploader name and the optional "info" URL attribute.
 	VideoUploader struct {
-		Info  string `xml:"info,attr"`
+		// Info is the URL of a page that tells more about the uploader, the value of the
+		// info attribute. It is empty if the element has no such attribute. Strict mode
+		// reports one that is no absolute HTTP or HTTPS URL; the video is returned all the
+		// same, with the value as the document gives it.
+		Info string `xml:"info,attr"`
+		// Value is the name of the uploader, the content of the element.
 		Value string `xml:",chardata"`
 	}
 
 	// Video is a structure of <video:video> in <url>, per the Google Video Sitemap extension.
 	// Reference: https://developers.google.com/search/docs/crawling-indexing/sitemaps/video-sitemaps
+	//
+	// A video is known by its ThumbnailLoc, and one without a ThumbnailLoc is not among the
+	// videos of a URL. A text field is empty, and a pointer is nil, when the video has no
+	// element for it. A number or a date that cannot be parsed is nil as well, and is reported
+	// in both modes; the video is returned without it.
+	//
+	// Strict mode reports what the extension requires and a video lacks or has out of range,
+	// as the fields below tell. A video whose ThumbnailLoc is accepted is returned whatever
+	// else is reported about it.
 	Video struct {
-		ThumbnailLoc         string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 thumbnail_loc"`
-		Title                string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 title"`
-		Description          string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 description"`
-		ContentLoc           string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 content_loc"`
-		PlayerLoc            string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 player_loc"`
-		Duration             *int              `xml:"http://www.google.com/schemas/sitemap-video/1.1 duration"`
-		ExpirationDate       *LastModTime      `xml:"http://www.google.com/schemas/sitemap-video/1.1 expiration_date"`
-		Rating               *float32          `xml:"http://www.google.com/schemas/sitemap-video/1.1 rating"`
-		ViewCount            *int              `xml:"http://www.google.com/schemas/sitemap-video/1.1 view_count"`
-		PublicationDate      *LastModTime      `xml:"http://www.google.com/schemas/sitemap-video/1.1 publication_date"`
-		FamilyFriendly       string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 family_friendly"`
-		Restriction          *VideoRestriction `xml:"http://www.google.com/schemas/sitemap-video/1.1 restriction"`
-		Platform             *VideoPlatform    `xml:"http://www.google.com/schemas/sitemap-video/1.1 platform"`
-		RequiresSubscription string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 requires_subscription"`
-		Uploader             *VideoUploader    `xml:"http://www.google.com/schemas/sitemap-video/1.1 uploader"`
-		Live                 string            `xml:"http://www.google.com/schemas/sitemap-video/1.1 live"`
-		Tags                 []string          `xml:"http://www.google.com/schemas/sitemap-video/1.1 tag"`
+		// ThumbnailLoc is the URL of the thumbnail image of the video, the content of
+		// <video:thumbnail_loc>. It is never empty, and it may be on another host than the
+		// page. Strict mode requires an absolute HTTP or HTTPS URL: a video whose
+		// ThumbnailLoc is not one is left out and reported.
+		ThumbnailLoc string `xml:"http://www.google.com/schemas/sitemap-video/1.1 thumbnail_loc"`
+		// Title is the title of the video, the content of <video:title>. Strict mode
+		// reports a video without one.
+		Title string `xml:"http://www.google.com/schemas/sitemap-video/1.1 title"`
+		// Description is the description of the video, the content of
+		// <video:description>. Strict mode reports a video without one.
+		Description string `xml:"http://www.google.com/schemas/sitemap-video/1.1 description"`
+		// ContentLoc is the URL of the video file itself, the content of
+		// <video:content_loc>. Strict mode reports a video that has neither a ContentLoc
+		// nor a PlayerLoc, and a ContentLoc that is no absolute HTTP or HTTPS URL.
+		ContentLoc string `xml:"http://www.google.com/schemas/sitemap-video/1.1 content_loc"`
+		// PlayerLoc is the URL of a player for the video, the content of
+		// <video:player_loc>. Strict mode reports one that is no absolute HTTP or HTTPS
+		// URL, see ContentLoc.
+		PlayerLoc string `xml:"http://www.google.com/schemas/sitemap-video/1.1 player_loc"`
+		// Duration is the length of the video in seconds, the content of <video:duration>.
+		// Strict mode reports a value that is not between 1 and 28800, which is eight
+		// hours.
+		Duration *int `xml:"http://www.google.com/schemas/sitemap-video/1.1 duration"`
+		// ExpirationDate is the date after which the video is no longer available, the
+		// content of <video:expiration_date>. It is nil for an element that is empty as
+		// well.
+		ExpirationDate *LastModTime `xml:"http://www.google.com/schemas/sitemap-video/1.1 expiration_date"`
+		// Rating is the rating of the video, the content of <video:rating>. Strict mode
+		// reports a value that is not between 0.0 and 5.0.
+		Rating *float32 `xml:"http://www.google.com/schemas/sitemap-video/1.1 rating"`
+		// ViewCount is the number of times the video was viewed, the content of
+		// <video:view_count>.
+		ViewCount *int `xml:"http://www.google.com/schemas/sitemap-video/1.1 view_count"`
+		// PublicationDate is the date the video was first published, the content of
+		// <video:publication_date>. It is nil for an element that is empty as well.
+		PublicationDate *LastModTime `xml:"http://www.google.com/schemas/sitemap-video/1.1 publication_date"`
+		// FamilyFriendly tells whether the video is fit to be shown with a filter for
+		// adult content on, the content of <video:family_friendly>: "yes" or "no" by the
+		// extension. Neither mode checks the value.
+		FamilyFriendly string `xml:"http://www.google.com/schemas/sitemap-video/1.1 family_friendly"`
+		// Restriction tells the countries the video may or may not be shown in, the
+		// <video:restriction> of the video.
+		Restriction *VideoRestriction `xml:"http://www.google.com/schemas/sitemap-video/1.1 restriction"`
+		// Platform tells the platforms the video may or may not be shown on, the
+		// <video:platform> of the video.
+		Platform *VideoPlatform `xml:"http://www.google.com/schemas/sitemap-video/1.1 platform"`
+		// RequiresSubscription tells whether the video can only be viewed with a
+		// subscription, the content of <video:requires_subscription>: "yes" or "no" by the
+		// extension. Neither mode checks the value.
+		RequiresSubscription string `xml:"http://www.google.com/schemas/sitemap-video/1.1 requires_subscription"`
+		// Uploader is who uploaded the video, the <video:uploader> of the video.
+		Uploader *VideoUploader `xml:"http://www.google.com/schemas/sitemap-video/1.1 uploader"`
+		// Live tells whether the video is a live stream, the content of <video:live>:
+		// "yes" or "no" by the extension. Neither mode checks the value.
+		Live string `xml:"http://www.google.com/schemas/sitemap-video/1.1 live"`
+		// Tags are the tags of the video, one for each <video:tag> and in the order of
+		// the document. It is nil if the video has none. Strict mode reports a video with
+		// more than 32 of them.
+		Tags []string `xml:"http://www.google.com/schemas/sitemap-video/1.1 tag"`
 	}
 
 	// NewsPublication is a structure of <news:publication> in <news:news>.
 	NewsPublication struct {
-		Name     string `xml:"http://www.google.com/schemas/sitemap-news/0.9 name"`
+		// Name is the name of the publication, the content of <news:name>. It is empty if
+		// the element is absent. Strict mode reports news without one.
+		Name string `xml:"http://www.google.com/schemas/sitemap-news/0.9 name"`
+		// Language is the language of the publication, the content of <news:language>: a
+		// language code such as "en". It is empty if the element is absent. Strict mode
+		// reports news without one.
 		Language string `xml:"http://www.google.com/schemas/sitemap-news/0.9 language"`
 	}
 
 	// News is a structure of <news:news> in <url>, per the Google News Sitemap extension.
 	// Reference: https://developers.google.com/search/docs/crawling-indexing/sitemaps/news-sitemap
+	//
+	// Strict mode reports each of the fields the extension requires and the entry lacks: the
+	// name and the language of the publication, the publication date and the title. The news
+	// is returned all the same, with what the entry does give.
 	News struct {
-		Publication     NewsPublication `xml:"http://www.google.com/schemas/sitemap-news/0.9 publication"`
-		PublicationDate *LastModTime    `xml:"http://www.google.com/schemas/sitemap-news/0.9 publication_date"`
-		Title           string          `xml:"http://www.google.com/schemas/sitemap-news/0.9 title"`
+		// Publication is the publication the article appears in, the <news:publication> of
+		// the entry.
+		Publication NewsPublication `xml:"http://www.google.com/schemas/sitemap-news/0.9 publication"`
+		// PublicationDate is the date the article was published, the content of
+		// <news:publication_date>. It is nil if the element is absent, if it is empty, and
+		// if what it holds cannot be parsed, which is reported in both modes. Strict mode
+		// reports news without one.
+		PublicationDate *LastModTime `xml:"http://www.google.com/schemas/sitemap-news/0.9 publication_date"`
+		// Title is the title of the article, the content of <news:title>. It is empty if
+		// the element is absent. Strict mode reports news without one.
+		Title string `xml:"http://www.google.com/schemas/sitemap-news/0.9 title"`
 	}
 
 	// AlternateLink represents an alternate version of a page (hreflang)
 	// per the XHTML standard used in sitemaps.
 	// Reference: https://developers.google.com/search/docs/specialty/international/localized-versions#sitemap
+	//
+	// A link is known by its Href, and one without an Href is not among the links of a URL.
 	AlternateLink struct {
-		Rel      string `xml:"rel,attr"`
+		// Rel is the relation of the link to the page, the value of the rel attribute:
+		// "alternate" for another version of the page. Strict mode leaves out and reports
+		// a link with any other value, an empty one included.
+		Rel string `xml:"rel,attr"`
+		// Hreflang names the language of the version, and the region it is for if it is
+		// for one, the value of the hreflang attribute: "de", "de-CH", or "x-default" for
+		// the version of no language in particular. Strict mode leaves out and reports a
+		// link without one.
 		Hreflang string `xml:"hreflang,attr"`
-		Href     string `xml:"href,attr"`
+		// Href is the URL of the version, the value of the href attribute. It is never
+		// empty, and it may be on another host than the page. Strict mode requires an
+		// absolute HTTP or HTTPS URL: a link whose Href is not one is left out and
+		// reported.
+		Href string `xml:"href,attr"`
 	}
 
 	// URL is a structure of <url> in <urlset>. It is also what a page of a sitemap in another
@@ -290,14 +402,40 @@ type (
 	// Video.ThumbnailLoc, Video.ContentLoc, Video.PlayerLoc and VideoUploader.Info, and
 	// AlternateLink.Href. Strict mode returns every URL as the document gives it.
 	URL struct {
-		Loc        string          `xml:"loc"`
-		LastMod    *LastModTime    `xml:"lastmod"`
-		ChangeFreq *URLChangeFreq  `xml:"changefreq"`
-		Priority   *float32        `xml:"priority"`
-		Images     []Image         `xml:"http://www.google.com/schemas/sitemap-image/1.1 image"`
-		News       *News           `xml:"http://www.google.com/schemas/sitemap-news/0.9 news"`
-		Videos     []Video         `xml:"http://www.google.com/schemas/sitemap-video/1.1 video"`
-		Hreflangs  []AlternateLink `xml:"http://www.w3.org/1999/xhtml link"`
+		// Loc is the URL of the page: the content of the <loc> of a <url>, the <link> of an
+		// RSS item, the link of an Atom entry, or a line of a text sitemap. It is never
+		// empty: an entry without a location is reported, not returned.
+		Loc string `xml:"loc"`
+		// LastMod is the date the page was last modified. It is nil if the entry gives no
+		// date, if the element is empty, and if what it holds cannot be parsed, which is
+		// reported. Strict mode skips a <url> whose <lastmod> cannot be parsed.
+		LastMod *LastModTime `xml:"lastmod"`
+		// ChangeFreq tells how often the page is likely to change, the content of the
+		// <changefreq> of a <url>. It is nil if the element is absent or empty. A value
+		// that is set is to be compared with the ChangeFreq constants, see URLChangeFreq
+		// for what the two modes make of a value that is none of them.
+		ChangeFreq *URLChangeFreq `xml:"changefreq"`
+		// Priority is the priority of the page among the pages of its site, the content of
+		// the <priority> of a <url>: between 0.0 and 1.0 by the protocol. It is nil if the
+		// element is absent, and if what it holds is no number, which is reported. Tolerant
+		// mode returns a value outside that range as it is. Strict mode skips and reports a
+		// <url> whose <priority> is outside it or is no number.
+		Priority *float32 `xml:"priority"`
+		// Images are the images on the page, one for each <image:image> of the <url> that
+		// has a location, in the order of the document. It is empty or nil if there is
+		// none.
+		Images []Image `xml:"http://www.google.com/schemas/sitemap-image/1.1 image"`
+		// News is what the <url> tells about the page as a news article, its <news:news>.
+		// It is nil if the <url> has none.
+		News *News `xml:"http://www.google.com/schemas/sitemap-news/0.9 news"`
+		// Videos are the videos on the page, one for each <video:video> of the <url> that
+		// has a thumbnail location, in the order of the document. It is empty or nil if
+		// there is none.
+		Videos []Video `xml:"http://www.google.com/schemas/sitemap-video/1.1 video"`
+		// Hreflangs are the versions of the page in other languages and for other regions,
+		// one for each <xhtml:link> of the <url> that has an href, in the order of the
+		// document. It is empty or nil if there is none.
+		Hreflangs []AlternateLink `xml:"http://www.w3.org/1999/xhtml link"`
 	}
 
 	// Sitemap is a sitemap that a document lists: an entry of a sitemap index, or a Sitemap
@@ -332,6 +470,9 @@ type (
 	// is nil when the element is absent, when it is empty, and when what it holds cannot be
 	// parsed. A field that is set therefore holds the date the document gives.
 	LastModTime struct {
+		// Time is the date and time the element gives. Where the element gives a day and no
+		// time, the time is midnight in UTC; where it gives a month or a year and no more,
+		// the date is the first day of that month or of that year.
 		time.Time
 	}
 
