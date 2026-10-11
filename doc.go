@@ -21,6 +21,17 @@
 // were fetched, and with the date a sitemap index gives for them, see
 // [Sitemap].
 //
+// [S.GetURLs] returns the list the instance keeps, which is to be read and not
+// to be changed. [S.URLs] is an iterator over the same URLs that yields each
+// of them as a copy of the caller's own, and [S.Errors] is one over the errors
+// [S.GetErrors] returns. A list of the URLs to sort or to change is collected
+// from the iterator:
+//
+//	urls := slices.Collect(s.URLs())
+//	slices.SortFunc(urls, func(a, b sitemap.URL) int {
+//		return strings.Compare(a.Loc, b.Loc)
+//	})
+//
 // # Formats
 //
 // A sitemap is a <urlset> of the sitemaps.org protocol, an RSS 2.0 feed, an

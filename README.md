@@ -14,6 +14,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 - Recursive parsing (sitemap index → sitemaps → URLs)
 - The sitemaps a call finds can be queried, whether or not they were fetched, with the date a sitemap index gives for each
 - The date a page was last modified is returned for the pages of RSS and Atom feeds as well (`<pubDate>`, `<updated>`)
+- Iterators over the URLs and the errors of a call (`URLs()`, `Errors()`), the URLs as copies that are the caller's own
 - Concurrent (multi-threaded) fetching and parsing
 - Configurable follow rules to filter which sitemaps to parse
 - Configurable URL rules to filter which URLs to include
@@ -562,6 +563,10 @@ All public methods on `*S` are safe to call from multiple goroutines. Internal s
 
 The mutex is not held while a sitemap is fetched, unzipped or decoded, only while what the sitemap yielded is added to the results. The getters can therefore be called while `Parse()` is running without waiting for it: `GetURLs()`, `GetURLCount()`, `GetSitemaps()` and `GetErrors()` return what has been collected so far. The URLs of a sitemap appear all at once, when that sitemap has been parsed, and so do the sitemaps a sitemap index lists.
 
+A loop over [`URLs()`](#urls) or [`Errors()`](#errors) goes through what has been collected when it starts. It holds the mutex for no longer than it takes to look at the list, not while it runs, so the body of the loop may call every method of the instance, `Parse()` among them.
+
+`GetURLs()` and `GetErrors()` return the lists the instance keeps, which several goroutines may read and none may change, see [GetURLs](#geturls).
+
 However, two important constraints apply:
 
 - **Concurrent `Parse()` / `ParseContext()` calls on the same instance are serialised.** A second call blocks until the first completes. If you need to parse multiple sitemaps concurrently, create a separate `*S` instance per goroutine with `New()`.
@@ -746,6 +751,14 @@ Returns all parsed URLs as a `[]URL` slice.
 urls := s.GetURLs()
 ```
 
+The slice returned is the list the instance keeps, not a copy of it, so a call costs the same however many URLs there are. That makes it a list to read, not one to change:
+
+- **It must not be modified.** A URL that is set or moved in it, which is what sorting it does, is set or moved for every other caller as well, and so is a value that is changed through a pointer of a URL (`*u.Priority = 1`).
+- **Appending to it is safe.** The slice has no capacity to spare, so `append` copies it: what is appended reaches neither the instance nor another caller.
+- **It does not change afterwards.** URLs collected later are in what a later `GetURLs()` call returns.
+
+For URLs to change and for a list to sort, there is [`URLs()`](#urls), which yields each URL as a copy. The slice is never `nil`.
+
 Each `URL` struct contains the following fields:
 - `Loc` (`string`) — the URL location; never empty, an entry without a `<loc>` is skipped
 - `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`; also `nil` when the element is empty or the value cannot be parsed, see [Strict mode](#strict-mode). It is the `<lastmod>` of a `<url>`, the `<pubDate>` of an RSS item and the `<updated>` of an Atom entry, see [Formats supported](#formats-supported); a text sitemap gives no date
@@ -845,6 +858,44 @@ In strict mode a video that has a `ThumbnailLoc` which is a URL is kept whatever
 
 See [`examples/video`](examples/video/main.go) for a runnable example.
 
+#### URLs
+
+Returns an iterator over the URLs `GetURLs()` returns, in the same order, to be used in a `for` loop:
+
+```go
+for u := range s.URLs() {
+    fmt.Println(u.Loc)
+}
+```
+
+Each URL is a copy that is the caller's own. Everything it points to is copied with it (`LastMod`, `ChangeFreq`, `Priority`, `Images`, `News`, `Videos` and `Hreflangs`, and what a video points to in turn), so nothing that is done to it reaches the URLs the instance keeps. The list is not copied: a loop takes up the memory of one URL at a time, however many URLs there are, and one that ends early costs nothing for the URLs it does not get to.
+
+| | `GetURLs()` | `URLs()` |
+|---|---|---|
+| Returns | the list the instance keeps | an iterator over copies of the URLs |
+| Costs | nothing | a copy of every URL the loop gets to |
+| The URLs may be changed | no | yes |
+| `len()`, access by index | yes | of the list they are collected into |
+
+The iterator is an [`iter.Seq[URL]`](https://pkg.go.dev/iter#Seq), so it works with what the standard library has for iterators. `slices.Collect()` returns the URLs as a list of such copies, which may be sorted and changed:
+
+```go
+urls := slices.Collect(s.URLs())
+slices.SortFunc(urls, func(a, b sitemap.URL) int {
+    return strings.Compare(a.Loc, b.Loc)
+})
+```
+
+`slices.Collect()` cannot tell how long the list is going to be and grows it as it goes, which takes several times the memory of the list where the list is long: 690 MB is allocated on the way to a list of 1,000,000 URLs, which is 120 MB itself. Giving the list its capacity spares that:
+
+```go
+urls := slices.AppendSeq(make([]sitemap.URL, 0, s.GetURLCount()), s.URLs())
+```
+
+A loop goes through the URLs as they are when it starts. URLs that are collected while it runs are not among them, and a `Parse()` call that starts in the meantime does not disturb it. No lock is held while the loop runs, see [Thread safety](#thread-safety). The iterator can be used for any number of loops, each of which starts anew.
+
+See [`examples/iterators`](examples/iterators/main.go) for a runnable example.
+
 #### GetURLCount
 
 Returns the number of parsed URLs.
@@ -860,6 +911,8 @@ Returns a slice of `n` randomly selected URLs without duplicates. If `n` exceeds
 ```go
 randomURLs := s.GetRandomURLs(5)
 ```
+
+Each of them is a copy that is the caller's own, with everything it points to, like the URLs [`URLs()`](#urls) yields: it may be changed.
 
 #### GetSitemaps
 
@@ -945,7 +998,7 @@ No more `*ValidationError` values are recorded than `SetMaxValidationErrors()` a
 
 The error that `Parse()` / `ParseContext()` return is one of these as well, see [Parse](#parse).
 
-The slice returned is the one the instance keeps, so it must not be modified. It does not change afterwards: errors recorded later are in what a later `GetErrors()` call returns.
+The slice returned is the list the instance keeps, not a copy of it, like the one [`GetURLs()`](#geturls) returns. It must not be modified: an error that is set or moved in it is set or moved for every other caller as well. Appending to it is safe, as the slice has no capacity to spare and `append` therefore copies it. It does not change afterwards: errors recorded later are in what a later `GetErrors()` call returns. For a list to sort or to change, see [`Errors()`](#errors).
 
 ```go
 for _, err := range s.GetErrors() {
@@ -988,6 +1041,22 @@ for _, err := range s.GetErrors() {
 `errors.Is` works on the error `Parse()` / `ParseContext()` return as well, which is about a limit when the document at the URL they are called for is over the size limit. The messages of the errors are what they were before these errors were introduced.
 
 See [`examples/errors`](examples/errors/main.go) for a runnable example.
+
+#### Errors
+
+Returns an iterator over the errors `GetErrors()` returns, in the same order:
+
+```go
+for err := range s.Errors() {
+    log.Print(err)
+}
+```
+
+The errors are the values the instance keeps, the very error `Parse()` / `ParseContext()` returned among them, so they can be compared with it, and inspected with `errors.As` and `errors.Is` like the ones `GetErrors()` returns. The list is not handed out: `slices.Collect(s.Errors())` returns a list of the caller's own, which may be sorted and changed.
+
+Like a loop over [`URLs()`](#urls), a loop goes through the errors as they are when it starts, and no lock is held while it runs.
+
+See [`examples/iterators`](examples/iterators/main.go) for a runnable example.
 
 #### GetErrorsCount
 

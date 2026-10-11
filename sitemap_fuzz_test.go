@@ -523,6 +523,44 @@ func assertStrictExtensionURLs(t *testing.T, content string) {
 	}
 }
 
+// assertResultCopies checks what a call hands out of its results. The iterator
+// over the URLs must yield the URLs GetURLs returns, and the one over the
+// errors the very errors GetErrors returns. Neither of the slices may have
+// room to spare, which an append would write to. And nothing that is done to
+// the URLs the iterator and GetRandomURLs yield may reach the URLs of the
+// instance: they are copies down to what they point to.
+func assertResultCopies(t *testing.T, mode string, strict bool, content string) {
+	t.Helper()
+
+	parse := func() *S {
+		s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(offlineClient)
+		_, _ = s.Parse(fuzzBaseURL, &content)
+		return s
+	}
+	s, want := parse(), parse().GetURLs()
+
+	urls, errs := s.GetURLs(), s.GetErrors()
+	if cap(urls) != len(urls) || cap(errs) != len(errs) {
+		t.Fatalf("%s mode: expected slices without room to spare, got %d of %d URLs and %d of %d errors",
+			mode, len(urls), cap(urls), len(errs), cap(errs))
+	}
+
+	// Nothing is collected of no URLs, where GetURLs returns an empty slice.
+	collected := slices.Collect(s.URLs())
+	if len(collected) != len(urls) || (len(urls) > 0 && !reflect.DeepEqual(collected, urls)) {
+		t.Fatalf("%s mode: the iterator yields %v, GetURLs returns %v", mode, collected, urls)
+	}
+	if yielded := slices.Collect(s.Errors()); !slices.Equal(yielded, errs) {
+		t.Fatalf("%s mode: the iterator yields %v, GetErrors returns %v", mode, yielded, errs)
+	}
+
+	scribbleURLs(collected)
+	scribbleURLs(s.GetRandomURLs(len(urls)))
+	if got := s.GetURLs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s mode: what was done to copies of the URLs changed the URLs of the instance: %v, want %v", mode, got, want)
+	}
+}
+
 // FuzzParse exercises the full format-dispatch path — sitemap index, urlset,
 // RSS, Atom and plain text — with untrusted content. Every location the parser
 // hands back must satisfy the documented URL invariants in both tolerant and
@@ -534,8 +572,10 @@ func assertStrictExtensionURLs(t *testing.T, content string) {
 // strict mode must accept or report each of them,
 // the call must fail exactly when the document cannot be parsed, a limit
 // on the URLs must leave the first ones as they are, the sitemaps the call
-// lists must be the ones it is to fetch, up to the limit on them, and a date of
-// a feed or of a sitemap index that cannot be parsed must cost only itself.
+// lists must be the ones it is to fetch, up to the limit on them, a date of
+// a feed or of a sitemap index that cannot be parsed must cost only itself, and
+// the URLs the call hands out as copies must share nothing with the ones it
+// keeps.
 func FuzzParse(f *testing.F) {
 	seeds := []string{
 		`<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://example.com/sitemap-1.xml</loc><lastmod>2024-01-01</lastmod></sitemap></sitemapindex>`,
@@ -643,6 +683,7 @@ func FuzzParse(f *testing.F) {
 			assertValidationErrorLimit(t, mode, strict, content)
 			assertSitemapsListed(t, mode, strict, content)
 			assertInvalidDates(t, mode, strict, content)
+			assertResultCopies(t, mode, strict, content)
 		}
 	})
 }

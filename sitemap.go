@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -1099,14 +1100,46 @@ func (s *S) GetErrorsCount() int64 {
 //
 // While a call is running, GetErrors returns the errors recorded so far; those recorded
 // afterwards are not added to the slice it returned.
-// The slice that is returned must not be modified. It is nil for a nil *S.
+//
+// The slice that is returned is the list the instance keeps, not a copy of it. It must not be
+// modified: an error that is set or moved in it is set or moved for every other caller as
+// well. Appending to it is safe, as the slice has no capacity to spare and append therefore
+// copies it. Errors goes through the same errors without handing the list out, and
+// slices.Collect(s.Errors()) returns a list the caller may sort or change.
+// The slice is nil for a nil *S.
 func (s *S) GetErrors() []error {
 	if s == nil {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.errs
+	return slices.Clip(s.errs)
+}
+
+// Errors returns an iterator over the errors GetErrors returns, in the same order:
+//
+//	for err := range s.Errors() {
+//		log.Print(err)
+//	}
+//
+// It goes through the errors as they are when the loop starts. Errors that are recorded while
+// the loop runs are not among them, and a Parse or ParseContext call that starts in the
+// meantime does not disturb it. No lock is held while the loop runs, so the loop may call
+// every method of s. The iterator can be used for any number of loops, each of which starts
+// anew.
+//
+// The errors are the values the instance keeps, the very error Parse or ParseContext
+// returned among them, so that they can be compared with it. The list is not handed out:
+// nothing a loop does changes which errors the instance returns, or their order.
+// The iterator yields nothing for a nil *S.
+func (s *S) Errors() iter.Seq[error] {
+	return func(yield func(error) bool) {
+		for _, err := range s.GetErrors() {
+			if !yield(err) {
+				return
+			}
+		}
+	}
 }
 
 // GetSitemaps returns the sitemaps that the documents of the most recent Parse or
@@ -1166,7 +1199,25 @@ func (s *S) GetSitemapCount() int64 {
 	return int64(len(s.sitemaps))
 }
 
-// GetURLs returns the list of parsed URLs.
+// GetURLs returns the URLs of the most recent Parse or ParseContext call: the pages that the
+// sitemaps it read list, less the ones the patterns set with SetRules leave out.
+//
+// The URLs of a document are in the order the document lists them. With multi-threading off,
+// the documents are read one after the other, so the order is the same from one call to the
+// next; with multi-threading on, see SetMultiThread, it is not for the URLs of different
+// documents. No more URLs are returned than the limit set with SetMaxURLs allows.
+//
+// While a call is running, GetURLs returns the URLs collected so far; those collected
+// afterwards are not added to the slice it returned.
+//
+// The slice that is returned is the list the instance keeps, not a copy of it, so a call
+// costs the same however many URLs there are. It must not be modified: a URL that is set or
+// moved in it, as sorting it does, or changed through one of its pointers, is changed for
+// every other caller as well, and for GetRandomURLs and URLs. Appending to it is safe, as
+// the slice has no capacity to spare and append therefore copies it. URLs goes through the
+// same URLs as copies, and slices.Collect(s.URLs()) returns a list the caller may sort or
+// change.
+// The slice is never nil, and empty for a nil *S.
 func (s *S) GetURLs() []URL {
 	if s == nil {
 		return []URL{}
@@ -1176,7 +1227,80 @@ func (s *S) GetURLs() []URL {
 	if len(s.urls) <= 0 {
 		return []URL{}
 	}
-	return s.urls
+	return slices.Clip(s.urls)
+}
+
+// URLs returns an iterator over the URLs GetURLs returns, in the same order:
+//
+//	for u := range s.URLs() {
+//		fmt.Println(u.Loc)
+//	}
+//
+// Each URL is a copy that is the caller's own. Everything it points to is copied with it,
+// its dates and values and what the extensions say about the page, so nothing that is done
+// to it reaches the URLs the instance keeps. The list itself is not copied: a loop takes up
+// the memory of one URL at a time, however many there are.
+//
+// slices.Collect(s.URLs()) returns the URLs as a list of such copies, which the caller may
+// sort and change. It cannot tell how long the list is going to be and grows it as it goes,
+// which takes several times the memory of the list where the list is long. Giving the list
+// its capacity spares that:
+//
+//	urls := slices.AppendSeq(make([]sitemap.URL, 0, s.GetURLCount()), s.URLs())
+//
+// It goes through the URLs as they are when the loop starts. URLs that are collected while
+// the loop runs are not among them, and a Parse or ParseContext call that starts in the
+// meantime does not disturb it. No lock is held while the loop runs, so the loop may call
+// every method of s. The iterator can be used for any number of loops, each of which starts
+// anew.
+// The iterator yields nothing for a nil *S.
+func (s *S) URLs() iter.Seq[URL] {
+	return func(yield func(URL) bool) {
+		for _, u := range s.GetURLs() {
+			if !yield(cloneURL(u)) {
+				return
+			}
+		}
+	}
+}
+
+// cloneURL returns a copy of u that shares nothing with it that can be changed: every
+// pointer of u and every slice, down to the ones of its videos, points to a copy of its own.
+// A pointer that is nil and a slice that is nil or empty are that in the copy as well.
+func cloneURL(u URL) URL {
+	u.LastMod = clonePointer(u.LastMod)
+	u.ChangeFreq = clonePointer(u.ChangeFreq)
+	u.Priority = clonePointer(u.Priority)
+	u.Images = slices.Clone(u.Images)
+	if u.News != nil {
+		news := *u.News
+		news.PublicationDate = clonePointer(news.PublicationDate)
+		u.News = &news
+	}
+	u.Videos = slices.Clone(u.Videos)
+	for i := range u.Videos {
+		video := &u.Videos[i]
+		video.Duration = clonePointer(video.Duration)
+		video.ExpirationDate = clonePointer(video.ExpirationDate)
+		video.Rating = clonePointer(video.Rating)
+		video.ViewCount = clonePointer(video.ViewCount)
+		video.PublicationDate = clonePointer(video.PublicationDate)
+		video.Restriction = clonePointer(video.Restriction)
+		video.Platform = clonePointer(video.Platform)
+		video.Uploader = clonePointer(video.Uploader)
+		video.Tags = slices.Clone(video.Tags)
+	}
+	u.Hreflangs = slices.Clone(u.Hreflangs)
+	return u
+}
+
+// clonePointer returns a pointer to a copy of the value p points to, and nil if p is nil.
+func clonePointer[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	value := *p
+	return &value
 }
 
 // GetURLCount returns the count of URLs in the S struct.
@@ -1196,7 +1320,8 @@ func (s *S) GetURLCount() int64 {
 // If n exceeds the number of URLs in the list, all of them are returned, in random order.
 // If n is zero or negative, or the S object is nil, an empty slice is returned.
 // The function creates a copy of the original URLs list and randomly selects n URLs from it, removing them to avoid duplicates.
-// The selected URLs are returned as a new slice.
+// The selected URLs are returned as a new slice. Each of them is a copy that is the caller's
+// own, with everything it points to, like the ones URLs yields.
 func (s *S) GetRandomURLs(n int) []URL {
 	if s == nil || n <= 0 {
 		return []URL{}
@@ -1214,7 +1339,7 @@ func (s *S) GetRandomURLs(n int) []URL {
 
 	for i := 0; i < n; i++ {
 		index := rand.IntN(len(originalURLs))
-		randURLs = append(randURLs, originalURLs[index])
+		randURLs = append(randURLs, cloneURL(originalURLs[index]))
 
 		// Remove the selected URL from the original list to avoid duplicates
 		originalURLs[index] = originalURLs[len(originalURLs)-1] // Replace it with the last one.
