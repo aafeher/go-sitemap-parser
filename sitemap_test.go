@@ -13944,6 +13944,465 @@ func TestS_Parse_Atom_Updated(t *testing.T) {
 	}
 }
 
+// TestS_Parse_RSS_Namespaces verifies that the elements of an RSS item are the
+// ones in the namespace of the item, in both modes: an element of another
+// namespace that has the name of one of them, such as the <atom:link> of an
+// item, is neither the link nor the date of the item, wherever it stands. An
+// item whose <link> was followed by an <atom:link> was left out without an
+// error, as the content of the latter, which is empty, took the place of the
+// link.
+func TestS_Parse_RSS_Namespaces(t *testing.T) {
+	const (
+		plain    = `<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:x="urn:example:x"><channel>%s</channel></rss>`
+		spaced   = `<rss version="2.0" xmlns="http://backend.userland.com/rss2" xmlns:atom="http://www.w3.org/2005/Atom"><channel>%s</channel></rss>`
+		prefixed = `<r:rss version="2.0" xmlns:r="urn:example:rss"><r:channel>%s</r:channel></r:rss>`
+		date     = `Mon, 15 Jan 2024 10:30:00 GMT`
+	)
+	tests := []struct {
+		name   string
+		feed   string
+		items  string
+		want   []string
+		errors []string
+	}{
+		{
+			name:  "atom:link after the link",
+			feed:  plain,
+			items: `<item><link>https://example.com/a</link><atom:link rel="alternate" href="https://example.com/a.atom"/></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		{
+			name:  "atom:link before the link",
+			feed:  plain,
+			items: `<item><atom:link rel="alternate" href="https://example.com/a.atom"/><link>https://example.com/a</link></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		{
+			name: "atom:link in every item",
+			feed: plain,
+			items: `<atom:link rel="self" href="https://example.com/feed.xml"/>` +
+				`<item><title>A</title><link>https://example.com/a</link><atom:link href="https://example.com/a.atom"/><pubDate>` + date + `</pubDate></item>` +
+				`<item><title>B</title><link>https://example.com/b</link><atom:link href="https://example.com/b.atom"/></item>`,
+			want: []string{"https://example.com/a 2024-01-15T10:30:00Z", "https://example.com/b -"},
+		},
+		{
+			name:  "link of another namespace with a URL in it",
+			feed:  plain,
+			items: `<item><link>https://example.com/a</link><x:link>https://example.com/other</x:link></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		{
+			name:  "links of other namespaces around the link",
+			feed:  plain,
+			items: `<item><x:link>https://example.com/first</x:link><link>https://example.com/a</link><x:link>https://example.com/last</x:link><atom:link/></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		{
+			name:  "no link but one of another namespace",
+			feed:  plain,
+			items: `<item><x:link>https://example.com/other</x:link><atom:link href="https://example.com/a.atom"/></item>`,
+			want:  []string{},
+		},
+		{
+			name:  "empty link after one of another namespace",
+			feed:  plain,
+			items: `<item><x:link>https://example.com/other</x:link><link> </link></item>`,
+			want:  []string{},
+		},
+		{
+			name:  "link with a prefix that is not declared",
+			feed:  `<rss version="2.0"><channel>%s</channel></rss>`,
+			items: `<item><link>https://example.com/a</link><atom:link href="https://example.com/a.atom"/></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		{
+			name:  "date of another namespace after the date",
+			feed:  plain,
+			items: `<item><link>https://example.com/a</link><pubDate>` + date + `</pubDate><x:pubDate>Tue, 16 Jan 2024 10:30:00 GMT</x:pubDate></item>`,
+			want:  []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:  "date of another namespace that is no date",
+			feed:  plain,
+			items: `<item><link>https://example.com/a</link><x:pubDate>yesterday</x:pubDate><pubDate>` + date + `</pubDate><x:pubDate>tomorrow</x:pubDate></item>`,
+			want:  []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:  "no date but one of another namespace",
+			feed:  plain,
+			items: `<item><link>https://example.com/a</link><x:pubDate>yesterday</x:pubDate></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		{
+			name:   "date that cannot be parsed, with one of another namespace that can",
+			feed:   plain,
+			items:  `<item><link>https://example.com/a</link><pubDate>yesterday</pubDate><x:pubDate>` + date + `</x:pubDate></item>`,
+			want:   []string{"https://example.com/a -"},
+			errors: []string{`validate "https://example.com/a": invalid <pubDate> value "yesterday"`},
+		},
+		// The other elements of an item are not read, whatever they hold.
+		{
+			name: "other elements of the feed",
+			feed: plain,
+			items: `<item><link>https://example.com/a</link><guid isPermaLink="true">https://example.com/guid</guid><comments>https://example.com/comments</comments>` +
+				`<source url="https://example.com/source.xml">Source</source><enclosure url="https://example.com/a.mp3" length="1" type="audio/mpeg"/></item>` +
+				`<item><guid isPermaLink="true">https://example.com/guid</guid><comments>https://example.com/comments</comments></item>`,
+			want: []string{"https://example.com/a -"},
+		},
+		// The last element of a name counts, as it did when the namespaces were not looked at.
+		{
+			name:  "two links",
+			feed:  plain,
+			items: `<item><link>https://example.com/a</link><link>https://example.com/b</link><x:link>https://example.com/other</x:link></item>`,
+			want:  []string{"https://example.com/b -"},
+		},
+		{
+			name:  "two links, the last one empty",
+			feed:  plain,
+			items: `<item><link>https://example.com/a</link><link/></item>`,
+			want:  []string{},
+		},
+		{
+			name:  "two dates",
+			feed:  plain,
+			items: `<item><link>https://example.com/a</link><pubDate>Tue, 16 Jan 2024 10:30:00 GMT</pubDate><pubDate>` + date + `</pubDate></item>`,
+			want:  []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:  "two dates, the last one empty",
+			feed:  plain,
+			items: `<item><link>https://example.com/a</link><pubDate>` + date + `</pubDate><pubDate/></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		// A feed that is in a namespace is read by the namespace it is in.
+		{
+			name:  "feed in a namespace",
+			feed:  spaced,
+			items: `<item><link>https://example.com/a</link><pubDate>` + date + `</pubDate></item>`,
+			want:  []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:  "feed in a namespace, atom:link after the link",
+			feed:  spaced,
+			items: `<item><link>https://example.com/a</link><atom:link href="https://example.com/a.atom"/><atom:pubDate>yesterday</atom:pubDate></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		{
+			name:  "feed in a namespace, elements in none",
+			feed:  spaced,
+			items: `<item><link>https://example.com/a</link><link xmlns="">https://example.com/other</link><pubDate xmlns="">` + date + `</pubDate></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		{
+			name:  "feed with a prefix",
+			feed:  prefixed,
+			items: `<r:item><r:link>https://example.com/a</r:link><link>https://example.com/other</link><r:pubDate>` + date + `</r:pubDate><pubDate>yesterday</pubDate></r:item>`,
+			want:  []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name: "item in a namespace of its own",
+			feed: plain,
+			items: `<x:item><x:link>https://example.com/a</x:link><link>https://example.com/other</link><x:pubDate>` + date + `</x:pubDate><pubDate>yesterday</pubDate></x:item>` +
+				`<item><link>https://example.com/b</link><x:link>https://example.com/other</x:link></item>`,
+			want: []string{"https://example.com/a 2024-01-15T10:30:00Z", "https://example.com/b -"},
+		},
+	}
+
+	for _, test := range tests {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", test.name, strict), func(t *testing.T) {
+				content := fmt.Sprintf(test.feed, test.items)
+				s := New().SetStrict(strict)
+				requireParse(t, s, "https://example.com/feed.xml", &content)
+
+				assertStringSlice(t, "URLs", datedLocs(s), test.want)
+				assertStringSlice(t, "errors", errorsOf(s), append([]string{}, test.errors...))
+			})
+		}
+	}
+}
+
+// TestS_Parse_Atom_Namespaces verifies that the elements of an Atom entry are
+// the ones in the namespace of the entry, in both modes: a <link> or an
+// <updated> of another namespace is neither the link nor the date of the
+// entry, wherever it stands.
+func TestS_Parse_Atom_Namespaces(t *testing.T) {
+	const (
+		plain    = `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:x="urn:example:x">%s</feed>`
+		prefixed = `<a:feed xmlns:a="http://www.w3.org/2005/Atom">%s</a:feed>`
+		bare     = `<feed xmlns:atom="http://www.w3.org/2005/Atom">%s</feed>`
+		date     = `2024-01-15T10:30:00Z`
+	)
+	tests := []struct {
+		name    string
+		feed    string
+		entries string
+		want    []string
+		errors  []string
+	}{
+		{
+			name:    "link of another namespace before the link",
+			feed:    plain,
+			entries: `<entry><x:link href="https://example.com/other"/><link href="https://example.com/a"/></entry>`,
+			want:    []string{"https://example.com/a -"},
+		},
+		{
+			name:    "link of another namespace before the alternate link",
+			feed:    plain,
+			entries: `<entry><link rel="self" href="https://example.com/self"/><x:link rel="alternate" href="https://example.com/other"/><link rel="alternate" href="https://example.com/a"/></entry>`,
+			want:    []string{"https://example.com/a -"},
+		},
+		{
+			name:    "no link but one of another namespace",
+			feed:    plain,
+			entries: `<entry><x:link href="https://example.com/other"/></entry>`,
+			want:    []string{},
+		},
+		{
+			name:    "no alternate link but one of another namespace",
+			feed:    plain,
+			entries: `<entry><link rel="self" href="https://example.com/self"/><x:link rel="alternate" href="https://example.com/other"/></entry>`,
+			want:    []string{},
+		},
+		{
+			name:    "date of another namespace after the date",
+			feed:    plain,
+			entries: `<entry><link href="https://example.com/a"/><updated>` + date + `</updated><x:updated>2024-01-16T10:30:00Z</x:updated></entry>`,
+			want:    []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:    "date of another namespace that is no date",
+			feed:    plain,
+			entries: `<entry><link href="https://example.com/a"/><x:updated>never</x:updated><updated>` + date + `</updated><x:updated>never</x:updated></entry>`,
+			want:    []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:    "no date but one of another namespace",
+			feed:    plain,
+			entries: `<entry><link href="https://example.com/a"/><x:updated>` + date + `</x:updated></entry>`,
+			want:    []string{"https://example.com/a -"},
+		},
+		{
+			name:    "date that cannot be parsed, with one of another namespace that can",
+			feed:    plain,
+			entries: `<entry><link href="https://example.com/a"/><updated>never</updated><x:updated>` + date + `</x:updated></entry>`,
+			want:    []string{"https://example.com/a -"},
+			errors:  []string{`validate "https://example.com/a": invalid <updated> value "never"`},
+		},
+		// The other elements of an entry are not read, whatever they hold.
+		{
+			name: "other elements of the feed",
+			feed: plain,
+			entries: `<entry><id>https://example.com/id</id><link href="https://example.com/a"/><content src="https://example.com/content"/><published>` + date + `</published></entry>` +
+				`<entry><id>https://example.com/id</id><content src="https://example.com/content"/></entry>`,
+			want: []string{"https://example.com/a -"},
+		},
+		// The first link that names the page counts, and the last date, as they did when the
+		// namespaces were not looked at.
+		{
+			name:    "two links",
+			feed:    plain,
+			entries: `<entry><link href="https://example.com/a"/><link href="https://example.com/b"/></entry>`,
+			want:    []string{"https://example.com/a -"},
+		},
+		{
+			name:    "alternate link before another relation",
+			feed:    plain,
+			entries: `<entry><link rel="alternate" href="https://example.com/a"/><link rel="self" href="https://example.com/self"/><link rel="related" href="https://example.com/related"/></entry>`,
+			want:    []string{"https://example.com/a -"},
+		},
+		{
+			name:    "alternate link between other relations",
+			feed:    plain,
+			entries: `<entry><link rel="self" href="https://example.com/self"/><link href="https://example.com/a"/><link rel="related" href="https://example.com/related"/></entry>`,
+			want:    []string{"https://example.com/a -"},
+		},
+		{
+			name:    "two dates",
+			feed:    plain,
+			entries: `<entry><link href="https://example.com/a"/><updated>2024-01-16T10:30:00Z</updated><updated>` + date + `</updated></entry>`,
+			want:    []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:    "two dates, the last one empty",
+			feed:    plain,
+			entries: `<entry><link href="https://example.com/a"/><updated>` + date + `</updated><updated/></entry>`,
+			want:    []string{"https://example.com/a -"},
+		},
+		// A feed is read by the namespace its entries are in.
+		{
+			name:    "feed with a prefix",
+			feed:    prefixed,
+			entries: `<a:entry><a:link href="https://example.com/a"/><a:updated>` + date + `</a:updated></a:entry>`,
+			want:    []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:    "feed with a prefix, elements without one",
+			feed:    prefixed,
+			entries: `<a:entry><link href="https://example.com/other"/><a:link href="https://example.com/a"/><a:updated>` + date + `</a:updated><updated>never</updated></a:entry>`,
+			want:    []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:    "feed in no namespace",
+			feed:    bare,
+			entries: `<entry><link href="https://example.com/a"/><updated>` + date + `</updated></entry>`,
+			want:    []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:    "feed in no namespace, elements of Atom",
+			feed:    bare,
+			entries: `<entry><atom:link href="https://example.com/other"/><link href="https://example.com/a"/><updated>` + date + `</updated><atom:updated>never</atom:updated></entry>`,
+			want:    []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name: "entry in a namespace of its own",
+			feed: plain,
+			entries: `<x:entry><link href="https://example.com/other"/><x:link href="https://example.com/a"/><x:updated>` + date + `</x:updated><updated>never</updated></x:entry>` +
+				`<entry><link href="https://example.com/b"/><x:updated>never</x:updated></entry>`,
+			want: []string{"https://example.com/a 2024-01-15T10:30:00Z", "https://example.com/b -"},
+		},
+		{
+			name:    "feed of Atom 0.3",
+			feed:    `<feed version="0.3" xmlns="http://purl.org/atom/ns#">%s</feed>`,
+			entries: `<entry><link rel="alternate" type="text/html" href="https://example.com/a"/></entry>`,
+			want:    []string{"https://example.com/a -"},
+		},
+	}
+
+	for _, test := range tests {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", test.name, strict), func(t *testing.T) {
+				content := fmt.Sprintf(test.feed, test.entries)
+				s := New().SetStrict(strict)
+				requireParse(t, s, "https://example.com/feed.xml", &content)
+
+				assertStringSlice(t, "URLs", datedLocs(s), test.want)
+				assertStringSlice(t, "errors", errorsOf(s), append([]string{}, test.errors...))
+			})
+		}
+	}
+}
+
+// TestS_Parse_Feed_Malformed verifies that a feed which is not well-formed
+// inside an item is read like any other document that is not. One that ends
+// in an item fails in both modes, whichever element of the item it ends in:
+// one that is read, one that is not, or one of another namespace. An element
+// of an item that is not closed fails the feed in strict mode, and is made up
+// for in tolerant mode, where the item and the ones after it are returned.
+func TestS_Parse_Feed_Malformed(t *testing.T) {
+	const url = "https://example.com/feed.xml"
+
+	cutShort := []struct {
+		name    string
+		content string
+	}{
+		{"RSS, in the item", `<rss><channel><item>`},
+		{"RSS, in the link", `<rss><channel><item><link>https://example.com/a`},
+		{"RSS, after the link", `<rss><channel><item><link>https://example.com/a</link>`},
+		{"RSS, in the date", `<rss><channel><item><link>https://example.com/a</link><pubDate>Mon, 15 Jan 2024`},
+		{"RSS, in an element that is not read", `<rss><channel><item><link>https://example.com/a</link><title>A`},
+		{"RSS, in an element in an element that is not read", `<rss><channel><item><description><p>A`},
+		{"RSS, in an element of another namespace", `<rss xmlns:atom="http://www.w3.org/2005/Atom"><channel><item><link>https://example.com/a</link><atom:link href="https://example.com/a.atom">`},
+		{"Atom, in the entry", `<feed><entry>`},
+		{"Atom, in the link", `<feed><entry><link href="https://example.com/a">`},
+		{"Atom, after the link", `<feed><entry><link href="https://example.com/a"/>`},
+		{"Atom, in the date", `<feed><entry><link href="https://example.com/a"/><updated>2024-01-15`},
+		{"Atom, in an element that is not read", `<feed><entry><link href="https://example.com/a"/><title>A`},
+		{"Atom, in an element of another namespace", `<feed xmlns:x="urn:example:x"><entry><link href="https://example.com/a"/><x:link href="https://example.com/other">`},
+	}
+	for _, test := range cutShort {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("cut short: %s, strict=%v", test.name, strict), func(t *testing.T) {
+				s := New().SetStrict(strict)
+				_, err := s.Parse(url, &test.content)
+
+				var parseErr *ParseError
+				if !errors.As(err, &parseErr) {
+					t.Fatalf("got %v, want a *ParseError", err)
+				}
+				mustEqual(t, "error", err.Error(), `parse "`+url+`": XML syntax error on line 1: unexpected EOF`)
+				assertStringSlice(t, "URLs", locsOf(s), []string{})
+				assertStringSlice(t, "errors", errorsOf(s), []string{err.Error()})
+			})
+		}
+	}
+
+	notClosed := []struct {
+		name    string
+		content string
+		want    []string
+		element string
+	}{
+		{
+			name:    "RSS, the link",
+			content: `<rss><channel><item><link>https://example.com/a</item><item><link>https://example.com/b</link></item></channel></rss>`,
+			want:    []string{"https://example.com/a -", "https://example.com/b -"},
+			element: "link",
+		},
+		{
+			name:    "RSS, the date",
+			content: `<rss><channel><item><link>https://example.com/a</link><pubDate>Mon, 15 Jan 2024 10:30:00 GMT</item><item><link>https://example.com/b</link></item></channel></rss>`,
+			want:    []string{"https://example.com/a 2024-01-15T10:30:00Z", "https://example.com/b -"},
+			element: "pubDate",
+		},
+		{
+			name:    "RSS, an element that is not read",
+			content: `<rss><channel><item><link>https://example.com/a</link><title>A</item><item><link>https://example.com/b</link></item></channel></rss>`,
+			want:    []string{"https://example.com/a -", "https://example.com/b -"},
+			element: "title",
+		},
+		{
+			name:    "RSS, an element of another namespace",
+			content: `<rss xmlns:x="urn:example:x"><channel><item><link>https://example.com/a</link><x:link>https://example.com/other</item><item><link>https://example.com/b</link></item></channel></rss>`,
+			want:    []string{"https://example.com/a -", "https://example.com/b -"},
+			element: "link",
+		},
+		{
+			name:    "Atom, the link",
+			content: `<feed><entry><link href="https://example.com/a"></entry><entry><link href="https://example.com/b"/></entry></feed>`,
+			want:    []string{"https://example.com/a -", "https://example.com/b -"},
+			element: "link",
+		},
+		{
+			name:    "Atom, the date",
+			content: `<feed><entry><link href="https://example.com/a"/><updated>2024-01-15</entry><entry><link href="https://example.com/b"/></entry></feed>`,
+			want:    []string{"https://example.com/a 2024-01-15T00:00:00Z", "https://example.com/b -"},
+			element: "updated",
+		},
+		{
+			name:    "Atom, an element of another namespace",
+			content: `<feed xmlns:x="urn:example:x"><entry><link href="https://example.com/a"/><x:updated>never</entry><entry><link href="https://example.com/b"/></entry></feed>`,
+			want:    []string{"https://example.com/a -", "https://example.com/b -"},
+			element: "updated",
+		},
+	}
+	for _, test := range notClosed {
+		t.Run("not closed: "+test.name+", strict=false", func(t *testing.T) {
+			s := New()
+			requireParse(t, s, url, &test.content)
+
+			assertStringSlice(t, "URLs", datedLocs(s), test.want)
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+
+		t.Run("not closed: "+test.name+", strict=true", func(t *testing.T) {
+			s := New().SetStrict(true)
+			_, err := s.Parse(url, &test.content)
+
+			var parseErr *ParseError
+			if !errors.As(err, &parseErr) {
+				t.Fatalf("got %v, want a *ParseError", err)
+			}
+			parent := "item"
+			if strings.HasPrefix(test.content, "<feed") {
+				parent = "entry"
+			}
+			mustEqual(t, "error", err.Error(), fmt.Sprintf(`parse "%s": XML syntax error on line 1: element <%s> closed by </%s>`, url, test.element, parent))
+			assertStringSlice(t, "URLs", locsOf(s), []string{})
+		})
+	}
+}
+
 // TestS_Parse_Text_NoDate verifies that a URL of a text sitemap, which gives
 // no date, has none.
 func TestS_Parse_Text_NoDate(t *testing.T) {
