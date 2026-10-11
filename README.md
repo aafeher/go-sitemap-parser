@@ -275,7 +275,7 @@ It is a list of regular expressions. Only the sitemaps whose URL matches one of 
 If no follow rules are provided, all sitemaps are followed.
 Patterns longer than 1,000 characters are rejected and reported via `GetErrors()`.
 
-The expressions are matched against the absolute URL of a sitemap, a relative one being resolved first. They match anywhere in the URL unless they are anchored: `example\.com` also matches `https://example.com.evil.test/sitemap.xml`, `^https://example\.com/` does not.
+The expressions are matched against the absolute URL of a sitemap, a relative one being resolved first, and an [internationalised host name](#internationalised-host-names) being written in its Punycode form in tolerant mode. They match anywhere in the URL unless they are anchored: `example\.com` also matches `https://example.com.evil.test/sitemap.xml`, `^https://example\.com/` does not.
 
 ```go
 s := sitemap.New()
@@ -298,6 +298,7 @@ See [`examples/follow`](examples/follow/main.go) for a runnable example.
 
 To set the URL rules, use the `SetRules()` function. It should be specified a `[]string` value.
 It is a list of regular expressions. Only URLs that match one of these expressions will be included in the final result.
+The expressions are matched against the URL as `GetURLs()` returns it, so in tolerant mode against the Punycode form of an [internationalised host name](#internationalised-host-names).
 If no rules are provided, all URLs found are included.
 Patterns longer than 1,000 characters are rejected and reported via `GetErrors()`.
 
@@ -359,6 +360,7 @@ To enable **strict mode**, use the `SetStrict()` function. In strict mode, all U
 In **tolerant mode** (the default):
 - Relative `<loc>` URLs are resolved against the parent sitemap URL
 - A space in a `<loc>` URL is percent-encoded (`%20`) wherever it stands, so that the URL can be requested as it is: `https://example.com/search?q=summer sale` is returned as `https://example.com/search?q=summer%20sale`
+- An internationalised host name in a `<loc>` URL is returned in its Punycode form, the name a request goes to: `https://bücher.example/page` is returned as `https://xn--bcher-kva.example/page`, see [Internationalised host names](#internationalised-host-names)
 - `<loc>` URLs exceeding 2,048 characters after resolution are rejected
 - `<priority>` values outside `[0.0, 1.0]` are accepted as-is
 - A `<lastmod>` or `<priority>` that cannot be parsed is left unset (`nil`) and reported, the entry itself is kept
@@ -373,7 +375,7 @@ Strict mode takes a URL to be on the host of the sitemap when it names the same 
 validate "https://example.com:8443/page": strict mode: host "example.com:8443" does not match sitemap host "example.com"
 ```
 
-The same goes for the sitemaps a sitemap index lists. An internationalised host name has to be written the same way in both URLs: its Unicode form and its Punycode form (`xn--...`) are not taken for the same host.
+The same goes for the sitemaps a sitemap index lists. An internationalised host name is one host in whichever form it is written, see [Internationalised host names](#internationalised-host-names).
 
 An entry without a location is one of them in both modes. A `<url>` or `<sitemap>` whose `<loc>` is missing, empty or holds only whitespace is skipped and reported as a `*ValidationError`. The entry has no URL of its own, so the error names the sitemap it stands in:
 
@@ -414,6 +416,25 @@ An empty date is no such value. A `<lastmod>`, `<news:publication_date>`, `<vide
 Whitespace around a value is no part of it, in both modes. The content of an element may be indented or stand on a line of its own, and an attribute may be padded: every text value of an entry is returned without the whitespace that surrounds it, those of the extensions included. A value that holds nothing but whitespace is therefore an empty one. A `<changefreq>` like that is read as if the element were not there, and a value an extension requires is missing then, see [GetURLs](#geturls).
 
 See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location and a location without a host among them, and [`examples/strict`](examples/strict/main.go) for one of what strict mode requires of a URL.
+
+##### Internationalised host names
+
+The name of an internationalised host can be written in two forms: in Unicode (`bücher.example`) and in Punycode (`xn--bcher-kva.example`), the ASCII form it is looked up by. A sitemap may use either.
+
+Tolerant mode returns a URL with the Punycode form of its host, whichever form the document writes, so that the URLs of one host come back with one name and can be requested as they are:
+
+| `<loc>` | returned by tolerant mode |
+|---|---|
+| `https://bücher.example/page` | `https://xn--bcher-kva.example/page` |
+| `https://BÜCHER.example/page` | `https://xn--bcher-kva.example/page` |
+| `https://xn--bcher-kva.example/page` | `https://xn--bcher-kva.example/page` |
+| `/page` in a sitemap at `https://bücher.example/sitemap.xml` | `https://xn--bcher-kva.example/page` |
+
+The name is converted the way `net/http` converts the host of a URL it requests. This goes for every URL tolerant mode resolves: for the pages of a sitemap of any format, and for the sitemaps a sitemap index lists or a `robots.txt` names, which are requested by that name. A sitemap that is listed in both forms of its host is therefore fetched once. A host name in ASCII is returned as it is written, capitals included. So is a name that is no valid domain name, such as `bücher_x.example`, which comes back the way `net/url` writes it: percent-encoded, as `b%C3%BCcher_x.example`.
+
+Strict mode returns a URL the way the document gives it. It takes both forms of the name for the same host: in a sitemap at `https://bücher.example/sitemap.xml`, `https://xn--bcher-kva.example/page` is accepted, and so is `https://bücher.example/page` in a sitemap that was requested by the Punycode form of its host.
+
+See [`examples/idn`](examples/idn/main.go) for a runnable example.
 
 ```go
 s := sitemap.New()
