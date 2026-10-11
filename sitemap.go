@@ -315,7 +315,7 @@ type (
 		// reports a value that is not between 0.0 and 5.0.
 		Rating *float32 `xml:"http://www.google.com/schemas/sitemap-video/1.1 rating"`
 		// ViewCount is the number of times the video was viewed, the content of
-		// <video:view_count>.
+		// <video:view_count>. Strict mode reports a negative value.
 		ViewCount *int `xml:"http://www.google.com/schemas/sitemap-video/1.1 view_count"`
 		// PublicationDate is the date the video was first published, the content of
 		// <video:publication_date>. It is nil for an element that is empty as well.
@@ -3106,9 +3106,9 @@ func (s *S) validateNews(loc string, news *News, dateText *string) (*News, []err
 // For videos that pass the ThumbnailLoc check, strict mode also validates the
 // remaining required fields (Title, Description, at least one of ContentLoc or
 // PlayerLoc), the optional numeric fields (Duration range 1–28800, Rating range
-// 0.0–5.0, Tags count ≤ 32) and the other URLs of the video (ContentLoc, PlayerLoc,
-// Uploader.Info), see validateVideoFieldsStrict. These failures record errors but keep
-// the video entry.
+// 0.0–5.0, ViewCount not negative, Tags count ≤ 32) and the other URLs of the video
+// (ContentLoc, PlayerLoc, Uploader.Info), see validateVideoFieldsStrict. These failures
+// record errors but keep the video entry.
 // loc is the parent page URL, which the errors that are not about a URL name.
 func (s *S) validateAndFilterVideos(loc string, videos []Video) ([]Video, []error) {
 	if len(videos) == 0 {
@@ -3155,6 +3155,9 @@ func validateVideoFieldsStrict(loc string, v Video) []error {
 	}
 	if v.Rating != nil && (*v.Rating < 0.0 || *v.Rating > maxVideoRating) {
 		errs = append(errs, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: video <rating> %g is out of range [0.0, %g]", *v.Rating, maxVideoRating)})
+	}
+	if v.ViewCount != nil && *v.ViewCount < 0 {
+		errs = append(errs, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: video <view_count> %d is negative", *v.ViewCount)})
 	}
 	if len(v.Tags) > maxVideoTags {
 		errs = append(errs, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: video has %d tags, maximum is %d", len(v.Tags), maxVideoTags)})
@@ -3223,9 +3226,9 @@ func (s *S) validateAndFilterHreflangs(loc string, links []AlternateLink) ([]Alt
 // internationalised host name is returned in ASCII, see asciiHost. What is returned is a URL
 // neturl.Parse accepts: a location that does not resolve to one is rejected.
 // In strict mode (strict=true), URLs must additionally be absolute HTTP(S) URLs without a
-// space, a control character or another character in them that a URL may not hold, see
-// strictURLError, on the same host and protocol as baseURL, see sameHost. The URL is returned
-// as the document gives it.
+// space, a control character or another character in them that a URL may not hold, and
+// without a percent sign that begins no percent-encoding, see strictURLError, on the same host
+// and protocol as baseURL, see sameHost. The URL is returned as the document gives it.
 // baseURL is the URL the sitemap was served from: the location of the sitemap, whichever URL
 // the request for it began at.
 // Returns the resolved URL string and an error if validation fails.
@@ -3416,15 +3419,18 @@ func namesNoHost(loc string, parsed *neturl.URL) bool {
 
 // excludedFromURLs holds the printable ASCII characters that RFC 3986 gives no place in a URL:
 // a URL may not hold one anywhere, and has to give it percent-encoded, "|" as "%7C". The
-// square brackets are not among them, as they have a place, around an IPv6 address.
+// square brackets are not among them, as they have a place, around an IPv6 address; they are
+// excluded everywhere else, see misplacedBracket.
 const excludedFromURLs = "\"<>\\^`{|}"
 
 // strictURLError tells what keeps rawURL from being a URL strict mode accepts: an absolute
 // HTTP or HTTPS URL that names a host and has neither a space, nor a control character, nor a
-// character of excludedFromURLs in it. A URL has to give these percent-encoded, a space as
-// "%20". A port is no host: "https://:8080/" names none. A character that is not in ASCII is
-// accepted, as it is in an IRI (RFC 3987). parsed is rawURL as neturl.Parse reads it. It
-// returns nil for a URL that is one.
+// character of excludedFromURLs in it, nor a square bracket where a URL may not hold one, see
+// misplacedBracket. A URL has to give these percent-encoded, a space as "%20", so a percent
+// sign in it has to begin such an encoding, see escapeError. A port is no host:
+// "https://:8080/" names none. A character that is not in ASCII is accepted, as it is in an
+// IRI (RFC 3987). parsed is rawURL as neturl.Parse reads it. It returns nil for a URL that is
+// one.
 func strictURLError(rawURL string, parsed *neturl.URL) error {
 	switch {
 	case parsed.Scheme != "http" && parsed.Scheme != "https":
@@ -3439,10 +3445,55 @@ func strictURLError(rawURL string, parsed *neturl.URL) error {
 	}
 	// neturl.Parse turns down these in the user information and some of them in the name of
 	// the host, and none of them in the path, in the query and in the fragment.
-	if i := strings.IndexAny(rawURL, excludedFromURLs); i >= 0 {
+	i := strings.IndexAny(rawURL, excludedFromURLs)
+	if bracket := misplacedBracket(rawURL, parsed); bracket >= 0 && (i < 0 || bracket < i) {
+		i = bracket
+	}
+	if i >= 0 {
 		return fmt.Errorf("strict mode: URL contains the character '%c', which it has to give as \"%%%02X\"", rawURL[i], rawURL[i])
 	}
+	// neturl.Parse turns down a percent sign that begins no percent-encoding everywhere but in
+	// the query, which it does not read.
+	if err := escapeError(parsed.RawQuery); err != nil {
+		return fmt.Errorf("strict mode: %w in the query", err)
+	}
 	return nil
+}
+
+// misplacedBracket returns the index of the first square bracket of rawURL that stands where a
+// URL may not hold one, and -1 if rawURL has none. RFC 3986 gives the square brackets one
+// place, around an IPv6 address that is the host: "https://[2001:db8::1]/page". Everywhere else
+// a URL has to give them percent-encoded, as "%5B" and "%5D", which goes for a query such as
+// "?id[]=1" as well. parsed is rawURL as neturl.Parse reads it, a URL that names a host.
+func misplacedBracket(rawURL string, parsed *neturl.URL) int {
+	after := 0
+	if strings.HasPrefix(parsed.Host, "[") {
+		// neturl.Parse reads a host that begins with a bracket as an IPv6 address in a pair of
+		// brackets, and turns down a bracket before the host. That pair is the one a URL may
+		// hold, so every bracket after the first "]" of rawURL is one too many.
+		after = strings.IndexByte(rawURL, ']') + 1
+	}
+	if i := strings.IndexAny(rawURL[after:], "[]"); i >= 0 {
+		return after + i
+	}
+	return -1
+}
+
+// escapeError returns the error neturl.Parse has for a percent sign that begins no
+// percent-encoding, for the first such sign of s: one that two hexadecimal digits do not
+// follow, as in "100%" and in "%zz". It returns nil if s has none.
+func escapeError(s string) error {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && (i+2 >= len(s) || !isHex(s[i+1]) || !isHex(s[i+2])) {
+			return neturl.EscapeError(s[i:min(i+3, len(s))])
+		}
+	}
+	return nil
+}
+
+// isHex tells whether c is a hexadecimal digit.
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
 }
 
 // isControl tells whether r is an ASCII control character, which a tab and a line break are.

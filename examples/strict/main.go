@@ -54,7 +54,10 @@ func main() {
 //
 // A URL must hold no space, which it has to give as "%20", and none of the
 // characters " < > \ ^ ` { | }, which have no place in a URL either: a vertical
-// bar has to be given as "%7C". The <changefreq> and <priority> of an entry
+// bar has to be given as "%7C". A square bracket has a place only around an
+// IPv6 address that is the host, and has to be given as "%5B" or "%5D"
+// everywhere else. A percent sign has to begin such an encoding, so the sign
+// itself has to be given as "%25". The <changefreq> and <priority> of an entry
 // must hold a value of the protocol.
 //
 // An entry that does not meet a requirement is skipped and reported.
@@ -72,6 +75,8 @@ func rules() {
   <url><loc>/relative</loc></url>
   <url><loc>https://example.com/search?q=summer sale</loc></url>
   <url><loc>https://example.com/search?tags=summer|sale</loc></url>
+  <url><loc>https://example.com/search?tags[]=summer</loc></url>
+  <url><loc>https://example.com/search?discount=100%</loc></url>
   <url><loc>https://example.com/change-frequency</loc><changefreq>Weekly</changefreq></url>
   <url><loc>https://example.com/priority</loc><priority>1.5</priority></url>
 </urlset>`
@@ -82,7 +87,7 @@ func rules() {
 		log.Fatalf("parse error: %v", err)
 	}
 
-	fmt.Printf("Strict mode accepts %d of the 12 entries of %s:\n", sm.GetURLCount(), url)
+	fmt.Printf("Strict mode accepts %d of the 14 entries of %s:\n", sm.GetURLCount(), url)
 	for _, u := range sm.GetURLs() {
 		fmt.Printf("  %s\n", u.Loc)
 	}
@@ -129,6 +134,7 @@ func extensions() {
       <video:title>Product video</video:title>
       <video:content_loc>ftp://cdn.example.net/product.mp4</video:content_loc>
       <video:duration>0</video:duration>
+      <video:view_count>-1</video:view_count>
     </video:video>
     <xhtml:link rel="alternate" hreflang="de"/>
     <xhtml:link rel="alternate" hreflang="fr" href="https://example.com/fr/product"/>

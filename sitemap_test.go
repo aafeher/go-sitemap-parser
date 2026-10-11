@@ -8093,7 +8093,11 @@ func TestS_Parse_Strict_ExtensionURL(t *testing.T) {
 		{"angle brackets and a space", "https://cdn.example.net/<a b>", "strict mode: URL contains a space", "https://cdn.example.net/%3Ca%20b%3E"},
 		{"vertical bar, other protocol", "ftp://cdn.example.net/a|b", `strict mode: unsupported scheme "ftp"`, ""},
 		{"vertical bar percent-encoded", "https://cdn.example.net/a%7Cb?c=%7Bd%7D", "", ""},
-		{"square brackets", "https://cdn.example.net/file?size[]=1", "", ""},
+		{"square brackets", "https://cdn.example.net/file?size[]=1", `strict mode: URL contains the character '[', which it has to give as "%5B"`, ""},
+		{"square brackets percent-encoded", "https://cdn.example.net/file?size%5B%5D=1", "", ""},
+		{"IPv6 address", "https://[2001:db8::1]:8443/file", "", ""},
+		{"percent sign in the query", "https://cdn.example.net/file?zoom=100%", `strict mode: invalid URL escape "%" in the query`, ""},
+		{"percent sign percent-encoded", "https://cdn.example.net/file?zoom=100%25", "", ""},
 	}
 
 	for kind, entry := range entries {
@@ -8179,10 +8183,17 @@ var excludedCharacters = []struct {
 
 // TestValidateAbsoluteURL verifies what strict mode requires of a URL apart from the host
 // it is on: an absolute HTTP or HTTPS URL that names a host and holds no space, no control
-// character and none of the characters that have no place in a URL. The first thing that is
-// wrong with a URL is the one that is reported.
+// character and none of the characters that have no place in a URL, which the square
+// brackets are everywhere but around an IPv6 address, and in whose query a percent sign
+// begins a percent-encoding. The first thing that is wrong with a URL is the one that is
+// reported, a character before a percent sign.
 func TestValidateAbsoluteURL(t *testing.T) {
-	const barErr = `strict mode: URL contains the character '|', which it has to give as "%7C"`
+	const (
+		barErr     = `strict mode: URL contains the character '|', which it has to give as "%7C"`
+		openErr    = `strict mode: URL contains the character '[', which it has to give as "%5B"`
+		closeErr   = `strict mode: URL contains the character ']', which it has to give as "%5D"`
+		percentErr = `strict mode: invalid URL escape "%" in the query`
+	)
 
 	tests := []struct {
 		name string
@@ -8194,8 +8205,50 @@ func TestValidateAbsoluteURL(t *testing.T) {
 		{"HTTP URL", "http://example.com/", ""},
 		{"host and nothing else", "https://example.com", ""},
 		{"excluded characters percent-encoded", "https://example.com/a%22%3C%3E%5C%5E%60%7B%7C%7Db?q=%7C%7c#%7B%7D", ""},
-		{"square brackets", "https://example.com/a[1]?b[]=1&c=[2]#[3]", ""},
+		{"square brackets percent-encoded", "https://example.com/a%5B1%5D?b%5B%5D=1&c=%5b2%5d#%5B3%5D", ""},
 		{"IPv6 address", "https://[2001:db8::1]:8443/a", ""},
+		{"IPv6 address and nothing else", "https://[2001:db8::1]", ""},
+		{"IPv6 address with a zone", "https://[fe80::1%25eth0]/a", ""},
+		{"IPv6 address after a user", "https://user:secret@[2001:db8::1]/a", ""},
+		{"IPv6 address before a query", "https://[2001:db8::1]?b=1", ""},
+		{"square brackets in the path", "https://example.com/a[1]", openErr},
+		{"square brackets in the query", "https://example.com/search?b[]=1", openErr},
+		{"square brackets in the fragment", "https://example.com/page#[3]", openErr},
+		{"opening bracket at the end", "https://example.com/a[", openErr},
+		{"closing bracket alone", "https://example.com/a]b", closeErr},
+		{"closing bracket at the end", "https://example.com/a]", closeErr},
+		{"closing bracket before an opening one", "https://example.com/a]b[", closeErr},
+		{"closing bracket in the host", "https://exa]mple.com/", closeErr},
+		{"opening bracket after an IPv6 address", "https://[2001:db8::1]/a[1]", openErr},
+		{"closing bracket after an IPv6 address", "https://[2001:db8::1]/a]", closeErr},
+		{"closing bracket right after an IPv6 address", "https://[2001:db8::1]/]", closeErr},
+		{"closing bracket in the zone of an IPv6 address", "https://[fe80::1%25en]0]/", closeErr},
+		{"closing bracket at the end of the zone of an IPv6 address", "https://[fe80::1%25en]]/", closeErr},
+		{"square bracket before an excluded character", "https://example.com/a[b|c", openErr},
+		{"square bracket after an excluded character", "https://example.com/a|b[c", barErr},
+		{"square bracket before a space", "https://example.com/a[b c", "strict mode: URL contains a space"},
+		{"square bracket, no host", "https:///a[b", "strict mode: missing host"},
+		{"square bracket, relative URL", "/a[b", `strict mode: unsupported scheme ""`},
+		{"percent-encoding in the query", "https://example.com/search?q=100%25&r=%e9%E9&s=%0a%F9%aF", ""},
+		{"percent-encoding at the end of the query", "https://example.com/search?q=%41", ""},
+		{"percent sign at the end of the query", "https://example.com/search?q=100%", percentErr},
+		{"percent sign that is the query", "https://example.com/search?%", percentErr},
+		{"percent sign before the fragment", "https://example.com/search?q=100%#top", percentErr},
+		{"percent sign and one digit", "https://example.com/search?q=%4", `strict mode: invalid URL escape "%4" in the query`},
+		{"percent sign and one digit before the fragment", "https://example.com/search?q=%4#a1", `strict mode: invalid URL escape "%4" in the query`},
+		{"percent sign and no digit", "https://example.com/search?q=%zz&r=1", `strict mode: invalid URL escape "%zz" in the query`},
+		{"percent sign and a digit that is none", "https://example.com/search?q=%4G1", `strict mode: invalid URL escape "%4G" in the query`},
+		{"percent sign and a first digit that is none", "https://example.com/search?q=%G41", `strict mode: invalid URL escape "%G4" in the query`},
+		{"two percent signs", "https://example.com/search?q=%%41", `strict mode: invalid URL escape "%%4" in the query`},
+		{"percent sign after a percent-encoding", "https://example.com/search?q=%41%4", `strict mode: invalid URL escape "%4" in the query`},
+		{"percent sign before a character that is not ASCII", "https://example.com/search?q=%é", `strict mode: invalid URL escape "%é" in the query`},
+		{"percent sign after an excluded character", "https://example.com/search?q=a|b%", barErr},
+		{"percent sign before an excluded character", "https://example.com/search?q=100%|", barErr},
+		{"percent sign before a square bracket", "https://example.com/search?q=100%#[", openErr},
+		{"percent sign before a space", "https://example.com/search?q=100% off", "strict mode: URL contains a space"},
+		{"percent sign in the query, no host", "https:///search?q=100%", "strict mode: missing host"},
+		{"percent sign in the path", "https://example.com/100%?q=1", `parse "https://example.com/100%?q=1": invalid URL escape "%"`},
+		{"percent sign in the fragment", "https://example.com/page?q=1#100%", `parse "https://example.com/page?q=1#100%": invalid URL escape "%"`},
 		{"other punctuation", "https://example.com/a'b(c)d!e*f~g$h,i;j?k=l'm&n=o@p:q/r?s#t'u!v", ""},
 		{"characters that are not ASCII", "https://example.com/café?q=例#é", ""},
 		{"internationalised host", "https://bücher.example/", ""},
@@ -8239,8 +8292,99 @@ func TestValidateAbsoluteURL(t *testing.T) {
 			}
 			mustEqual(t, "URL of the error", validationErr.URL, test.url)
 			mustEqual(t, "error", validationErr.Err.Error(), test.err)
+			// A percent sign that begins no percent-encoding is the same error wherever it
+			// stands, the one net/url has for it.
+			var escapeErr neturl.EscapeError
+			mustEqual(t, "is an error of a percent sign", errors.As(err, &escapeErr), strings.Contains(test.err, "invalid URL escape"))
 		})
 	}
+}
+
+// TestEscapeError verifies what a percent sign has to be followed by: two hexadecimal
+// digits, in either letter case. The first one that is not is named, with the two
+// characters after it, or with what there is of them.
+func TestEscapeError(t *testing.T) {
+	tests := []struct {
+		text string
+		// want is what the error quotes, empty if there is no error.
+		want string
+	}{
+		{"", ""},
+		{"a=b&c=d", ""},
+		{"%00", ""},
+		{"%09%99", ""},
+		{"%aa%af%ff", ""},
+		{"%AA%AF%FF", ""},
+		{"a%20b%2Fc", ""},
+		{"%", "%"},
+		{"%4", "%4"},
+		{"a%", "%"},
+		{"a%4", "%4"},
+		{"%4%41", "%4%"},
+		{"%41%", "%"},
+		{"%/0", "%/0"},
+		{"%0/", "%0/"},
+		{"%:0", "%:0"},
+		{"%0:", "%0:"},
+		{"%@0", "%@0"},
+		{"%0@", "%0@"},
+		{"%G0", "%G0"},
+		{"%0G", "%0G"},
+		{"%`0", "%`0"},
+		{"%0`", "%0`"},
+		{"%g0", "%g0"},
+		{"%0g", "%0g"},
+		{"%zz", "%zz"},
+		{"%41%zz%yy", "%zz"},
+		{"%zzz", "%zz"},
+		{"100% off", "% o"},
+	}
+
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("%q", test.text), func(t *testing.T) {
+			err := escapeError(test.text)
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				// net/url has nothing against it either.
+				if _, err := neturl.QueryUnescape(test.text); err != nil {
+					t.Fatalf("net/url: %v", err)
+				}
+				return
+			}
+			mustEqual(t, "error", fmt.Sprint(err), fmt.Sprintf("invalid URL escape %q", test.want))
+			// It is the error net/url has for the text.
+			_, want := neturl.QueryUnescape(test.text)
+			mustEqual(t, "error of net/url", fmt.Sprint(want), fmt.Sprint(err))
+		})
+	}
+
+	// A character is a hexadecimal digit exactly if it is one of these.
+	for c := 0; c < 256; c++ {
+		if got, want := isHex(byte(c)), strings.IndexByte("0123456789abcdefABCDEF", byte(c)) >= 0; got != want {
+			t.Errorf("isHex(%q) = %v, want %v", byte(c), got, want)
+		}
+	}
+}
+
+// locFormats holds the formats that list pages, each with the URL a document of it is parsed
+// as and with the document that lists the page at loc.
+var locFormats = []struct {
+	name    string
+	url     string
+	content func(loc string) string
+}{
+	{"urlset", "https://example.com/sitemap.xml", func(loc string) string {
+		return `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + xmlText(loc) + `</loc></url></urlset>`
+	}},
+	{"text", "https://example.com/sitemap.txt", func(loc string) string { return loc + "\n" }},
+	{"RSS", "https://example.com/rss.xml", func(loc string) string {
+		return `<rss version="2.0"><channel><item><link>` + xmlText(loc) + `</link></item></channel></rss>`
+	}},
+	{"Atom", "https://example.com/atom.xml", func(loc string) string {
+		return `<feed xmlns="http://www.w3.org/2005/Atom"><entry><link href="` + xmlText(loc) + `"/></entry></feed>`
+	}},
 }
 
 // TestS_Parse_ExcludedCharacterInURL verifies what becomes of a URL that holds one of the
@@ -8261,24 +8405,7 @@ func TestS_Parse_ExcludedCharacterInURL(t *testing.T) {
 		{"query", func(s string) string { return "https://example.com/search?q=a" + s + "b" }, false},
 		{"fragment", func(s string) string { return "https://example.com/page#a" + s + "b" }, true},
 	}
-	formats := []struct {
-		name    string
-		url     string
-		content func(loc string) string
-	}{
-		{"urlset", "https://example.com/sitemap.xml", func(loc string) string {
-			return `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + xmlText(loc) + `</loc></url></urlset>`
-		}},
-		{"text", "https://example.com/sitemap.txt", func(loc string) string { return loc + "\n" }},
-		{"RSS", "https://example.com/rss.xml", func(loc string) string {
-			return `<rss version="2.0"><channel><item><link>` + xmlText(loc) + `</link></item></channel></rss>`
-		}},
-		{"Atom", "https://example.com/atom.xml", func(loc string) string {
-			return `<feed xmlns="http://www.w3.org/2005/Atom"><entry><link href="` + xmlText(loc) + `"/></entry></feed>`
-		}},
-	}
-
-	for _, format := range formats {
+	for _, format := range locFormats {
 		for _, place := range places {
 			for _, excluded := range excludedCharacters {
 				loc := place.loc(excluded.char)
@@ -8320,7 +8447,7 @@ func TestS_Parse_ExcludedCharacterInURL(t *testing.T) {
 		// modes, and so is one that holds the punctuation a URL may hold.
 		for _, loc := range []string{
 			"https://example.com/a%7Cb?q=%22c%22&d=%7Be%7D#f%5Eg",
-			"https://example.com/a'b(c)!*?d[]=1&e=[2]#[3]",
+			"https://example.com/a'b(c)!*?d%5B%5D=1&e=%5B2%5D#%5B3%5D",
 		} {
 			for _, strict := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s, %s, strict=%v", format.name, loc, strict), func(t *testing.T) {
@@ -8336,43 +8463,154 @@ func TestS_Parse_ExcludedCharacterInURL(t *testing.T) {
 	}
 }
 
-// TestS_Parse_ExcludedCharacterInURL_SitemapIndex verifies that a sitemap index entry
-// with one of these characters in its URL is treated like a page with one: tolerant mode
-// requests the sitemap, strict mode rejects the entry and makes no request for it.
-func TestS_Parse_ExcludedCharacterInURL_SitemapIndex(t *testing.T) {
-	content := `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <sitemap><loc>https://example.com/sitemap|1.xml?tags=a|b</loc></sitemap>
-</sitemapindex>`
+// TestS_Parse_SquareBracketOrPercentSignInURL verifies what becomes of a URL that holds a
+// square bracket anywhere but around an IPv6 address, or a percent sign in its query that
+// begins no percent-encoding. Strict mode rejects the URL: a URL has to give the brackets as
+// "%5B" and "%5D" and a percent sign as "%25". Tolerant mode accepts it and leaves these as
+// they are. It makes no difference which format lists the URL.
+func TestS_Parse_SquareBracketOrPercentSignInURL(t *testing.T) {
+	const (
+		openErr  = `strict mode: URL contains the character '[', which it has to give as "%5B"`
+		closeErr = `strict mode: URL contains the character ']', which it has to give as "%5D"`
+	)
+	tests := []struct {
+		name string
+		loc  string
+		// err is the error of strict mode, empty for a URL it accepts.
+		err string
+	}{
+		{"square brackets in the path", "https://example.com/a[1]", openErr},
+		{"closing bracket in the path", "https://example.com/a]b", closeErr},
+		{"square brackets in the query", "https://example.com/search?id[]=1&id[]=2", openErr},
+		{"square brackets in the fragment", "https://example.com/page#[top]", openErr},
+		{"square brackets percent-encoded", "https://example.com/a%5B1%5D?id%5B%5D=1#%5Btop%5D", ""},
+		{"IPv6 address", "https://[2001:db8::1]/page", ""},
+		{"square brackets after an IPv6 address", "https://[2001:db8::1]:8443/a[1]", openErr},
+		{"percent sign in the query", "https://example.com/search?q=100%", `strict mode: invalid URL escape "%" in the query`},
+		{"percent sign and no digits in the query", "https://example.com/search?q=%zz&r=1", `strict mode: invalid URL escape "%zz" in the query`},
+		{"percent sign percent-encoded", "https://example.com/search?q=100%25", ""},
+	}
 
-	for _, strict := range []bool{false, true} {
-		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
-			var requested []string
-			client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-				requested = append(requested, req.URL.RequestURI())
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Header:     http.Header{},
-					Body:       io.NopCloser(strings.NewReader(`<urlset><url><loc>https://example.com/page</loc></url></urlset>`)),
-					Request:    req,
-				}, nil
-			})}
-			s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(client)
-			requireParse(t, s, "https://example.com/sitemap-index.xml", &content)
+	for _, format := range locFormats {
+		for _, test := range tests {
+			content := format.content(test.loc)
+			// The sitemap is on the host of the URL it lists, which strict mode requires.
+			parsed, err := neturl.Parse(test.loc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sitemapURL := strings.Replace(format.url, "example.com", parsed.Host, 1)
 
-			if strict {
-				if len(requested) != 0 {
-					t.Errorf("expected no request, got %v", requested)
+			t.Run(format.name+", "+test.name+", tolerant mode", func(t *testing.T) {
+				s := New()
+				requireParse(t, s, sitemapURL, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), []string{test.loc})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+			})
+
+			t.Run(format.name+", "+test.name+", strict mode", func(t *testing.T) {
+				s := New().SetStrict(true)
+				requireParse(t, s, sitemapURL, &content)
+
+				if test.err == "" {
+					assertStringSlice(t, "URLs", locsOf(s), []string{test.loc})
+					assertStringSlice(t, "errors", errorsOf(s), []string{})
+					return
 				}
 				assertStringSlice(t, "URLs", locsOf(s), []string{})
-				assertStringSlice(t, "errors", errorsOf(s), []string{
-					`validate "https://example.com/sitemap|1.xml?tags=a|b": strict mode: URL contains the character '|', which it has to give as "%7C"`,
+				errs := s.GetErrors()
+				if len(errs) != 1 {
+					t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+				}
+				var validationErr *ValidationError
+				if !errors.As(errs[0], &validationErr) {
+					t.Fatalf("expected a *ValidationError, got %T: %v", errs[0], errs[0])
+				}
+				mustEqual(t, "URL of the error", validationErr.URL, test.loc)
+				mustEqual(t, "error", validationErr.Err.Error(), test.err)
+			})
+		}
+
+		// A percent sign that begins no percent-encoding in the path or in the fragment
+		// makes for a URL that cannot be parsed, which neither mode accepts.
+		for _, loc := range []string{"https://example.com/100%?q=1", "https://example.com/page#100%"} {
+			for _, strict := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s, %s, strict=%v", format.name, loc, strict), func(t *testing.T) {
+					content := format.content(loc)
+					s := New().SetStrict(strict)
+					requireParse(t, s, format.url, &content)
+
+					assertStringSlice(t, "URLs", locsOf(s), []string{})
+					assertStringSlice(t, "errors", errorsOf(s), []string{
+						fmt.Sprintf(`validate %q: parse %q: invalid URL escape "%%"`, loc, loc),
+					})
 				})
-				return
 			}
-			assertStringSlice(t, "requests", requested, []string{"/sitemap%7C1.xml?tags=a|b"})
-			assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page"})
-			assertStringSlice(t, "errors", errorsOf(s), []string{})
-		})
+		}
+	}
+}
+
+// TestS_Parse_ExcludedCharacterInURL_SitemapIndex verifies that a sitemap index entry
+// with one of these characters in its URL is treated like a page with one, and so is one
+// with a square bracket or with a percent sign that begins no percent-encoding in its
+// query: tolerant mode requests the sitemap, strict mode rejects the entry and makes no
+// request for it.
+func TestS_Parse_ExcludedCharacterInURL_SitemapIndex(t *testing.T) {
+	entries := []struct {
+		loc string
+		// request is what tolerant mode requests the sitemap by.
+		request string
+		// err is the error of strict mode.
+		err string
+	}{
+		{
+			"https://example.com/sitemap|1.xml?tags=a|b", "/sitemap%7C1.xml?tags=a|b",
+			`strict mode: URL contains the character '|', which it has to give as "%7C"`,
+		},
+		{
+			"https://example.com/sitemap.xml?ids[]=1", "/sitemap.xml?ids[]=1",
+			`strict mode: URL contains the character '[', which it has to give as "%5B"`,
+		},
+		{
+			"https://example.com/sitemap.xml?zoom=100%", "/sitemap.xml?zoom=100%",
+			`strict mode: invalid URL escape "%" in the query`,
+		},
+	}
+
+	for _, entry := range entries {
+		content := `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>` + entry.loc + `</loc></sitemap>
+</sitemapindex>`
+
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", entry.loc, strict), func(t *testing.T) {
+				var requested []string
+				client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					requested = append(requested, req.URL.RequestURI())
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{},
+						Body:       io.NopCloser(strings.NewReader(`<urlset><url><loc>https://example.com/page</loc></url></urlset>`)),
+						Request:    req,
+					}, nil
+				})}
+				s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(client)
+				requireParse(t, s, "https://example.com/sitemap-index.xml", &content)
+
+				if strict {
+					if len(requested) != 0 {
+						t.Errorf("expected no request, got %v", requested)
+					}
+					assertStringSlice(t, "URLs", locsOf(s), []string{})
+					assertStringSlice(t, "errors", errorsOf(s), []string{`validate "` + entry.loc + `": ` + entry.err})
+					return
+				}
+				assertStringSlice(t, "requests", requested, []string{entry.request})
+				assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page"})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+			})
+		}
 	}
 }
 
@@ -8546,6 +8784,7 @@ func TestS_Parse_Strict_ExtensionErrors(t *testing.T) {
       <video:player_loc>/player?video=first</video:player_loc>
       <video:duration>0</video:duration>
       <video:rating>5.5</video:rating>
+      <video:view_count>-1</video:view_count>
       <video:uploader info="uploaders/first">Uploader</video:uploader>
       ` + tags.String() + `
     </video:video>
@@ -8576,6 +8815,7 @@ func TestS_Parse_Strict_ExtensionErrors(t *testing.T) {
       <video:player_loc>https://example.com/player?video=third</video:player_loc>
       <video:duration>28800</video:duration>
       <video:rating>5.0</video:rating>
+      <video:view_count>0</video:view_count>
       <video:uploader info="https://example.com/uploaders/third">Uploader</video:uploader>
     </video:video>
   </url>
@@ -8589,6 +8829,7 @@ func TestS_Parse_Strict_ExtensionErrors(t *testing.T) {
 		`validate "` + firstURL + `": strict mode: video <description> is empty`,
 		`validate "` + firstURL + `": strict mode: video <duration> 0 is out of range [1, 28800]`,
 		`validate "` + firstURL + `": strict mode: video <rating> 5.5 is out of range [0.0, 5]`,
+		`validate "` + firstURL + `": strict mode: video <view_count> -1 is negative`,
 		`validate "` + firstURL + `": strict mode: video has 33 tags, maximum is 32`,
 		`validate "ftp://cdn.example.net/first.mp4": strict mode: unsupported scheme "ftp"`,
 		`validate "/player?video=first": strict mode: unsupported scheme ""`,
@@ -8621,12 +8862,18 @@ func TestS_Parse_Strict_ExtensionErrors(t *testing.T) {
 	assertStringSlice(t, "URLs of the extensions of the third page", extensionURLsOf(urls[2]), []string{
 		"https://cdn.example.net/third.jpg", "https://cdn.example.net/third.mp4", "https://example.com/player?video=third", "https://example.com/uploaders/third",
 	})
+	// So is a value that is out of range, as the document gives it.
+	assertPtrInt(t, "view count of the first video", urls[0].Videos[0].ViewCount, -1)
+	assertPtrInt(t, "view count of the third video", urls[2].Videos[0].ViewCount, 0)
 
 	// Tolerant mode has nothing against any of it, and leaves out the entries without a URL.
 	tolerant := New()
 	requireParse(t, tolerant, sitemapURL, &content)
 	assertStringSlice(t, "errors of tolerant mode", errorsOf(tolerant), []string{})
 	assertStringSlice(t, "URLs of tolerant mode", locsOf(tolerant), []string{firstURL, secondURL, thirdURL})
+	if urls := tolerant.GetURLs(); len(urls) == 3 {
+		assertPtrInt(t, "view count of the first video in tolerant mode", urls[0].Videos[0].ViewCount, -1)
+	}
 }
 
 func TestParseFloat32(t *testing.T) {
@@ -11104,6 +11351,21 @@ func TestS_robotsTXTSitemapLocations(t *testing.T) {
 			wantErrs: []string{
 				`validate "https://example.com/sitemap|1.xml?tags=a|b": strict mode: URL contains the character '|', which it has to give as "%7C"`,
 				`validate "https://cdn.example.net/{sitemap}.xml": strict mode: URL contains the character '{', which it has to give as "%7B"`,
+			},
+		},
+		{
+			name:     "URL with a square bracket or a percent sign in it where a URL may not hold one",
+			sitemaps: []string{"https://example.com/sitemap.xml?ids[]=1", "https://example.com/sitemap.xml?zoom=100%", "https://[2001:db8::1]/sitemap.xml"},
+			want:     []string{"https://example.com/sitemap.xml?ids[]=1", "https://example.com/sitemap.xml?zoom=100%", "https://[2001:db8::1]/sitemap.xml"},
+		},
+		{
+			name:     "URL with a square bracket or a percent sign in it where a URL may not hold one, strict mode",
+			strict:   true,
+			sitemaps: []string{"https://example.com/sitemap.xml?ids[]=1", "https://cdn.example.net/sitemap.xml?zoom=100%", "https://[2001:db8::1]/sitemap.xml", "https://example.com/sitemap.xml?ids%5B%5D=1&zoom=100%25"},
+			want:     []string{"https://[2001:db8::1]/sitemap.xml", "https://example.com/sitemap.xml?ids%5B%5D=1&zoom=100%25"},
+			wantErrs: []string{
+				`validate "https://example.com/sitemap.xml?ids[]=1": strict mode: URL contains the character '[', which it has to give as "%5B"`,
+				`validate "https://cdn.example.net/sitemap.xml?zoom=100%": strict mode: invalid URL escape "%" in the query`,
 			},
 		},
 		{
