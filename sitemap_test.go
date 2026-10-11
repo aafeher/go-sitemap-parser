@@ -2421,7 +2421,6 @@ func TestS_Parse(t *testing.T) {
 		content              *string
 		err                  *string
 		robotsTxtSitemapURLs []string
-		sitemapLocations     []string
 		urls                 []URL
 		errs                 []error
 		strict               bool
@@ -2434,7 +2433,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			err:                  pointerOfString("validate \"%%\": parse \"%%\": invalid URL escape \"%%\""),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
 				errors.New("validate \"%%\": parse \"%%\": invalid URL escape \"%%\""),
@@ -2448,7 +2446,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			err:                  pointerOfString("validate \"invalid_url\": invalid URL scheme \"\": only http and https are supported"),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
 				errors.New("validate \"invalid_url\": invalid URL scheme \"\": only http and https are supported"),
@@ -2462,7 +2459,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			err:                  pointerOfString("validate \"\": invalid URL scheme \"\": only http and https are supported"),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
 				errors.New("validate \"\": invalid URL scheme \"\": only http and https are supported"),
@@ -2476,7 +2472,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			err:                  pointerOfString("validate \"/just/a/path\": invalid URL scheme \"\": only http and https are supported"),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
 				errors.New("validate \"/just/a/path\": invalid URL scheme \"\": only http and https are supported"),
@@ -2490,7 +2485,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			err:                  pointerOfString("validate \"http://\": missing host"),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
 				errors.New("validate \"http://\": missing host"),
@@ -2504,7 +2498,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			err:                  pointerOfString("validate \"ftp://example.com/sitemap.xml\": invalid URL scheme \"ftp\": only http and https are supported"),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
 				errors.New("validate \"ftp://example.com/sitemap.xml\": invalid URL scheme \"ftp\": only http and https are supported"),
@@ -2518,7 +2511,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			err:                  pointerOfString(fmt.Sprintf("fetch %q: received HTTP status 404", server.URL)),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			errs:                 []error{fmt.Errorf("fetch %q: received HTTP status 404", server.URL)},
 		},
@@ -2530,7 +2522,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			err:                  pointerOfString(fmt.Sprintf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/404", server.URL))),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			errs:                 []error{fmt.Errorf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/404", server.URL))},
 		},
@@ -2543,7 +2534,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 		},
 		{
@@ -2554,7 +2544,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			content:              pointerOfString(""),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 		},
 		{
@@ -2564,7 +2553,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 		},
 		{
@@ -2574,12 +2562,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: []string{fmt.Sprintf("%s/sitemapindex-1.xml", server.URL)},
-			sitemapLocations: []string{
-				fmt.Sprintf("%s/sitemapindex-1.xml", server.URL),
-				fmt.Sprintf("%s/sitemap-01.xml", server.URL),
-				fmt.Sprintf("%s/sitemap-02.xml", server.URL),
-				fmt.Sprintf("%s/sitemap-03.xml", server.URL),
-			},
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-01", server.URL),
@@ -2628,16 +2610,6 @@ func TestS_Parse(t *testing.T) {
 			robotsTxtSitemapURLs: []string{
 				fmt.Sprintf("%s/sitemapindex-1.xml", server.URL),
 				fmt.Sprintf("%s/sitemapindex-2.xml", server.URL),
-			},
-			sitemapLocations: []string{
-				fmt.Sprintf("%s/sitemapindex-1.xml", server.URL),
-				fmt.Sprintf("%s/sitemap-01.xml", server.URL),
-				fmt.Sprintf("%s/sitemap-02.xml", server.URL),
-				fmt.Sprintf("%s/sitemap-03.xml", server.URL),
-				fmt.Sprintf("%s/sitemapindex-2.xml", server.URL),
-				fmt.Sprintf("%s/sitemap-04.xml", server.URL),
-				fmt.Sprintf("%s/sitemap-05.xml", server.URL),
-				fmt.Sprintf("%s/sitemap-06.xml", server.URL),
 			},
 			urls: []URL{
 				{
@@ -2721,7 +2693,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: []string{fmt.Sprintf("%s/invalid.xml", server.URL)},
-			sitemapLocations:     nil,
 			urls:                 nil,
 			errs:                 []error{fmt.Errorf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/invalid.xml", server.URL))},
 		},
@@ -2732,12 +2703,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: []string{fmt.Sprintf("%s/sitemapindex-1.xml.gz", server.URL)},
-			sitemapLocations: []string{
-				fmt.Sprintf("%s/sitemapindex-1.xml.gz", server.URL),
-				fmt.Sprintf("%s/sitemap-01.xml.gz", server.URL),
-				fmt.Sprintf("%s/sitemap-02.xml.gz", server.URL),
-				fmt.Sprintf("%s/sitemap-03.xml.gz", server.URL),
-			},
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-01", server.URL),
@@ -2786,7 +2751,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			err:                  pointerOfString(fmt.Sprintf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty-corrupted.xml.gz", server.URL), "")),
 			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty-corrupted.xml.gz", server.URL), "")},
@@ -2798,7 +2762,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			err:                  pointerOfString(fmt.Sprintf("parse %q: sitemap content is empty", fmt.Sprintf("%s/sitemapindex-empty.xml.gz", server.URL))),
 			errs:                 []error{fmt.Errorf("parse %q: sitemap content is empty", fmt.Sprintf("%s/sitemapindex-empty.xml.gz", server.URL))},
@@ -2810,12 +2773,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations: []string{
-				fmt.Sprintf("%s/sitemapindex-1.xml.gz", server.URL),
-				fmt.Sprintf("%s/sitemap-01.xml.gz", server.URL),
-				fmt.Sprintf("%s/sitemap-02.xml.gz", server.URL),
-				fmt.Sprintf("%s/sitemap-03.xml.gz", server.URL),
-			},
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-01", server.URL),
@@ -2864,7 +2821,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			err:                  pointerOfString(fmt.Sprintf("parse %q: sitemap content is empty", fmt.Sprintf("%s/sitemap-empty.xml.gz", server.URL))),
 			errs:                 []error{fmt.Errorf("parse %q: sitemap content is empty", fmt.Sprintf("%s/sitemap-empty.xml.gz", server.URL))},
@@ -2876,7 +2832,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-02", server.URL),
@@ -2901,7 +2856,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			err:                  pointerOfString(fmt.Sprintf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")),
 			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")},
@@ -2914,7 +2868,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			content:              pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			err:                  pointerOfString(fmt.Sprintf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")),
 			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemapindex-empty.xml", server.URL), "")},
@@ -2926,12 +2879,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations: []string{
-				fmt.Sprintf("%s/sitemapindex-1.xml.gz", server.URL),
-				fmt.Sprintf("%s/sitemap-01.xml.gz", server.URL),
-				fmt.Sprintf("%s/sitemap-02.xml.gz", server.URL),
-				fmt.Sprintf("%s/sitemap-03.xml.gz", server.URL),
-			},
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-01", server.URL),
@@ -2979,12 +2926,8 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			content:              nil,
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations: []string{
-				fmt.Sprintf("%s/sitemapindex-with-invalid-sitemap.xml", server.URL),
-				fmt.Sprintf("%s/invalid.xml", server.URL),
-			},
-			urls: nil,
-			errs: []error{fmt.Errorf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/invalid.xml", server.URL))},
+			urls:                 nil,
+			errs:                 []error{fmt.Errorf("fetch %q: received HTTP status 404", fmt.Sprintf("%s/invalid.xml", server.URL))},
 		},
 		{
 			name:                 "sitemapindex with follow and rules",
@@ -2993,11 +2936,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{`alpha`},
 			rules:                []string{`page`},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations: []string{
-				fmt.Sprintf("%s/sitemapindex-follow-1.xml", server.URL),
-				fmt.Sprintf("%s/sitemap-follow-alpha-01.xml", server.URL),
-				fmt.Sprintf("%s/sitemap-follow-alpha-02.xml", server.URL),
-			},
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-alpha-01", server.URL),
@@ -3021,7 +2959,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{`*a`},
 			err:                  pointerOfString("errors occurred before parsing, see GetErrors() for details"),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
 				errors.New("config \"rules\": error parsing regexp: missing argument to repetition operator: `*`"),
@@ -3035,7 +2972,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			err:                  pointerOfString("errors occurred before parsing, see GetErrors() for details"),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			errs: []error{
 				errors.New("config \"follow\": error parsing regexp: missing closing ): `(`"),
@@ -3050,7 +2986,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			err:                  pointerOfString(fmt.Sprintf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")),
 			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")},
@@ -3183,7 +3118,6 @@ func TestS_Parse(t *testing.T) {
 			rules:                []string{},
 			content:              pointerOfString("\n"),
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls:                 nil,
 			err:                  pointerOfString(fmt.Sprintf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")),
 			errs:                 []error{fmt.Errorf("parse %q: unrecognized sitemap format (root element: %q)", fmt.Sprintf("%s/sitemap-empty.xml", server.URL), "")},
@@ -3195,7 +3129,6 @@ func TestS_Parse(t *testing.T) {
 			follow:               []string{},
 			rules:                []string{},
 			robotsTxtSitemapURLs: nil,
-			sitemapLocations:     nil,
 			urls: []URL{
 				{
 					Loc:        fmt.Sprintf("%s/page-02", server.URL),
@@ -3238,9 +3171,6 @@ func TestS_Parse(t *testing.T) {
 
 			if !reflect.DeepEqual(sitemap.robotsTxtSitemapURLs, test.robotsTxtSitemapURLs) {
 				t.Error("robotsTxtSitemapURLs is not equal to expected value")
-			}
-			if !compareSitemapLocationsArray(sitemap.sitemapLocations, test.sitemapLocations) {
-				t.Error("sitemapLocations is not equal to expected value")
 			}
 			if !compareURLsArray(sitemap.urls, test.urls) {
 				t.Logf("urls mismatch:\n  got:  %+v\n  want: %+v", sitemap.urls, test.urls)
@@ -5603,9 +5533,6 @@ func TestS_parse_EmptyLocation(t *testing.T) {
 					locations := parsedLocations(s, fmt.Sprintf(template, entry.content))
 
 					assertStringSlice(t, "locations", locations, wantLocations)
-					if format == "sitemapindex" {
-						assertStringSlice(t, "sitemap locations", s.sitemapLocations, append([]string{url}, wantLocations...))
-					}
 					if len(s.errs) != 1 {
 						t.Fatalf("expected 1 error, got %d: %v", len(s.errs), s.errs)
 					}
@@ -12391,22 +12318,6 @@ func pointerOfLastModTime(lmt LastModTime) *LastModTime {
 
 func pointerOfURLChangeFreq(changeFreq URLChangeFreq) *URLChangeFreq {
 	return &changeFreq
-}
-
-func compareSitemapLocationsArray(sitemapSitemapLocations []string, testSitemapLocations []string) bool {
-	if len(sitemapSitemapLocations) != len(testSitemapLocations) {
-		return false
-	}
-
-	sort.Slice(sitemapSitemapLocations, func(i, j int) bool {
-		return sitemapSitemapLocations[i] < sitemapSitemapLocations[j]
-	})
-
-	sort.Slice(testSitemapLocations, func(i, j int) bool {
-		return testSitemapLocations[i] < testSitemapLocations[j]
-	})
-
-	return reflect.DeepEqual(sitemapSitemapLocations, testSitemapLocations)
 }
 
 func compareURLsArray(sitemapURLs []URL, testCaseURLs []URL) bool {

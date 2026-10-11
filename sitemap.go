@@ -29,7 +29,6 @@ type (
 	// It contains a cfg field of type `config`, which stores configuration settings.
 	// The mainURL field of type string represents the main URL being processed.
 	// The robotsTxtSitemapURLs field is a slice of strings that contains the URLs present in the robots.txt file's sitemap directive.
-	// The sitemapLocations field is a slice of strings that represents the locations of the sitemap files.
 	// The urls field is a slice of URL structs that stores the URLs to be processed.
 	// The errs field is a slice of errors that holds any encountered errors during processing.
 	S struct {
@@ -38,7 +37,6 @@ type (
 		cfg                  config
 		mainURL              string
 		robotsTxtSitemapURLs []string
-		sitemapLocations     []string
 		// fetchedURLs tracks sitemap URLs already fetched in the current Parse
 		// call to prevent duplicate HTTP requests when the same URL is referenced
 		// from multiple sitemap indexes or robots.txt directives.
@@ -845,7 +843,6 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	// parsing until the offending setting is corrected.
 	s.mainURL = ""
 	s.robotsTxtSitemapURLs = nil
-	s.sitemapLocations = nil
 	s.fetchedURLs = make(map[string]struct{})
 	s.urls = nil
 	s.errs = filterErrors(s.errs, isConfigError)
@@ -1555,7 +1552,6 @@ func (s *S) addDocument(document *S) {
 		s.urls = append(s.urls, urls...)
 	}
 	s.limits.urlsLeftOut = s.limits.urlsLeftOut || document.limits.urlsLeftOut
-	s.sitemapLocations = append(s.sitemapLocations, document.sitemapLocations...)
 	s.errs = append(s.errs, document.errs...)
 }
 
@@ -1640,10 +1636,11 @@ func rootElement(decoder *xml.Decoder) (xml.StartElement, error) {
 // when the request was redirected.
 // It determines whether the content is a sitemap index or a sitemap by inspecting
 // the root XML element, then only invokes the appropriate parser.
-// If it is a sitemap index, it adds the URLs from the sitemap index to the sitemap locations.
-// If it is a sitemap, it adds the URLs from the sitemap to the URL list.
+// If it is a sitemap index, it returns the locations of the sitemaps the index lists that are
+// to be fetched. They are returned and not kept: a call that fetches many indexes would
+// otherwise hold every entry of every one of them until the next call.
+// If it is a sitemap, it adds the URLs from the sitemap to the URL list, and returns nil.
 // Parsing errors are added to the error list.
-// It returns a slice of sitemap locations that were added.
 func (s *S) parse(url string, content string) []string {
 	rootElement := detectRootElement(content)
 	switch rootElement {
@@ -1668,7 +1665,6 @@ func (s *S) parseSitemapIndexContent(url, content string) []string {
 		s.errs = append(s.errs, &ParseError{URL: url, Err: err})
 		return added
 	}
-	s.sitemapLocations = append(s.sitemapLocations, url)
 	for _, sm := range smIndex.Sitemap {
 		sm.Loc = strings.TrimSpace(sm.Loc)
 		resolvedLoc, err := s.resolveAndValidateLoc(sm.Loc, url)
@@ -1681,7 +1677,6 @@ func (s *S) parseSitemapIndexContent(url, content string) []string {
 			continue
 		}
 		added = append(added, sm.Loc)
-		s.sitemapLocations = append(s.sitemapLocations, sm.Loc)
 	}
 	return added
 }
