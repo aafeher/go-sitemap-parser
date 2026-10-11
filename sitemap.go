@@ -245,6 +245,13 @@ type (
 	// In the URLs that Parse and ParseContext collect, no text value has whitespace around it:
 	// the whitespace that surrounds the content of an element or the value of an attribute is
 	// not taken for a part of it. This goes for the fields of the extensions as well.
+	//
+	// In tolerant mode Loc is a URL that can be requested as it is: a space or a character
+	// that is not in ASCII is percent-encoded in it, and an internationalised host name is in
+	// its Punycode form. A URL of an extension comes back the same way if it is an absolute
+	// HTTP or HTTPS URL, and as the document gives it otherwise: Image.Loc and Image.License,
+	// Video.ThumbnailLoc, Video.ContentLoc, Video.PlayerLoc and VideoUploader.Info, and
+	// AlternateLink.Href. Strict mode returns every URL as the document gives it.
 	URL struct {
 		Loc        string          `xml:"loc"`
 		LastMod    *LastModTime    `xml:"lastmod"`
@@ -1706,6 +1713,11 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 	if changeFreqErr != nil || priorityErr != nil {
 		return
 	}
+	// Tolerant mode returns the URLs of the extensions the way it returns the location.
+	// Strict mode returns them as the document gives them, as it does the location.
+	if !s.cfg.strict {
+		u.encodeExtensionURLs()
+	}
 	validImages, imageErrs := s.validateAndFilterImages(u.Images)
 	u.Images = validImages
 	s.errs = append(s.errs, imageErrs...)
@@ -2182,7 +2194,9 @@ func (s *S) validatePriority(loc string, priority *float32) error {
 // In tolerant mode, images with an empty Loc are silently dropped. In strict mode,
 // an empty Loc is an error. In both modes, a Loc exceeding maxLocLength characters
 // is rejected. In strict mode, Loc must additionally be an absolute HTTP or HTTPS URL,
-// see validateAbsoluteURL.
+// see validateAbsoluteURL. In tolerant mode the URLs of the images have been
+// percent-encoded by the time they get here, see URL.encodeExtensionURLs, as have those
+// of the videos and of the alternate links.
 //
 // Note: image Loc values are not required to share the host of the parent page URL —
 // CDN-hosted images are explicitly permitted by the Google Image Sitemap specification.
@@ -2370,11 +2384,11 @@ func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, 
 // there being no location to name.
 // In both modes, URLs must not exceed 2048 characters (sitemaps.org specification) and have to
 // name a host: a page or a sitemap is on one, and a URL without one cannot be requested.
-// In tolerant mode (strict=false), relative URLs are resolved against baseURL and a space in
-// the URL is percent-encoded before the length check. A reference that begins with "//" names
-// its host itself, see namesNoHost. An internationalised host name is returned in ASCII, see
-// asciiHost. What is returned is a URL neturl.Parse accepts: a location that does not resolve
-// to one is rejected.
+// In tolerant mode (strict=false), relative URLs are resolved against baseURL, and a space or
+// a character that is not in ASCII is percent-encoded before the length check, see
+// percentEncode. A reference that begins with "//" names its host itself, see namesNoHost. An
+// internationalised host name is returned in ASCII, see asciiHost. What is returned is a URL
+// neturl.Parse accepts: a location that does not resolve to one is rejected.
 // In strict mode (strict=true), URLs must additionally be absolute HTTP(S) URLs without a
 // space or a control character in them, see strictURLError, on the same host and protocol as
 // baseURL, see sameHost. The URL is returned as the document gives it.
@@ -2421,20 +2435,35 @@ func (s *S) resolveAndValidate(loc string, baseURL string, onBaseHost bool) (str
 	}
 
 	// Tolerant mode: resolve relative URLs against the base
+	resolved, err := tolerantURL(loc, parsed, base)
+	if err != nil {
+		return loc, err
+	}
+	return resolved, nil
+}
+
+// tolerantURL returns the URL tolerant mode makes of loc, a URL found in the document served
+// from base: loc resolved against base, with an internationalised host name in ASCII, see
+// asciiHost, and with what a URL must not hold as it is percent-encoded, see percentEncode. It
+// returns a *ValidationError for a loc that does not resolve to an HTTP or HTTPS URL which
+// names a host, is of at most maxLocLength characters and is one neturl.Parse accepts. parsed
+// is loc as neturl.Parse reads it.
+func tolerantURL(loc string, parsed, base *neturl.URL) (string, error) {
 	resolved := base.ResolveReference(parsed)
 	resolved.Host = asciiHost(resolved)
 	if resolved.Scheme != "http" && resolved.Scheme != "https" {
-		return loc, &ValidationError{URL: resolved.String(), Err: fmt.Errorf("unsupported scheme %q", resolved.Scheme)}
+		return "", &ValidationError{URL: resolved.String(), Err: fmt.Errorf("unsupported scheme %q", resolved.Scheme)}
 	}
 	if resolved.Hostname() == "" || namesNoHost(loc, parsed) {
-		return loc, &ValidationError{URL: loc, Err: errors.New("missing host")}
+		return "", &ValidationError{URL: loc, Err: errors.New("missing host")}
 	}
-	// A space is no part of a URL, and a request for a URL with one in it is malformed. Those
-	// of the path and the fragment are percent-encoded already; this takes care of the rest,
-	// the ones of the query.
-	resolvedStr := strings.ReplaceAll(resolved.String(), " ", "%20")
+	// A space is no part of a URL, and neither is a character that is not in ASCII: a request
+	// for a URL with one of them in it is malformed. Those of the path and the fragment are
+	// percent-encoded already, as is a control character, which only the fragment may hold;
+	// this takes care of the rest, the ones of the query.
+	resolvedStr := percentEncode(resolved.String())
 	if len(resolvedStr) > maxLocLength {
-		return loc, &ValidationError{URL: resolvedStr, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(resolvedStr))}
+		return "", &ValidationError{URL: resolvedStr, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(resolvedStr))}
 	}
 	// neturl.Parse checks the host of a URL only when the URL names its scheme, so a reference
 	// such as "//::" is read without complaint and resolves to "https://::", which is no URL.
@@ -2442,11 +2471,104 @@ func (s *S) resolveAndValidate(loc string, baseURL string, onBaseHost bool) (str
 	// above, whatever differs from it is here.
 	if resolvedStr != loc {
 		if _, err := neturl.Parse(resolvedStr); err != nil {
-			return loc, &ValidationError{URL: loc, Err: err}
+			return "", &ValidationError{URL: loc, Err: err}
 		}
 	}
-
 	return resolvedStr, nil
+}
+
+// tolerantExtensionURL returns rawURL, a URL of an extension, the way tolerant mode returns
+// it. A URL with nothing in it that percentEncode encodes is returned as it is, which nearly
+// every URL is. An absolute HTTP or HTTPS URL that holds a space, a control character or a
+// character that is not in ASCII is returned the way the location of a page is, see
+// tolerantURL: with these percent-encoded and with an internationalised host name in ASCII.
+// Whatever is not such a URL is returned as it is as well: a relative URL, a URL of another
+// scheme, one that names no host, one that cannot be parsed, and one that would be longer
+// than maxLocLength characters percent-encoded. Tolerant mode drops no image, video or
+// alternate link over the form of its URL, so there is nothing else to do about these.
+func tolerantExtensionURL(rawURL string) string {
+	if encodableBytes(rawURL) == 0 {
+		return rawURL
+	}
+	parsed, err := neturl.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	// The URL is resolved against nothing. An absolute URL resolves to itself whatever it is
+	// resolved against; a relative one is left without a scheme that way, and is no URL
+	// tolerantURL returns.
+	if encoded, err := tolerantURL(rawURL, parsed, &neturl.URL{}); err == nil {
+		return encoded
+	}
+	return rawURL
+}
+
+// encodeURLs brings each of the given URLs of an extension into the form tolerant mode
+// returns it in, see tolerantExtensionURL.
+func encodeURLs(urls ...*string) {
+	for _, u := range urls {
+		*u = tolerantExtensionURL(*u)
+	}
+}
+
+// encodeExtensionURLs brings the URLs of the extensions of u into the form tolerant mode
+// returns them in: those of its images, of its videos and of its alternate links.
+func (u *URL) encodeExtensionURLs() {
+	for i := range u.Images {
+		encodeURLs(&u.Images[i].Loc, &u.Images[i].License)
+	}
+	for i := range u.Videos {
+		video := &u.Videos[i]
+		encodeURLs(&video.ThumbnailLoc, &video.ContentLoc, &video.PlayerLoc)
+		if video.Uploader != nil {
+			encodeURLs(&video.Uploader.Info)
+		}
+	}
+	for i := range u.Hreflangs {
+		encodeURLs(&u.Hreflangs[i].Href)
+	}
+}
+
+// percentEncode returns s with what a URL must not hold as it is percent-encoded: a space as
+// "%20", a control character such as a tab as "%09", and a character that is not in ASCII as
+// the bytes it is in UTF-8, "é" as "%C3%A9". A string without any of them is returned as it
+// is.
+func percentEncode(s string) string {
+	const upperhex = "0123456789ABCDEF"
+
+	n := encodableBytes(s)
+	if n == 0 {
+		return s
+	}
+	var encoded strings.Builder
+	encoded.Grow(len(s) + 2*n)
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; needsEncoding(c) {
+			encoded.WriteByte('%')
+			encoded.WriteByte(upperhex[c>>4])
+			encoded.WriteByte(upperhex[c&15])
+		} else {
+			encoded.WriteByte(c)
+		}
+	}
+	return encoded.String()
+}
+
+// encodableBytes returns the number of bytes of s that percentEncode encodes.
+func encodableBytes(s string) int {
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if needsEncoding(s[i]) {
+			n++
+		}
+	}
+	return n
+}
+
+// needsEncoding tells whether c is a byte percentEncode encodes: a space, a control character,
+// or a byte that is not ASCII.
+func needsEncoding(c byte) bool {
+	return c == ' ' || isControl(rune(c)) || c >= utf8.RuneSelf
 }
 
 // namesNoHost tells whether loc is a reference that begins with "//" and names no host after

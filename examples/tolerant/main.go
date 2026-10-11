@@ -27,6 +27,15 @@ import (
 // A space in a URL is percent-encoded in tolerant mode, so that the URL can
 // be requested as it is. Strict mode rejects the URL.
 //
+// A character that is not in ASCII is percent-encoded in tolerant mode as
+// well, and an internationalised host name is written in its Punycode form.
+// This goes for the URLs of the extensions too, those of the images here,
+// where they are absolute HTTP or HTTPS URLs. A URL of an extension that is
+// not one, a relative URL for one, is returned as the document gives it:
+// tolerant mode leaves out no image over its URL. Strict mode returns a URL
+// as the document gives it, and leaves out the images whose URL is no
+// absolute one or has a space in it.
+//
 // An entry without a location names no page. It is skipped and reported in
 // both modes; the error names the sitemap, the entry having no URL of its own.
 //
@@ -102,6 +111,20 @@ func main() {
   <url><loc>//example.com/blog</loc></url>
 </urlset>`
 
+	// The URL of the page has a letter in its query that is not in ASCII. So has
+	// the URL of the first image, with a space next to it. The second image is
+	// on an internationalised host, the URL of the third one is relative.
+	unencodedURLs := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url>
+    <loc>https://example.com/gallery?city=münchen</loc>
+    <image:image><image:loc>https://cdn.example.net/summer sale/café.jpg</image:loc></image:image>
+    <image:image><image:loc>https://bücher.example/cover.jpg</image:loc></image:image>
+    <image:image><image:loc>/images/summer sale.jpg</image:loc></image:image>
+  </url>
+</urlset>`
+
 	// The "&" of the query string is not escaped as "&amp;", which makes the
 	// document malformed XML.
 	malformedXML := `<?xml version="1.0" encoding="UTF-8"?>
@@ -127,6 +150,12 @@ func main() {
 
 	fmt.Println("\n=== Missing host, strict mode ===")
 	parse(sitemap.New().SetStrict(true), missingHost)
+
+	fmt.Println("\n=== URLs that are not percent-encoded, tolerant mode ===")
+	parse(sitemap.New(), unencodedURLs)
+
+	fmt.Println("\n=== URLs that are not percent-encoded, strict mode ===")
+	parse(sitemap.New().SetStrict(true), unencodedURLs)
 
 	fmt.Println("\n=== Malformed XML, tolerant mode ===")
 	parse(sitemap.New(), malformedXML)
@@ -163,6 +192,11 @@ func parse(s *sitemap.S, content string) {
 		// with such a value, so this line is printed in tolerant mode only.
 		if u.ChangeFreq != nil {
 			fmt.Printf("    ChangeFreq: %s (equals ChangeFreqDaily: %t)\n", *u.ChangeFreq, *u.ChangeFreq == sitemap.ChangeFreqDaily)
+		}
+		// The URL of an image is percent-encoded in tolerant mode if it is an
+		// absolute HTTP or HTTPS URL, and is the URL of the document otherwise.
+		for _, image := range u.Images {
+			fmt.Printf("    Image: %s\n", image.Loc)
 		}
 	}
 	for _, e := range sm.GetErrors() {

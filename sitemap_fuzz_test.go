@@ -75,14 +75,18 @@ func assertLocInvariants(t *testing.T, mode string, locs []string) {
 	}
 }
 
-// assertASCIIHosts checks what tolerant mode guarantees on top of that: the
-// name of the host is in ASCII. A name that is not is one that has no ASCII
-// form, which IDNA is asked about here independently of the parser, or one
-// that is not UTF-8 or has the replacement character in it.
-func assertASCIIHosts(t *testing.T, locs []string) {
+// assertASCII checks what tolerant mode guarantees on top of that: the URL is
+// in ASCII, whatever is not being percent-encoded, and so is the name of the
+// host when it is read from the URL. A name that is not is one that has no
+// ASCII form, which IDNA is asked about here independently of the parser, or
+// one that is not UTF-8 or has the replacement character in it.
+func assertASCII(t *testing.T, locs []string) {
 	t.Helper()
 
 	for _, loc := range locs {
+		if strings.ContainsFunc(loc, func(r rune) bool { return r > 0x7f }) {
+			t.Fatalf("tolerant mode: URL %q is not in ASCII", loc)
+		}
 		parsed, err := neturl.Parse(loc)
 		if err != nil {
 			t.Fatalf("tolerant mode: accepted unparsable URL %q: %v", loc, err)
@@ -247,12 +251,50 @@ func assertTextValues(t *testing.T, mode string, strict bool, content string) {
 	}
 }
 
+// shortExtensionURL is the length up to which assertExtensionURLs takes a URL
+// of an extension to be one tolerant mode has to percent-encode. A longer one
+// may be left as it is for exceeding maxLocLength when encoded: a byte takes
+// three characters percent-encoded, and the Punycode form of a host can be
+// several times as long as the name it is the form of.
+const shortExtensionURL = maxLocLength / 16
+
+// assertExtensionURLs checks the URLs of the extensions of the URLs tolerant
+// mode collects from content: the ones of the images, of the videos and of the
+// alternate links. An absolute HTTP or HTTPS URL that names a host comes back
+// the way the location does, in ASCII and without a space or a control
+// character in it. A URL that holds one of these is therefore no such URL: it
+// cannot be parsed, it is relative or of another scheme, it names no host, or
+// it is too long to be encoded. Which of them it is, is decided here
+// independently of the parser.
+func assertExtensionURLs(t *testing.T, content string) {
+	t.Helper()
+
+	s := New()
+	s.parse(fuzzBaseURL, content)
+	for _, u := range s.urls {
+		for _, extensionURL := range extensionURLsOf(u) {
+			if !strings.ContainsFunc(extensionURL, func(r rune) bool { return r <= ' ' || r >= 0x7f }) {
+				continue
+			}
+			parsed, err := neturl.Parse(extensionURL)
+			if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+				continue
+			}
+			if len(extensionURL) > shortExtensionURL {
+				continue
+			}
+			t.Fatalf("tolerant mode: URL %q of an extension of %q is not percent-encoded", extensionURL, u.Loc)
+		}
+	}
+}
+
 // FuzzParse exercises the full format-dispatch path — sitemap index, urlset,
 // RSS, Atom and plain text — with untrusted content. Every location the parser
 // hands back must satisfy the documented URL invariants in both tolerant and
 // strict mode, in strict mode it must be on the host of the sitemap as well,
 // parsing must be deterministic, a byte order mark put before the
 // document must change nothing, no text value may have whitespace around it,
+// tolerant mode must percent-encode the URLs of the extensions that it can,
 // the call must fail exactly when the document cannot be parsed, and a limit
 // on the URLs must leave the first ones as they are.
 func FuzzParse(f *testing.F) {
@@ -298,6 +340,12 @@ func FuzzParse(f *testing.F) {
 		"<urlset><url><loc>https://bücher_x.example/a</loc></url><url><loc>https://-bücher.example/b</loc></url><url><loc>https://b%FFcher.example/c</loc></url><url><loc>https://b%EF%BF%BDcher.example/f</loc></url><url><loc>https://\u00ad/d</loc></url><url><loc>https://[fe80::1%25zöne]/e</loc></url></urlset>",
 		`<sitemapindex><sitemap><loc>https://bücher.example/sitemap-1.xml</loc></sitemap><sitemap><loc>https://xn--bcher-kva.example/sitemap-1.xml</loc></sitemap><sitemap><loc>https://例え.テスト/sitemap-2.xml</loc></sitemap></sitemapindex>`,
 		"https://bücher.example/text\nhttps://faß.example/text\nhttps://bu\u0308cher.example/text\n",
+		`<urlset><url><loc>https://example.com/search?q=café au lait#é</loc></url><url><loc>?q=例え</loc></url><url><loc>https://example.com/caf%C3%A9?q=caf%C3%A9 é</loc></url></urlset>`,
+		"https://example.com/text?q=café\nhttps://example.com/text?q=\xff\xfe\n",
+		`<sitemapindex><sitemap><loc>https://example.com/sitemap.xml?city=münchen</loc></sitemap><sitemap><loc>https://example.com/sitemap.xml?city=m%C3%BCnchen</loc></sitemap></sitemapindex>`,
+		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://example.com/p</loc><image:image><image:loc>https://cdn.example.net/a b.jpg?alt=café</image:loc><image:license>https://bücher.example/licence é</image:license></image:image><video:video><video:thumbnail_loc>https://BÜCHER.example:8443/t h.jpg</video:thumbnail_loc><video:content_loc>https://cdn.example.net/v.mp4#a&#9;b</video:content_loc><video:player_loc>https://cdn.example.net/player?v=é</video:player_loc><video:uploader info="https://example.com/u ser">u</video:uploader></video:video><xhtml:link rel="alternate" hreflang="de" href="https://example.com/de/über uns"/></url></urlset>`,
+		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://example.com/p</loc><image:image><image:loc>/images/a b.jpg</image:loc><image:license>Creative Commons, café</image:license></image:image><image:image><image:loc>ftp://cdn.example.net/a b.jpg</image:loc></image:image><image:image><image:loc>https:///a b.jpg</image:loc></image:image><image:image><image:loc>https://cdn.example.net/100%-cotton shirt.jpg</image:loc></image:image><video:video><video:thumbnail_loc>//cdn.example.net/t h.jpg</video:thumbnail_loc><video:content_loc>data:video/mp4;base64,AAAA BBBB</video:content_loc><video:player_loc>https://cdn example.net/player</video:player_loc></video:video><xhtml:link rel="alternate" hreflang="de" href="https://bücher_x.example/de é"/></url></urlset>`,
+		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"><url><loc>https://example.com/p</loc><image:image><image:loc>https://cdn.example.net/a b.jpg?alt=` + strings.Repeat("c", maxLocLength-37) + `</image:loc></image:image></url></urlset>`,
 		`<sitemapindex><sitemap><loc>`,
 		"",
 		"not xml at all",
@@ -320,7 +368,7 @@ func FuzzParse(f *testing.F) {
 			if strict {
 				assertOnSitemapHost(t, locs)
 			} else {
-				assertASCIIHosts(t, locs)
+				assertASCII(t, locs)
 			}
 
 			// Parsing the same bytes twice must produce the same result.
@@ -338,6 +386,9 @@ func FuzzParse(f *testing.F) {
 			}
 
 			assertTextValues(t, mode, strict, content)
+			if !strict {
+				assertExtensionURLs(t, content)
+			}
 			assertReturnedError(t, mode, strict, content)
 			assertURLLimit(t, mode, strict, content)
 		}
@@ -484,6 +535,7 @@ func FuzzParseRobotsTXT(f *testing.F) {
 		"Sitemap: //\nSitemap: ///no-host.xml\nSitemap: //:8080/port-only.xml\nSitemap: //::\nSitemap: //example.com:80:80/two-ports.xml\n",
 		"Sitemap: https:///no-host.xml\nSitemap: https://:8080/port-only.xml\nSitemap: https:no-slash.xml\nSitemap: https://user@/user-only.xml\n",
 		"Sitemap: https://bücher.example/sitemap.xml\nSitemap: https://xn--bcher-kva.example:8443/sitemap.xml\nSitemap: //BÜCHER.example/sitemap.xml\nSitemap: https://bücher_x.example/sitemap.xml\n",
+		"Sitemap: https://example.com/sitemap.xml?city=münchen\nSitemap: /sitemap.xml?city=m%C3%BCnchen&q=café au lait\n",
 		"",
 	}
 	for _, seed := range seeds {
@@ -518,7 +570,7 @@ func FuzzParseRobotsTXT(f *testing.F) {
 			locs := robotsTXTLocs(strict, content)
 			assertLocInvariants(t, mode, locs)
 			if !strict {
-				assertASCIIHosts(t, locs)
+				assertASCII(t, locs)
 			}
 
 			if again := robotsTXTLocs(strict, content); !slicesEqual(locs, again) {

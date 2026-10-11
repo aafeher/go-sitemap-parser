@@ -275,7 +275,7 @@ It is a list of regular expressions. Only the sitemaps whose URL matches one of 
 If no follow rules are provided, all sitemaps are followed.
 Patterns longer than 1,000 characters are rejected and reported via `GetErrors()`.
 
-The expressions are matched against the absolute URL of a sitemap, a relative one being resolved first, and an [internationalised host name](#internationalised-host-names) being written in its Punycode form in tolerant mode. They match anywhere in the URL unless they are anchored: `example\.com` also matches `https://example.com.evil.test/sitemap.xml`, `^https://example\.com/` does not.
+The expressions are matched against the absolute URL of a sitemap, a relative one being resolved first. In tolerant mode that is the URL as it is requested: with a space or a character that is not in ASCII percent-encoded (`m%C3%BCnchen`, not `münchen`), and with an [internationalised host name](#internationalised-host-names) in its Punycode form. They match anywhere in the URL unless they are anchored: `example\.com` also matches `https://example.com.evil.test/sitemap.xml`, `^https://example\.com/` does not.
 
 ```go
 s := sitemap.New()
@@ -298,7 +298,7 @@ See [`examples/follow`](examples/follow/main.go) for a runnable example.
 
 To set the URL rules, use the `SetRules()` function. It should be specified a `[]string` value.
 It is a list of regular expressions. Only URLs that match one of these expressions will be included in the final result.
-The expressions are matched against the URL as `GetURLs()` returns it, so in tolerant mode against the Punycode form of an [internationalised host name](#internationalised-host-names).
+The expressions are matched against the URL as `GetURLs()` returns it. In tolerant mode that is the URL with a space or a character that is not in ASCII percent-encoded (`m%C3%BCnchen`, not `münchen`), and with an [internationalised host name](#internationalised-host-names) in its Punycode form.
 If no rules are provided, all URLs found are included.
 Patterns longer than 1,000 characters are rejected and reported via `GetErrors()`.
 
@@ -360,8 +360,10 @@ To enable **strict mode**, use the `SetStrict()` function. In strict mode, all U
 In **tolerant mode** (the default):
 - Relative `<loc>` URLs are resolved against the parent sitemap URL
 - A space in a `<loc>` URL is percent-encoded (`%20`) wherever it stands, so that the URL can be requested as it is: `https://example.com/search?q=summer sale` is returned as `https://example.com/search?q=summer%20sale`
+- A character that is not in ASCII is percent-encoded the same way, as the bytes it is in UTF-8, in the query as well as in the path and in the fragment: `https://example.com/café?q=café` is returned as `https://example.com/caf%C3%A9?q=caf%C3%A9`
 - An internationalised host name in a `<loc>` URL is returned in its Punycode form, the name a request goes to: `https://bücher.example/page` is returned as `https://xn--bcher-kva.example/page`, see [Internationalised host names](#internationalised-host-names)
-- `<loc>` URLs exceeding 2,048 characters after resolution are rejected
+- `<loc>` URLs exceeding 2,048 characters after resolution are rejected; what is percent-encoded counts as the characters it is encoded to
+- The URLs of the extensions (of an image, a video or an alternate link) are percent-encoded like a `<loc>` URL where they are absolute HTTP or HTTPS URLs, and are returned as the document gives them where they are not, see [GetURLs](#geturls)
 - `<priority>` values outside `[0.0, 1.0]` are accepted as-is
 - A `<lastmod>` or `<priority>` that cannot be parsed is left unset (`nil`) and reported, the entry itself is kept
 - A `<changefreq>` value of the protocol that is written in another letter case (`Daily`, `WEEKLY`) is read as the value itself (`daily`, `weekly`), so that it equals its constant; a value the protocol does not know is kept as the document gives it
@@ -399,7 +401,7 @@ validate "//::": parse "https://::": invalid port "::" after host
 
 The `Loc` of every URL that `GetURLs()` returns is thus an HTTP or HTTPS URL that names a host and that `net/url` can parse, in both modes.
 
-The sitemaps a `robots.txt` names are checked before they are fetched as well. The value of a `Sitemap:` line has to be an HTTP or HTTPS URL of at most 2,048 characters. Tolerant mode resolves a relative one against the URL of the `robots.txt` and percent-encodes a space in it, strict mode requires an absolute one without a space. The sitemap may be on another host than the `robots.txt` in both modes, which the protocol allows. A value that is rejected is skipped and reported as a `*ValidationError`:
+The sitemaps a `robots.txt` names are checked before they are fetched as well. The value of a `Sitemap:` line has to be an HTTP or HTTPS URL of at most 2,048 characters. Tolerant mode resolves a relative one against the URL of the `robots.txt` and percent-encodes a space or a character that is not in ASCII in it, strict mode requires an absolute one without a space. The sitemap may be on another host than the `robots.txt` in both modes, which the protocol allows. A value that is rejected is skipped and reported as a `*ValidationError`:
 
 ```
 validate "ftp://example.com/sitemap.xml": unsupported scheme "ftp"
@@ -415,7 +417,7 @@ An empty date is no such value. A `<lastmod>`, `<news:publication_date>`, `<vide
 
 Whitespace around a value is no part of it, in both modes. The content of an element may be indented or stand on a line of its own, and an attribute may be padded: every text value of an entry is returned without the whitespace that surrounds it, those of the extensions included. A value that holds nothing but whitespace is therefore an empty one. A `<changefreq>` like that is read as if the element were not there, and a value an extension requires is missing then, see [GetURLs](#geturls).
 
-See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location and a location without a host among them, and [`examples/strict`](examples/strict/main.go) for one of what strict mode requires of a URL.
+See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example of how the two modes treat a sitemap with mistakes in it, an entry without a location, a location without a host and URLs that are not percent-encoded among them, and [`examples/strict`](examples/strict/main.go) for one of what strict mode requires of a URL.
 
 ##### Internationalised host names
 
@@ -430,7 +432,7 @@ Tolerant mode returns a URL with the Punycode form of its host, whichever form t
 | `https://xn--bcher-kva.example/page` | `https://xn--bcher-kva.example/page` |
 | `/page` in a sitemap at `https://bücher.example/sitemap.xml` | `https://xn--bcher-kva.example/page` |
 
-The name is converted the way `net/http` converts the host of a URL it requests. This goes for every URL tolerant mode resolves: for the pages of a sitemap of any format, and for the sitemaps a sitemap index lists or a `robots.txt` names, which are requested by that name. A sitemap that is listed in both forms of its host is therefore fetched once. A host name in ASCII is returned as it is written, capitals included. So is a name that is no valid domain name, such as `bücher_x.example`, which comes back the way `net/url` writes it: percent-encoded, as `b%C3%BCcher_x.example`.
+The name is converted the way `net/http` converts the host of a URL it requests. This goes for every URL tolerant mode resolves: for the pages of a sitemap of any format, and for the sitemaps a sitemap index lists or a `robots.txt` names, which are requested by that name. A sitemap that is listed in both forms of its host is therefore fetched once. It goes for the absolute URLs of the extensions too, see [GetURLs](#geturls). A host name in ASCII is returned as it is written, capitals included. So is a name that is no valid domain name, such as `bücher_x.example`, which comes back the way `net/url` writes it: percent-encoded, as `b%C3%BCcher_x.example`.
 
 Strict mode returns a URL the way the document gives it. It takes both forms of the name for the same host: in a sitemap at `https://bücher.example/sitemap.xml`, `https://xn--bcher-kva.example/page` is accepted, and so is `https://bücher.example/page` in a sitemap that was requested by the Punycode form of its host.
 
@@ -680,11 +682,25 @@ Each `URL` struct contains the following fields:
 
 No text value of a `URL` has whitespace around it, see [Strict mode](#strict-mode). This goes for the fields of the extensions below as well: an `Image.Loc` or a `Video.Title` that stands on a line of its own in the document is returned without the line breaks and the indentation.
 
-The URL of an extension (`Image.Loc`, `Video.ThumbnailLoc`, `AlternateLink.Href`) may be on any host. Tolerant mode returns it as the document gives it. Strict mode requires an absolute HTTP or HTTPS URL that names a host and holds neither a space nor a control character; an image, a video or an alternate link whose URL is not one is left out and reported, the page itself is kept:
+The URL of an extension (`Image.Loc`, `Video.ThumbnailLoc`, `AlternateLink.Href`) may be on any host. Strict mode requires an absolute HTTP or HTTPS URL that names a host and holds neither a space nor a control character; an image, a video or an alternate link whose URL is not one is left out and reported, the page itself is kept:
 
 ```
 validate "https://cdn.example.com/summer sale.jpg": strict mode: URL contains a space
 ```
+
+Tolerant mode asks no more of the URL than that it is there and of at most 2,048 characters. An absolute HTTP or HTTPS URL comes back the way the `Loc` of the page does, so that it can be requested as it is: with a space or a character that is not in ASCII percent-encoded, and with an [internationalised host name](#internationalised-host-names) in its Punycode form. This goes for every URL of an extension: `Image.Loc` and `Image.License`, `Video.ThumbnailLoc`, `Video.ContentLoc`, `Video.PlayerLoc` and `Video.Uploader.Info`, and `AlternateLink.Href`.
+
+| in the document | returned by tolerant mode |
+|---|---|
+| `https://cdn.example.com/summer sale.jpg` | `https://cdn.example.com/summer%20sale.jpg` |
+| `https://cdn.example.com/café.jpg?alt=café` | `https://cdn.example.com/caf%C3%A9.jpg?alt=caf%C3%A9` |
+| `https://bücher.example/cover.jpg` | `https://xn--bcher-kva.example/cover.jpg` |
+| `https://cdn.example.com/summer%20sale.jpg` | `https://cdn.example.com/summer%20sale.jpg` |
+| `/images/summer sale.jpg` | `/images/summer sale.jpg` |
+
+A URL with nothing to encode in it is returned as the document gives it. So is a URL that is no absolute HTTP or HTTPS URL which names a host: a relative one, which is not resolved, one of another protocol, and one that cannot be parsed. So is, finally, a URL that would exceed 2,048 characters percent-encoded. Tolerant mode thus leaves out no image, video or alternate link over the form of its URL. Strict mode returns every URL it accepts as the document gives it.
+
+See [`examples/tolerant`](examples/tolerant/main.go) for a runnable example.
 
 Each `Image` struct contains the following fields (all `string`):
 - `Loc` — image URL (required by the spec; images with an empty `Loc` are silently dropped in tolerant mode, or produce an error in strict mode)

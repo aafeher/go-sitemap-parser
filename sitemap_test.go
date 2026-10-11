@@ -7149,7 +7149,8 @@ func TestS_Parse_SpaceInURL(t *testing.T) {
 // TestS_Parse_ControlCharacterInURL verifies what becomes of a URL that has a control
 // character in it, a tab or a line break for one. In the path and in the query it makes a
 // URL that cannot be parsed, which is rejected in both modes. In the fragment tolerant
-// mode percent-encodes it, as it does a space, and strict mode rejects the URL.
+// mode percent-encodes it, as it does a space, and strict mode rejects the URL. Tolerant
+// mode encodes it in the URL of an extension as well.
 func TestS_Parse_ControlCharacterInURL(t *testing.T) {
 	const parseErr = "net/url: invalid control character in URL"
 
@@ -7224,6 +7225,10 @@ func TestS_Parse_ControlCharacterInURL(t *testing.T) {
 			}
 			assertStringSlice(t, "URLs", locsOf(s), []string{encoded, "https://example.com/other"})
 			assertStringSlice(t, "errors", errorsOf(s), []string{})
+			// The URL of the image is encoded the way the location is.
+			if urls := s.GetURLs(); len(urls) == 2 {
+				assertStringSlice(t, "URLs of the extensions", extensionURLsOf(urls[1]), []string{encoded, ""})
+			}
 		})
 
 		t.Run("urlset, "+name+", strict mode", func(t *testing.T) {
@@ -7361,11 +7366,535 @@ func TestS_Parse_SpaceInURL_SitemapIndex(t *testing.T) {
 	}
 }
 
+// TestPercentEncode verifies what tolerant mode percent-encodes in a URL: a space, a control
+// character and every byte that is not ASCII. Whatever else the URL holds is left as it is,
+// what is percent-encoded already included.
+func TestPercentEncode(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+		want string
+	}{
+		{"empty", "", ""},
+		{"nothing to encode", "https://example.com/a%20b?c=d+e&f=%C3%A9#g", "https://example.com/a%20b?c=d+e&f=%C3%A9#g"},
+		{"punctuation of ASCII", "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"},
+		{"space", "a b", "a%20b"},
+		{"nothing but spaces", "  ", "%20%20"},
+		{"character of two bytes", "é", "%C3%A9"},
+		{"character of three bytes", "例", "%E4%BE%8B"},
+		{"character of four bytes", "\xf0\x9f\x98\x80", "%F0%9F%98%80"},
+		{"first and last byte that is not ASCII", "\x80\xff", "%80%FF"},
+		{"not UTF-8", "a\xffb", "a%FFb"},
+		{"control characters", "\x00\t\n\r\x1f\x7f", "%00%09%0A%0D%1F%7F"},
+		{"characters next to the ones that are encoded", "\x1f !~\x7f\x80", "%1F%20!~%7F%80"},
+		{"query", "https://example.com/search?q=café au lait", "https://example.com/search?q=caf%C3%A9%20au%20lait"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := percentEncode(test.s)
+			mustEqual(t, "percentEncode", got, test.want)
+			// A byte that is encoded takes three characters, two more than it did.
+			mustEqual(t, "encodableBytes", encodableBytes(test.s), (len(test.want)-len(test.s))/2)
+			// What is encoded holds nothing that is left to encode.
+			mustEqual(t, "encodableBytes of the result", encodableBytes(got), 0)
+			mustEqual(t, "percentEncode of the result", percentEncode(got), got)
+		})
+	}
+}
+
+// TestTolerantExtensionURL verifies the form tolerant mode returns a URL of an extension in.
+// An absolute HTTP or HTTPS URL that holds a space, a control character or a character that
+// is not in ASCII comes back the way the location of a page does: percent-encoded, and with
+// an internationalised host name in its Punycode form. Every other URL comes back as the
+// document gives it: one with nothing to encode in it, and one that is no such URL.
+func TestTolerantExtensionURL(t *testing.T) {
+	// same marks a URL that is returned as it is.
+	const same = ""
+
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"empty", "", same},
+		{"nothing to encode", "https://cdn.example.net/a%20b.jpg?c=d+e&f=%C3%A9#g", same},
+		{"nothing to encode, Punycode form of the host", "https://xn--bcher-kva.example/a.jpg", same},
+		// The location of a page is resolved, which takes the dot segments out of its path and
+		// writes its scheme in small letters. A URL of an extension is left alone unless there
+		// is something to encode in it.
+		{"nothing to encode, dot segments and capitals", "HTTPS://CDN.Example.net/a/../b.jpg", same},
+
+		{"space in the path", "https://cdn.example.net/a b.jpg", "https://cdn.example.net/a%20b.jpg"},
+		{"space in the query", "https://cdn.example.net/a.jpg?size=1 2", "https://cdn.example.net/a.jpg?size=1%202"},
+		{"space in the fragment", "https://cdn.example.net/a.jpg#b c", "https://cdn.example.net/a.jpg#b%20c"},
+		{"character that is not ASCII in the path", "https://cdn.example.net/café.jpg", "https://cdn.example.net/caf%C3%A9.jpg"},
+		{"character that is not ASCII in the query", "https://cdn.example.net/a.jpg?alt=café", "https://cdn.example.net/a.jpg?alt=caf%C3%A9"},
+		{"character that is not ASCII in the fragment", "https://cdn.example.net/a.jpg#café", "https://cdn.example.net/a.jpg#caf%C3%A9"},
+		{"byte that is not UTF-8 in the query", "https://cdn.example.net/a.jpg?alt=\xff", "https://cdn.example.net/a.jpg?alt=%FF"},
+		{"tab in the fragment", "https://cdn.example.net/a.jpg#b\tc", "https://cdn.example.net/a.jpg#b%09c"},
+		{"beside what is encoded already", "https://cdn.example.net/a%20b c.jpg?alt=caf%C3%A9 café", "https://cdn.example.net/a%20b%20c.jpg?alt=caf%C3%A9%20caf%C3%A9"},
+		{"HTTP", "http://cdn.example.net/a b.jpg", "http://cdn.example.net/a%20b.jpg"},
+		{"internationalised host", "https://bücher.example/a.jpg", "https://xn--bcher-kva.example/a.jpg"},
+		{"internationalised host in capitals, with a port", "https://BÜCHER.example:8443/a b.jpg?alt=é f", "https://xn--bcher-kva.example:8443/a%20b.jpg?alt=%C3%A9%20f"},
+		{"host that is no domain name", "https://bücher_x.example/a.jpg", "https://b%C3%BCcher_x.example/a.jpg"},
+		{"dot segments and capitals", "HTTPS://CDN.Example.net/a/../b c.jpg", "https://CDN.Example.net/b%20c.jpg"},
+		{"user information", "https://user:secret@cdn.example.net/a b.jpg", "https://user:secret@cdn.example.net/a%20b.jpg"},
+
+		{"relative URL", "/images/a b.jpg", same},
+		{"relative URL without a slash", "a b.jpg", same},
+		{"relative URL that names its host", "//cdn.example.net/a b.jpg", same},
+		{"relative URL that is not ASCII", "/images/café.jpg", same},
+		{"text that is no URL", "Creative Commons, café", same},
+		{"other protocol", "ftp://cdn.example.net/a b.jpg", same},
+		{"data URL", "data:image/png;base64,AAAA BBBB", same},
+		{"no host", "https:///a b.jpg", same},
+		{"port and no host", "https://:8080/a b.jpg", same},
+		{"space in the host", "https://cdn example.net/a.jpg", same},
+		{"escape that is none", "https://cdn.example.net/100%-cotton shirt.jpg", same},
+		{"tab in the path", "https://cdn.example.net/a\tb c.jpg", same},
+		{"user information that is not ASCII", "https://usér@cdn.example.net/a.jpg", same},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			want := test.want
+			if want == same {
+				want = test.url
+			}
+			got := tolerantExtensionURL(test.url)
+			mustEqual(t, "tolerantExtensionURL", got, want)
+			// The URL that is returned is returned as it is.
+			mustEqual(t, "tolerantExtensionURL of the result", tolerantExtensionURL(got), got)
+		})
+	}
+
+	// The limit on the length of a URL is one on the URL as it would be returned. A URL
+	// that would exceed it is left as it is: it is no URL the document can be said to give
+	// in another form, and tolerant mode drops no entry of an extension over it.
+	for _, over := range []int{0, 1} {
+		t.Run(fmt.Sprintf("%d over the limit when encoded", over), func(t *testing.T) {
+			const prefix = "https://cdn.example.net/a b.jpg?alt="
+			// The encoded space makes the URL two characters longer.
+			url := prefix + strings.Repeat("c", maxLocLength-2-len(prefix)+over)
+			encoded := strings.Replace(url, " ", "%20", 1)
+			mustEqual(t, "length of the encoded URL", len(encoded), maxLocLength+over)
+
+			want := encoded
+			if over > 0 {
+				want = url
+			}
+			mustEqual(t, "tolerantExtensionURL", tolerantExtensionURL(url), want)
+		})
+	}
+}
+
+// extensionURLsOf returns the URLs of the extensions of u, the ones of its images first,
+// then the ones of its videos and of its alternate links. A video without an uploader has no
+// URL of one.
+func extensionURLsOf(u URL) []string {
+	urls := []string{}
+	for _, image := range u.Images {
+		urls = append(urls, image.Loc, image.License)
+	}
+	for _, video := range u.Videos {
+		urls = append(urls, video.ThumbnailLoc, video.ContentLoc, video.PlayerLoc)
+		if video.Uploader != nil {
+			urls = append(urls, video.Uploader.Info)
+		}
+	}
+	for _, link := range u.Hreflangs {
+		urls = append(urls, link.Href)
+	}
+	return urls
+}
+
+// TestS_Parse_ExtensionURL_Encoded verifies that tolerant mode returns every URL of an
+// extension the way it returns the location of the page: with a space and a character that
+// is not in ASCII percent-encoded, and with an internationalised host name in its Punycode
+// form. This goes for the location and the licence of an image, for the thumbnail, the
+// content, the player and the uploader of a video, and for the target of an alternate link.
+// Strict mode returns each of them as the document gives it.
+func TestS_Parse_ExtensionURL_Encoded(t *testing.T) {
+	const sitemapURL = "https://example.com/sitemap.xml"
+
+	// document returns a urlset of one page with two images, two videos, the second of
+	// which names no uploader, and two alternate links. Every URL of them is url with the
+	// name of the element or the attribute that holds it for the query.
+	document := func(url string) string {
+		return `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>https://example.com/page</loc>
+    <image:image>
+      <image:loc>` + url + `?loc</image:loc>
+      <image:license>` + url + `?license</image:license>
+    </image:image>
+    <image:image>
+      <image:loc>` + url + `?loc-2</image:loc>
+      <image:license>` + url + `?license-2</image:license>
+    </image:image>
+    <video:video>
+      <video:thumbnail_loc>` + url + `?thumbnail_loc</video:thumbnail_loc>
+      <video:title>Video title</video:title>
+      <video:description>Video description</video:description>
+      <video:content_loc>` + url + `?content_loc</video:content_loc>
+      <video:player_loc>` + url + `?player_loc</video:player_loc>
+      <video:uploader info="` + url + `?info">Uploader</video:uploader>
+    </video:video>
+    <video:video>
+      <video:thumbnail_loc>` + url + `?thumbnail_loc-2</video:thumbnail_loc>
+      <video:title>Video title</video:title>
+      <video:description>Video description</video:description>
+      <video:content_loc>` + url + `?content_loc-2</video:content_loc>
+    </video:video>
+    <xhtml:link rel="alternate" hreflang="de" href="` + url + `?href"/>
+    <xhtml:link rel="alternate" hreflang="fr" href="` + url + `?href-2"/>
+  </url>
+</urlset>`
+	}
+	// urls returns what the URLs of the document are expected to come back as: url with
+	// each of the queries.
+	urls := func(url string) []string {
+		return []string{
+			url + "?loc", url + "?license",
+			url + "?loc-2", url + "?license-2",
+			url + "?thumbnail_loc", url + "?content_loc", url + "?player_loc", url + "?info",
+			url + "?thumbnail_loc-2", url + "?content_loc-2", "",
+			url + "?href", url + "?href-2",
+		}
+	}
+
+	tests := []struct {
+		name string
+		url  string
+		// tolerant is the URL tolerant mode returns.
+		tolerant string
+		// strict tells whether strict mode accepts the URL, which it returns as it is.
+		strict bool
+	}{
+		{"space", "https://cdn.example.net/a b.jpg", "https://cdn.example.net/a%20b.jpg", false},
+		{"character that is not ASCII", "https://cdn.example.net/café.jpg", "https://cdn.example.net/caf%C3%A9.jpg", true},
+		{"internationalised host", "https://bücher.example/a.jpg", "https://xn--bcher-kva.example/a.jpg", true},
+		{"all of them", "https://BÜCHER.example:8443/a b/café.jpg", "https://xn--bcher-kva.example:8443/a%20b/caf%C3%A9.jpg", false},
+		{"nothing to encode", "https://cdn.example.net/a%20b/caf%C3%A9.jpg", "https://cdn.example.net/a%20b/caf%C3%A9.jpg", true},
+		{"relative URL", "/images/a b/café.jpg", "/images/a b/café.jpg", false},
+		{"other protocol", "ftp://cdn.example.net/a b/café.jpg", "ftp://cdn.example.net/a b/café.jpg", false},
+	}
+
+	for _, test := range tests {
+		content := document(test.url)
+
+		t.Run(test.name+", tolerant mode", func(t *testing.T) {
+			s := New()
+			requireParse(t, s, sitemapURL, &content)
+
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+			assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page"})
+			if got := s.GetURLs(); len(got) == 1 {
+				assertStringSlice(t, "URLs of the extensions", extensionURLsOf(got[0]), urls(test.tolerant))
+			}
+		})
+
+		if !test.strict {
+			continue
+		}
+		t.Run(test.name+", strict mode", func(t *testing.T) {
+			s := New().SetStrict(true)
+			requireParse(t, s, sitemapURL, &content)
+
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+			assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page"})
+			if got := s.GetURLs(); len(got) == 1 {
+				assertStringSlice(t, "URLs of the extensions", extensionURLsOf(got[0]), urls(test.url))
+			}
+		})
+	}
+}
+
+// TestS_Parse_ExtensionURL_Length verifies what the limit on the length of a URL means for
+// the URL of an image, of the thumbnail of a video and of an alternate link in tolerant
+// mode. A URL that is within the limit as the document gives it is kept, percent-encoded if
+// it is within the limit that way too, and as it is otherwise. One that exceeds the limit as
+// the document gives it is left out and reported, as it has always been.
+func TestS_Parse_ExtensionURL_Length(t *testing.T) {
+	const prefix = "https://cdn.example.net/a b.jpg?alt="
+
+	// urlOf returns a URL of length characters, which is two characters longer encoded.
+	urlOf := func(length int) string { return prefix + strings.Repeat("c", length-len(prefix)) }
+	document := func(url string) string {
+		return `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>https://example.com/page</loc>
+    <image:image><image:loc>` + url + `</image:loc></image:image>
+    <video:video><video:thumbnail_loc>` + url + `</video:thumbnail_loc></video:video>
+    <xhtml:link rel="alternate" hreflang="de" href="` + url + `"/>
+  </url>
+</urlset>`
+	}
+
+	tests := []struct {
+		name string
+		url  string
+		// want is the URL that is returned, empty if the entry is left out.
+		want string
+	}{
+		{"at the limit when encoded", urlOf(maxLocLength - 2), strings.Replace(urlOf(maxLocLength-2), " ", "%20", 1)},
+		{"over the limit when encoded", urlOf(maxLocLength - 1), urlOf(maxLocLength - 1)},
+		{"at the limit", urlOf(maxLocLength), urlOf(maxLocLength)},
+		{"over the limit", urlOf(maxLocLength + 1), ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			content := document(test.url)
+			s := New()
+			requireParse(t, s, "https://example.com/sitemap.xml", &content)
+
+			assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page"})
+			got := s.GetURLs()
+			if len(got) != 1 {
+				t.FailNow()
+			}
+			if test.want == "" {
+				tooLong := fmt.Sprintf(`validate %q: URL exceeds maximum length of %d characters (%d)`, test.url, maxLocLength, len(test.url))
+				assertStringSlice(t, "errors", errorsOf(s), []string{tooLong, tooLong, tooLong})
+				assertStringSlice(t, "URLs of the extensions", extensionURLsOf(got[0]), []string{})
+				return
+			}
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+			assertStringSlice(t, "URLs of the extensions", extensionURLsOf(got[0]), []string{test.want, "", test.want, "", "", test.want})
+		})
+	}
+}
+
+// TestS_Parse_NonASCIIInURL verifies what becomes of a URL that has a character in it that
+// is not in ASCII, which a URL has to give percent-encoded. Tolerant mode percent-encodes it
+// wherever it stands: in the path, in the query and in the fragment, so that the URL it
+// returns can be requested as it is. Strict mode returns the URL as the document gives it.
+// It makes no difference which format lists the URL.
+func TestS_Parse_NonASCIIInURL(t *testing.T) {
+	tests := []struct {
+		name string
+		loc  string
+		// tolerant is the URL tolerant mode returns.
+		tolerant string
+	}{
+		{"path", "https://example.com/café", "https://example.com/caf%C3%A9"},
+		{"query", "https://example.com/search?q=café", "https://example.com/search?q=caf%C3%A9"},
+		{"fragment", "https://example.com/page#café", "https://example.com/page#caf%C3%A9"},
+		{"path, query and fragment", "https://example.com/é?é=è#ê", "https://example.com/%C3%A9?%C3%A9=%C3%A8#%C3%AA"},
+		{"character of three bytes in the query", "https://example.com/search?q=例え", "https://example.com/search?q=%E4%BE%8B%E3%81%88"},
+		{"beside one that is encoded", "https://example.com/caf%C3%A9?q=caf%C3%A9+café", "https://example.com/caf%C3%A9?q=caf%C3%A9+caf%C3%A9"},
+		{"end of the query, before an empty fragment", "https://example.com/search?q=é#", "https://example.com/search?q=%C3%A9"},
+	}
+	formats := []struct {
+		name    string
+		url     string
+		content func(loc string) string
+	}{
+		{"urlset", "https://example.com/sitemap.xml", func(loc string) string {
+			return `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + loc + `</loc></url></urlset>`
+		}},
+		{"text", "https://example.com/sitemap.txt", func(loc string) string { return loc + "\n" }},
+		{"RSS", "https://example.com/rss.xml", func(loc string) string {
+			return `<rss version="2.0"><channel><item><link>` + loc + `</link></item></channel></rss>`
+		}},
+		{"Atom", "https://example.com/atom.xml", func(loc string) string {
+			return `<feed xmlns="http://www.w3.org/2005/Atom"><entry><link href="` + loc + `"/></entry></feed>`
+		}},
+	}
+
+	for _, format := range formats {
+		for _, test := range tests {
+			content := format.content(test.loc)
+
+			t.Run(format.name+", "+test.name+", tolerant mode", func(t *testing.T) {
+				s := New()
+				requireParse(t, s, format.url, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), []string{test.tolerant})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+			})
+
+			t.Run(format.name+", "+test.name+", strict mode", func(t *testing.T) {
+				s := New().SetStrict(true)
+				requireParse(t, s, format.url, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), []string{test.loc})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+			})
+		}
+	}
+
+	// A text sitemap is not decoded, so it may hold bytes that are not UTF-8. They are
+	// encoded as the bytes they are.
+	t.Run("text, not UTF-8, tolerant mode", func(t *testing.T) {
+		content := "https://example.com/a\xff?q=\xff\xfe#\xff\n"
+		s := New()
+		requireParse(t, s, "https://example.com/sitemap.txt", &content)
+
+		assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/a%FF?q=%FF%FE#%FF"})
+		assertStringSlice(t, "errors", errorsOf(s), []string{})
+	})
+
+	// The query of a relative URL is encoded as well.
+	t.Run("relative URL, tolerant mode", func(t *testing.T) {
+		content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>/café?q=café#café</loc></url>
+  <url><loc>?q=café</loc></url>
+</urlset>`
+		s := New()
+		requireParse(t, s, "https://example.com/maps/sitemap.xml", &content)
+
+		assertStringSlice(t, "URLs", locsOf(s), []string{
+			"https://example.com/caf%C3%A9?q=caf%C3%A9#caf%C3%A9",
+			"https://example.com/maps/sitemap.xml?q=caf%C3%A9",
+		})
+		assertStringSlice(t, "errors", errorsOf(s), []string{})
+	})
+}
+
+// TestS_Parse_NonASCIIInURL_Length verifies that tolerant mode applies the limit on the
+// length of a URL to the URL it returns: a character that is not in ASCII counts as the
+// characters it is encoded to, three for each of its bytes.
+func TestS_Parse_NonASCIIInURL_Length(t *testing.T) {
+	const prefix = "https://example.com/search?q=é"
+
+	for _, over := range []int{0, 1} {
+		t.Run(fmt.Sprintf("%d over the limit", over), func(t *testing.T) {
+			// The two bytes of the character make six when encoded, four more.
+			loc := prefix + strings.Repeat("c", maxLocLength-4-len(prefix)+over)
+			encoded := strings.Replace(loc, "é", "%C3%A9", 1)
+			mustEqual(t, "length of the encoded URL", len(encoded), maxLocLength+over)
+
+			content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + loc + `</loc></url></urlset>`
+			s := New()
+			requireParse(t, s, "https://example.com/sitemap.xml", &content)
+
+			if over == 0 {
+				assertStringSlice(t, "URLs", locsOf(s), []string{encoded})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+				return
+			}
+			assertStringSlice(t, "URLs", locsOf(s), []string{})
+			assertStringSlice(t, "errors", errorsOf(s), []string{
+				fmt.Sprintf(`validate %q: URL exceeds maximum length of %d characters (%d)`, encoded, maxLocLength, maxLocLength+1),
+			})
+		})
+	}
+}
+
+// TestS_Parse_NonASCIIInURL_Sitemaps verifies that the request for a sitemap whose URL a
+// sitemap index or a robots.txt gives with a character in its query that is not in ASCII is
+// sent for the encoded URL in tolerant mode, so a sitemap that is listed both ways is fetched
+// once. Strict mode requests each the way it is listed.
+func TestS_Parse_NonASCIIInURL_Sitemaps(t *testing.T) {
+	documents := []struct {
+		name    string
+		url     string
+		content string
+	}{
+		{"sitemap index", "https://example.com/sitemap-index.xml", `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://example.com/sitemap.xml?city=münchen</loc></sitemap>
+  <sitemap><loc>https://example.com/sitemap.xml?city=m%C3%BCnchen</loc></sitemap>
+</sitemapindex>`},
+		{"robots.txt", "https://example.com/robots.txt", "Sitemap: https://example.com/sitemap.xml?city=münchen\nSitemap: https://example.com/sitemap.xml?city=m%C3%BCnchen\n"},
+	}
+
+	for _, document := range documents {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", document.name, strict), func(t *testing.T) {
+				var requested []string
+				client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					requested = append(requested, req.URL.RequestURI())
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{},
+						Body:       io.NopCloser(strings.NewReader(fmt.Sprintf(`<urlset><url><loc>https://example.com/page-%d</loc></url></urlset>`, len(requested)))),
+						Request:    req,
+					}, nil
+				})}
+				content := document.content
+				s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(client)
+				requireParse(t, s, document.url, &content)
+
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+				if strict {
+					assertStringSlice(t, "requests", requested, []string{"/sitemap.xml?city=münchen", "/sitemap.xml?city=m%C3%BCnchen"})
+					assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page-1", "https://example.com/page-2"})
+					return
+				}
+				assertStringSlice(t, "requests", requested, []string{"/sitemap.xml?city=m%C3%BCnchen"})
+				assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page-1"})
+			})
+		}
+	}
+}
+
+// TestS_Parse_NonASCIIInURL_Filters verifies that the patterns of SetFollow and SetRules are
+// matched against the URL as it is returned: percent-encoded in tolerant mode, and the way
+// the document writes it in strict mode.
+func TestS_Parse_NonASCIIInURL_Filters(t *testing.T) {
+	const (
+		encodedPattern = `\?city=m%C3%BCnchen$`
+		rawPattern     = `\?city=münchen$`
+	)
+	tests := []struct {
+		name    string
+		strict  bool
+		pattern string
+		matches bool
+	}{
+		{"tolerant mode, pattern of the encoded form", false, encodedPattern, true},
+		{"tolerant mode, pattern of the form of the document", false, rawPattern, false},
+		{"strict mode, pattern of the form of the document", true, rawPattern, true},
+		{"strict mode, pattern of the encoded form", true, encodedPattern, false},
+	}
+
+	for _, test := range tests {
+		t.Run("rules, "+test.name, func(t *testing.T) {
+			content := `<urlset><url><loc>https://example.com/pages?city=münchen</loc></url></urlset>`
+			s := New().SetStrict(test.strict).SetRules([]string{test.pattern})
+			requireParse(t, s, "https://example.com/sitemap.xml", &content)
+
+			mustEqual(t, "URLs", s.GetURLCount() == 1, test.matches)
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+
+		t.Run("follow, "+test.name, func(t *testing.T) {
+			content := `<sitemapindex><sitemap><loc>https://example.com/sitemap.xml?city=münchen</loc></sitemap></sitemapindex>`
+			requests := 0
+			client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				requests++
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(`<urlset><url><loc>https://example.com/page</loc></url></urlset>`)),
+					Request:    req,
+				}, nil
+			})}
+			s := New().SetStrict(test.strict).SetMultiThread(false).SetHTTPClient(client).SetFollow([]string{test.pattern})
+			requireParse(t, s, "https://example.com/sitemap-index.xml", &content)
+
+			mustEqual(t, "sitemap is fetched", requests == 1, test.matches)
+			mustEqual(t, "URLs", s.GetURLCount() == 1, test.matches)
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+	}
+}
+
 // TestS_Parse_Strict_ExtensionURL verifies what strict mode requires of the URL of an
 // image, of the thumbnail of a video and of an alternate link: an absolute HTTP or HTTPS
 // URL that names a host and has no space in it. Unlike the URL of the page it may be on
 // any host. An entry whose URL is not one is left out and reported, the page is kept.
-// Tolerant mode returns the URL as the document gives it.
+// Tolerant mode keeps the entry of every one of these URLs, and returns the URL as the
+// document gives it unless it can percent-encode it, see TestTolerantExtensionURL.
 func TestS_Parse_Strict_ExtensionURL(t *testing.T) {
 	const (
 		sitemapURL = "https://example.com/sitemap.xml"
@@ -7398,22 +7927,26 @@ func TestS_Parse_Strict_ExtensionURL(t *testing.T) {
 		loc  string
 		// err is the error of strict mode, empty for a URL it accepts.
 		err string
+		// tolerant is the URL tolerant mode returns, empty if it is the URL as it is.
+		tolerant string
 	}{
-		{"URL on the host of the page", "https://example.com/file", ""},
-		{"URL on another host and port", "https://CDN.example.net:8443/a%20b?c=d+e#f", ""},
-		{"HTTP URL", "http://cdn.example.net/file", ""},
-		{"space in the path", "https://cdn.example.net/a b", "strict mode: URL contains a space"},
-		{"space in the query", "https://cdn.example.net/file?v=a b", "strict mode: URL contains a space"},
-		{"space in the fragment", "https://cdn.example.net/file#a b", "strict mode: URL contains a space"},
-		{"no host", "https:///file", "strict mode: missing host"},
-		{"no host and no path", "https:file", "strict mode: missing host"},
-		{"no host and a space", "https:///a b", "strict mode: missing host"},
-		{"port and no host", "https://:8080/file", "strict mode: missing host"},
-		{"user and no host", "https://user@/file", "strict mode: missing host"},
-		{"relative URL", "/file", `strict mode: unsupported scheme ""`},
-		{"relative URL with a space", "/a b", `strict mode: unsupported scheme ""`},
-		{"other protocol", "ftp://cdn.example.net/file", `strict mode: unsupported scheme "ftp"`},
-		{"URL that cannot be parsed", "https://cdn.example.net/%zz", `parse "https://cdn.example.net/%zz": invalid URL escape "%zz"`},
+		{"URL on the host of the page", "https://example.com/file", "", ""},
+		{"URL on another host and port", "https://CDN.example.net:8443/a%20b?c=d+e#f", "", ""},
+		{"HTTP URL", "http://cdn.example.net/file", "", ""},
+		{"space in the path", "https://cdn.example.net/a b", "strict mode: URL contains a space", "https://cdn.example.net/a%20b"},
+		{"space in the query", "https://cdn.example.net/file?v=a b", "strict mode: URL contains a space", "https://cdn.example.net/file?v=a%20b"},
+		{"space in the fragment", "https://cdn.example.net/file#a b", "strict mode: URL contains a space", "https://cdn.example.net/file#a%20b"},
+		{"no host", "https:///file", "strict mode: missing host", ""},
+		{"no host and no path", "https:file", "strict mode: missing host", ""},
+		{"no host and a space", "https:///a b", "strict mode: missing host", ""},
+		{"port and no host", "https://:8080/file", "strict mode: missing host", ""},
+		{"user and no host", "https://user@/file", "strict mode: missing host", ""},
+		{"relative URL", "/file", `strict mode: unsupported scheme ""`, ""},
+		{"relative URL with a space", "/a b", `strict mode: unsupported scheme ""`, ""},
+		{"other protocol", "ftp://cdn.example.net/file", `strict mode: unsupported scheme "ftp"`, ""},
+		{"other protocol with a space", "ftp://cdn.example.net/a b", `strict mode: unsupported scheme "ftp"`, ""},
+		{"URL that cannot be parsed", "https://cdn.example.net/%zz", `parse "https://cdn.example.net/%zz": invalid URL escape "%zz"`, ""},
+		{"URL with a space that cannot be parsed", "https://cdn.example.net/%zz b", `parse "https://cdn.example.net/%zz b": invalid URL escape "%zz"`, ""},
 	}
 
 	for kind, entry := range entries {
@@ -7434,7 +7967,11 @@ func TestS_Parse_Strict_ExtensionURL(t *testing.T) {
 				if len(urls) != 1 {
 					t.Fatalf("expected 1 URL, got %d", len(urls))
 				}
-				assertStringSlice(t, "entries", locOf(urls[0]), []string{test.loc})
+				want := test.tolerant
+				if want == "" {
+					want = test.loc
+				}
+				assertStringSlice(t, "entries", locOf(urls[0]), []string{want})
 			})
 
 			t.Run(kind+", "+test.name+", strict mode", func(t *testing.T) {
