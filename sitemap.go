@@ -798,21 +798,8 @@ func (s *S) SetMaxValidationErrors(maxValidationErrors int) *S {
 func (s *S) SetFollow(regexes []string) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.clearConfigErrors("follow")
 	s.cfg.follow = regexes
-	s.cfg.followRegexes = nil
-	for _, followPattern := range s.cfg.follow {
-		if len(followPattern) > maxRegexPatternLength {
-			s.errs = append(s.errs, &ConfigError{Field: "follow", Err: fmt.Errorf("pattern exceeds maximum length of %d characters (%d)", maxRegexPatternLength, len(followPattern))})
-			continue
-		}
-		re, err := regexp.Compile(followPattern)
-		if err != nil {
-			s.errs = append(s.errs, &ConfigError{Field: "follow", Err: err})
-			continue
-		}
-		s.cfg.followRegexes = append(s.cfg.followRegexes, re)
-	}
+	s.cfg.followRegexes = s.compilePatterns("follow", regexes)
 
 	return s
 }
@@ -825,22 +812,35 @@ func (s *S) SetFollow(regexes []string) *S {
 func (s *S) SetRules(regexes []string) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.clearConfigErrors("rules")
 	s.cfg.rules = regexes
-	s.cfg.rulesRegexes = nil
-	for _, rulePattern := range s.cfg.rules {
-		if len(rulePattern) > maxRegexPatternLength {
-			s.errs = append(s.errs, &ConfigError{Field: "rules", Err: fmt.Errorf("pattern exceeds maximum length of %d characters (%d)", maxRegexPatternLength, len(rulePattern))})
-			continue
-		}
-		re, err := regexp.Compile(rulePattern)
-		if err != nil {
-			s.errs = append(s.errs, &ConfigError{Field: "rules", Err: err})
-			continue
-		}
-		s.cfg.rulesRegexes = append(s.cfg.rulesRegexes, re)
-	}
+	s.cfg.rulesRegexes = s.compilePatterns("rules", regexes)
+
 	return s
+}
+
+// compilePatterns compiles the patterns of a setting that takes regular expressions, and
+// returns the compiled ones in the order of the patterns. field names the setting: "follow"
+// or "rules".
+// A pattern that is longer than maxRegexPatternLength characters, or that does not compile, is
+// left out and recorded as a *ConfigError for field. The errors an earlier call recorded for
+// the setting are dropped first, see clearConfigErrors.
+// Must be called with s.mu held.
+func (s *S) compilePatterns(field string, patterns []string) []*regexp.Regexp {
+	s.clearConfigErrors(field)
+	var regexes []*regexp.Regexp
+	for _, pattern := range patterns {
+		if len(pattern) > maxRegexPatternLength {
+			s.errs = append(s.errs, &ConfigError{Field: field, Err: fmt.Errorf("pattern exceeds maximum length of %d characters (%d)", maxRegexPatternLength, len(pattern))})
+			continue
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			s.errs = append(s.errs, &ConfigError{Field: field, Err: err})
+			continue
+		}
+		regexes = append(regexes, re)
+	}
+	return regexes
 }
 
 // SetHTTPClient sets a custom HTTP client for the Sitemap Parser.
@@ -1907,24 +1907,38 @@ func (s *S) withinMaxDepth(url string, depth int) bool {
 	return false
 }
 
-// parseAndFetchUrlsMultiThread concurrently parses and fetches the URLs specified in the "locations" parameter.
-// url is the document that lists them, as it was served.
-// It uses a sync.WaitGroup to wait for all fetch operations to complete.
-// For each location, it starts a goroutine that fetches and parses the document with fetchAndParse.
-// A goroutine holds a concurrency slot while it does so, which makes the limit set with
-// SetMaxConcurrency the number of documents that are being fetched or parsed at any time. It gives
-// the slot back before it follows the sitemaps the document lists: the goroutines started for
-// those need slots themselves, and would wait for this one forever if it kept its slot.
+// parseAndFetchUrlsMultiThread fetches and parses the sitemaps at locations concurrently, see
+// walkSitemaps.
+func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, url string, locations []string, depth int) {
+	s.walkSitemaps(ctx, url, locations, depth, true)
+}
+
+// parseAndFetchUrlsSequential fetches and parses the sitemaps at locations one at a time, see
+// walkSitemaps.
+func (s *S) parseAndFetchUrlsSequential(ctx context.Context, url string, locations []string, depth int) {
+	s.walkSitemaps(ctx, url, locations, depth, false)
+}
+
+// walkSitemaps fetches and parses the sitemaps at locations, and the sitemaps those list in
+// turn, see walkSitemap. url is the document that lists the locations, as it was served, and
+// depth is the depth they are found at, see withinMaxDepth.
+//
+// Without multiThread the sitemaps are worked on one at a time and in the order of locations,
+// each of them together with the sitemaps it lists before the next one is begun.
+//
+// With multiThread each of them is worked on by a goroutine of its own, and the call returns
+// when all of them are done. A goroutine holds a concurrency slot while it fetches and parses
+// its sitemap, which makes the limit set with SetMaxConcurrency the number of documents that
+// are being fetched or parsed at any time.
 // The slot is taken before the goroutine is started, not by the goroutine. A sitemap that has
 // to wait for a slot therefore costs no goroutine: the ones that exist are those working on a
 // sitemap, and those waiting to go on with the sitemaps a sitemap index of theirs lists.
+//
 // If the context is done, also while a slot is waited for, the remaining locations are left
 // alone. Nothing is recorded for them: that the call was cut short is recorded by ParseContext.
 // The same goes for the locations that are left when a limit of the call is reached, see
 // claimSitemap.
-// If there is an error during the fetch operation, the error is appended to the "errs" field of the S structure.
-// This method does not return any value.
-func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, url string, locations []string, depth int) {
+func (s *S) walkSitemaps(ctx context.Context, url string, locations []string, depth int, multiThread bool) {
 	if !s.withinMaxDepth(url, depth) {
 		return
 	}
@@ -1940,65 +1954,45 @@ func (s *S) parseAndFetchUrlsMultiThread(ctx context.Context, url string, locati
 		if !fetch {
 			continue
 		}
+		if !multiThread {
+			s.walkSitemap(ctx, location, depth, multiThread)
+			continue
+		}
 		// acquireSlot also honours ctx cancellation, so a single check
 		// here covers both the unlimited-concurrency and bounded paths.
 		if s.acquireSlot(ctx) != nil {
 			break
 		}
 		wg.Add(1)
-
-		loc := location
 		go func() {
 			defer wg.Done()
-			servedFrom, parsedLocations, err := s.fetchAndParse(ctx, loc)
-			s.releaseSlot()
-			if err != nil {
-				s.mu.Lock()
-				s.addError(err)
-				s.mu.Unlock()
-				return
-			}
-			if len(parsedLocations) > 0 {
-				s.parseAndFetchUrlsMultiThread(ctx, servedFrom, parsedLocations, depth+1)
-			}
+			s.walkSitemap(ctx, location, depth, multiThread)
 		}()
 	}
 	wg.Wait()
 }
 
-// parseAndFetchUrlsSequential sequentially parses and fetches the URLs specified in the "locations" parameter.
-// url is the document that lists them, as it was served.
-// For each location, it fetches and parses the document with fetchAndParse.
-// If the context is done, or a limit of the call is reached (see claimSitemap), the remaining
-// locations are left alone. Nothing is recorded for them: that the call was cut short is
-// recorded by ParseContext.
-// If there is an error during the fetch operation, the error is appended to the "errs" field of the S structure.
-// This method does not return any value.
-func (s *S) parseAndFetchUrlsSequential(ctx context.Context, url string, locations []string, depth int) {
-	if !s.withinMaxDepth(url, depth) {
+// walkSitemap fetches and parses the sitemap at location, one of the sitemaps found at depth,
+// with fetchAndParse, and goes on with the sitemaps it lists, see walkSitemaps.
+// If there is an error during the fetch operation, the error is appended to the "errs" field
+// of the S structure.
+//
+// With multiThread it is run by a goroutine that holds a concurrency slot. It gives the slot
+// back before it follows the sitemaps the document lists: the goroutines started for those
+// need slots themselves, and would wait for this one forever if it kept its slot.
+func (s *S) walkSitemap(ctx context.Context, location string, depth int, multiThread bool) {
+	servedFrom, parsedLocations, err := s.fetchAndParse(ctx, location)
+	if multiThread {
+		s.releaseSlot()
+	}
+	if err != nil {
+		s.mu.Lock()
+		s.addError(err)
+		s.mu.Unlock()
 		return
 	}
-	for _, location := range locations {
-		if ctx.Err() != nil {
-			return
-		}
-		fetch, limited := s.claimSitemap(location)
-		if limited {
-			return
-		}
-		if !fetch {
-			continue
-		}
-		servedFrom, parsedLocations, err := s.fetchAndParse(ctx, location)
-		if err != nil {
-			s.mu.Lock()
-			s.addError(err)
-			s.mu.Unlock()
-			continue
-		}
-		if len(parsedLocations) > 0 {
-			s.parseAndFetchUrlsSequential(ctx, servedFrom, parsedLocations, depth+1)
-		}
+	if len(parsedLocations) > 0 {
+		s.walkSitemaps(ctx, servedFrom, parsedLocations, depth+1, multiThread)
 	}
 }
 
@@ -2387,23 +2381,25 @@ func (s *S) parseTextContent(url, rootElement, content string) {
 	}
 }
 
+// matchesFollowFilter reports whether the sitemap at loc is one to fetch by the patterns set
+// with SetFollow.
 func (s *S) matchesFollowFilter(loc string) bool {
-	if len(s.cfg.followRegexes) == 0 {
-		return true
-	}
-	for _, re := range s.cfg.followRegexes {
-		if re.MatchString(loc) {
-			return true
-		}
-	}
-	return false
+	return matchesAny(s.cfg.followRegexes, loc)
 }
 
+// matchesRulesFilter reports whether the page at loc is one to collect by the patterns set
+// with SetRules.
 func (s *S) matchesRulesFilter(loc string) bool {
-	if len(s.cfg.rulesRegexes) == 0 {
+	return matchesAny(s.cfg.rulesRegexes, loc)
+}
+
+// matchesAny reports whether loc matches one of regexes. Without any there is nothing to
+// restrict, and every loc matches.
+func matchesAny(regexes []*regexp.Regexp, loc string) bool {
+	if len(regexes) == 0 {
 		return true
 	}
-	for _, re := range s.cfg.rulesRegexes {
+	for _, re := range regexes {
 		if re.MatchString(loc) {
 			return true
 		}
@@ -2459,18 +2455,24 @@ func (s *S) lastMod(loc string, date dateElement) *LastModTime {
 // parseSitemapIndex parses the sitemap index data and returns a sitemapIndex object and an error.
 // The data parameter contains the XML data of the sitemap index.
 // If the data is empty, it returns an error with the message "sitemapindex is empty".
-// It uses an xml.Decoder with charset support to decode the XML data into a sitemapIndex object.
-// It returns the sitemapIndex object and any decoding error that occurred.
+// See decodeDocument.
 func (s *S) parseSitemapIndex(data string) (sitemapIndex, error) {
-	var smIndex sitemapIndex
+	return decodeDocument[sitemapIndex](s, "sitemapindex", data)
+}
 
+// decodeDocument decodes data, the XML of a document of the format name, into a value of the
+// type T the format is read as, and returns it with any decoding error that occurred.
+// If the data is empty, it returns an error with a message that says so of the format, such
+// as "rss is empty".
+// It uses an xml.Decoder with charset support, see newDecoder, which is why it takes s.
+func decodeDocument[T any](s *S, name, data string) (T, error) {
+	var document T
 	if len(data) == 0 {
-		return smIndex, fmt.Errorf("sitemapindex is empty")
+		return document, fmt.Errorf("%s is empty", name)
 	}
 
-	err := s.newDecoder(data).Decode(&smIndex)
-	return smIndex, err
-
+	err := s.newDecoder(data).Decode(&document)
+	return document, err
 }
 
 // parseURLSet takes a string of XML data representing a sitemap and hands its <url> entries
@@ -2698,26 +2700,15 @@ func (v invalidValue) err() error {
 	return fmt.Errorf("invalid %s value %q", v.element, strings.TrimSpace(v.text))
 }
 
-// parseRSS parses the RSS 2.0 data and returns an rss object and an error.
+// parseRSS parses the RSS 2.0 data and returns an rss object and an error, see decodeDocument.
 func (s *S) parseRSS(data string) (rss, error) {
-	var feed rss
-	if len(data) == 0 {
-		return feed, fmt.Errorf("rss is empty")
-	}
-
-	err := s.newDecoder(data).Decode(&feed)
-	return feed, err
+	return decodeDocument[rss](s, "rss", data)
 }
 
-// parseAtom parses the Atom 1.0 data and returns an atom object and an error.
+// parseAtom parses the Atom 1.0 data and returns an atom object and an error, see
+// decodeDocument.
 func (s *S) parseAtom(data string) (atom, error) {
-	var feed atom
-	if len(data) == 0 {
-		return feed, fmt.Errorf("atom is empty")
-	}
-
-	err := s.newDecoder(data).Decode(&feed)
-	return feed, err
+	return decodeDocument[atom](s, "atom", data)
 }
 
 // maxLocLength is the maximum URL length allowed in a sitemap <loc> element per the sitemaps.org specification.

@@ -391,6 +391,66 @@ func TestS_SetRules(t *testing.T) {
 	})
 }
 
+// TestS_SetFollow_SetRules_Patterns verifies what SetFollow and SetRules have in
+// common, which one function does for both: the patterns that compile are kept
+// in their order, whatever stands between them, and a pattern that is too long
+// or does not compile is reported as a *ConfigError that names the setting it
+// was passed to and tells what is wrong with it.
+func TestS_SetFollow_SetRules_Patterns(t *testing.T) {
+	tooLong := strings.Repeat("a", maxRegexPatternLength+1)
+	patterns := []string{`alpha`, tooLong, `beta`, `(`, `gamma`}
+	// What the regexp package has to say about the pattern that does not compile.
+	_, compileErr := regexp.Compile(patterns[3])
+
+	tests := []struct {
+		field string
+		set   func(s *S, patterns []string) *S
+		// regexes returns the compiled patterns of the setting, others those of the
+		// other one.
+		regexes func(s *S) []*regexp.Regexp
+		others  func(s *S) []*regexp.Regexp
+	}{
+		{
+			"follow", (*S).SetFollow,
+			func(s *S) []*regexp.Regexp { return s.cfg.followRegexes },
+			func(s *S) []*regexp.Regexp { return s.cfg.rulesRegexes },
+		},
+		{
+			"rules", (*S).SetRules,
+			func(s *S) []*regexp.Regexp { return s.cfg.rulesRegexes },
+			func(s *S) []*regexp.Regexp { return s.cfg.followRegexes },
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.field, func(t *testing.T) {
+			s := New()
+			test.set(s, patterns)
+
+			compiled := []string{}
+			for _, re := range test.regexes(s) {
+				compiled = append(compiled, re.String())
+			}
+			assertStringSlice(t, "compiled patterns", compiled, []string{"alpha", "beta", "gamma"})
+			mustEqual(t, "compiled patterns of the other setting", len(test.others(s)), 0)
+
+			got := []string{}
+			for _, err := range s.GetErrors() {
+				var cfgErr *ConfigError
+				if !errors.As(err, &cfgErr) {
+					t.Fatalf("expected a *ConfigError, got %T: %v", err, err)
+				}
+				mustEqual(t, "field of the error", cfgErr.Field, test.field)
+				got = append(got, err.Error())
+			}
+			assertStringSlice(t, "errors", got, []string{
+				fmt.Sprintf("config %q: pattern exceeds maximum length of %d characters (%d)", test.field, maxRegexPatternLength, maxRegexPatternLength+1),
+				fmt.Sprintf("config %q: %s", test.field, compileErr),
+			})
+		})
+	}
+}
+
 // configErrorFields returns the Field of every error in errs, comma-separated and
 // in order. An error that is not a *ConfigError is reported by its type instead,
 // so an unexpected entry shows up in the comparison.
@@ -9934,6 +9994,81 @@ func TestS_Parse_RobotsTXT_MultiThread(t *testing.T) {
 			mustEqual(t, "requests in flight at once", got, tt.wantInFlight)
 
 			if !tt.multiThread {
+				for i, u := range s.GetURLs() {
+					mustEqual(t, fmt.Sprintf("URL %d", i), u.Loc, fmt.Sprintf("%s/sitemap-%d.xml/page", srv.URL, i))
+				}
+			}
+		})
+	}
+}
+
+// TestS_Parse_MultiThread_NestedIndex verifies that SetMultiThread goes for the
+// sitemaps of a sitemap index that another sitemap index lists as well: they
+// are fetched concurrently when it is on, and one at a time and in the order
+// they are listed when it is off.
+func TestS_Parse_MultiThread_NestedIndex(t *testing.T) {
+	const sitemaps = 4
+
+	for _, multiThread := range []bool{false, true} {
+		t.Run(fmt.Sprintf("multiThread=%v", multiThread), func(t *testing.T) {
+			// A request for a sitemap is held the way it is held in
+			// TestS_Parse_RobotsTXT_MultiThread: until all of them are in flight
+			// at once, or until hold has passed.
+			wantInFlight, hold := 1, 10*time.Millisecond
+			if multiThread {
+				wantInFlight, hold = sitemaps, 5*time.Second
+			}
+			var mu sync.Mutex
+			inFlight, maxInFlight := 0, 0
+			overlapped := make(chan struct{})
+			var overlappedOnce sync.Once
+
+			// index.xml -> nested.xml -> sitemap-0.xml ... sitemap-3.xml (one URL each)
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/index.xml":
+					_, _ = fmt.Fprintf(w, `<sitemapindex><sitemap><loc>%s/nested.xml</loc></sitemap></sitemapindex>`, srv.URL)
+					return
+				case "/nested.xml":
+					_, _ = fmt.Fprint(w, `<sitemapindex>`)
+					for i := range sitemaps {
+						_, _ = fmt.Fprintf(w, `<sitemap><loc>%s/sitemap-%d.xml</loc></sitemap>`, srv.URL, i)
+					}
+					_, _ = fmt.Fprint(w, `</sitemapindex>`)
+					return
+				}
+
+				mu.Lock()
+				inFlight++
+				maxInFlight = max(maxInFlight, inFlight)
+				if inFlight >= sitemaps {
+					overlappedOnce.Do(func() { close(overlapped) })
+				}
+				mu.Unlock()
+
+				select {
+				case <-overlapped:
+				case <-time.After(hold):
+				}
+
+				mu.Lock()
+				inFlight--
+				mu.Unlock()
+				_, _ = fmt.Fprintf(w, `<urlset><url><loc>%s%s/page</loc></url></urlset>`, srv.URL, r.URL.Path)
+			}))
+			defer srv.Close()
+
+			s := New().SetMultiThread(multiThread).SetMaxConcurrency(0)
+			requireParse(t, s, srv.URL+"/index.xml", nil)
+
+			assertCounts(t, s, sitemaps, 0)
+			mu.Lock()
+			got := maxInFlight
+			mu.Unlock()
+			mustEqual(t, "requests in flight at once", got, wantInFlight)
+
+			if !multiThread {
 				for i, u := range s.GetURLs() {
 					mustEqual(t, fmt.Sprintf("URL %d", i), u.Loc, fmt.Sprintf("%s/sitemap-%d.xml/page", srv.URL, i))
 				}
