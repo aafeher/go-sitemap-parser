@@ -412,7 +412,9 @@ To enable **strict mode**, use the `SetStrict()` function. In strict mode, all U
 - `<loc>` must be an absolute HTTP or HTTPS URL
 - `<loc>` must use the same host and protocol as the sitemap file (for a sitemap reached through a redirect: as the URL it was served from, see [Redirects](#redirects)); what counts as the same host is described below
 - `<loc>` must hold neither a space nor a control character (a tab or a line break for one); a URL gives them percent-encoded, a space as `%20`
-- `<loc>` must hold none of the characters `"` `<` `>` `\` `^` `` ` `` `{` `|` `}` either, which have no place in a URL ([RFC 3986](https://www.rfc-editor.org/rfc/rfc3986)); a URL gives them percent-encoded as well, a vertical bar as `%7C`. Square brackets and characters that are not in ASCII are accepted
+- `<loc>` must hold none of the characters `"` `<` `>` `\` `^` `` ` `` `{` `|` `}` either, which have no place in a URL ([RFC 3986](https://www.rfc-editor.org/rfc/rfc3986)); a URL gives them percent-encoded as well, a vertical bar as `%7C`. Characters that are not in ASCII are accepted
+- `<loc>` must hold a square bracket only around an IPv6 address that is its host (`https://[2001:db8::1]/page`); everywhere else a URL gives the brackets percent-encoded, as `%5B` and `%5D`, in a query such as `?id[]=1` as well
+- A `%` in `<loc>` must begin a percent-encoding, which is a `%` and two hexadecimal digits: a URL gives the sign itself as `%25`, `?discount=100%25` and not `?discount=100%`
 - `<loc>` must not exceed 2,048 characters
 - `<changefreq>` must be one of the values of the protocol, written as the protocol writes them: `always`, `hourly`, `daily`, `weekly`, `monthly`, `yearly` or `never` (if present)
 - `<priority>` must be between `0.0` and `1.0` inclusive (if present)
@@ -448,6 +450,19 @@ validate "https://example.com/search?tags=summer|sale": strict mode: URL contain
 ```
 
 Tolerant mode accepts such a URL. It returns the character percent-encoded in the path and in the fragment, and as it is in the query.
+
+A square bracket is such a character everywhere but around an IPv6 address, and so is a `%` that begins no percent-encoding:
+
+```
+validate "https://example.com/search?id[]=1": strict mode: URL contains the character '[', which it has to give as "%5B"
+validate "https://example.com/search?discount=100%": strict mode: invalid URL escape "%" in the query
+```
+
+Tolerant mode accepts a URL with a square bracket in it, and one with such a `%` in its query. Neither mode accepts a `<loc>` with such a `%` in its path or in its fragment, which is a URL that cannot be parsed:
+
+```
+validate "https://example.com/100%": parse "https://example.com/100%": invalid URL escape "%"
+```
 
 An entry without a location is one of them in both modes. A `<url>` or `<sitemap>` whose `<loc>` is missing, empty or holds only whitespace is skipped and reported as a `*ValidationError`. The entry has no URL of its own, so the error names the sitemap it stands in:
 
@@ -773,7 +788,7 @@ Each `URL` struct contains the following fields:
 
 No text value of a `URL` has whitespace around it, see [Strict mode](#strict-mode). This goes for the fields of the extensions below as well: an `Image.Loc` or a `Video.Title` that stands on a line of its own in the document is returned without the line breaks and the indentation.
 
-An image, a video and an alternate link are each known by a URL: `Image.Loc`, `Video.ThumbnailLoc` and `AlternateLink.Href`. It may be on any host. Strict mode requires an absolute HTTP or HTTPS URL that names a host and holds no space, no control character and none of the characters `"` `<` `>` `\` `^` `` ` `` `{` `|` `}`; an image, a video or an alternate link whose URL is not one is left out and reported, the page itself is kept:
+An image, a video and an alternate link are each known by a URL: `Image.Loc`, `Video.ThumbnailLoc` and `AlternateLink.Href`. It may be on any host. Strict mode requires an absolute HTTP or HTTPS URL that names a host and holds no space, no control character, none of the characters `"` `<` `>` `\` `^` `` ` `` `{` `|` `}`, no square bracket that is not around an IPv6 address and no `%` in its query that begins no percent-encoding; an image, a video or an alternate link whose URL is not one is left out and reported, the page itself is kept:
 
 ```
 validate "https://cdn.example.com/summer sale.jpg": strict mode: URL contains a space
@@ -844,7 +859,7 @@ Each `Video` struct contains:
 - `Duration` (`*int`) — duration in seconds (1–28800); validated in strict mode if present
 - `ExpirationDate` (`*LastModTime`) — date after which the video should not be shown; embeds `time.Time`, `nil` if absent or empty
 - `Rating` (`*float32`) — rating between 0.0 and 5.0; validated in strict mode if present
-- `ViewCount` (`*int`) — number of views
+- `ViewCount` (`*int`) — number of views; a negative one is reported in strict mode
 - `PublicationDate` (`*LastModTime`) — publication date; embeds `time.Time`, `nil` if absent or empty
 - `FamilyFriendly` (`string`) — `"yes"` or `"no"`
 - `Restriction` (`*VideoRestriction`) — country restriction with `Relationship` (`"allow"`/`"deny"`) and `Value` (space-separated country codes)

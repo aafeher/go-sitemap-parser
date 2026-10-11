@@ -135,7 +135,9 @@ func assertOnSitemapHost(t *testing.T, locs []string) {
 
 // assertNoExcludedCharacter checks what strict mode guarantees for every URL it
 // hands back on top of that: the URL holds none of the printable ASCII
-// characters that have no place in a URL.
+// characters that have no place in a URL, no square bracket but the two around
+// an IPv6 address, and no percent sign in its query that begins no
+// percent-encoding.
 func assertNoExcludedCharacter(t *testing.T, locs []string) {
 	t.Helper()
 
@@ -143,7 +145,37 @@ func assertNoExcludedCharacter(t *testing.T, locs []string) {
 		if i := strings.IndexAny(loc, "\"<>\\^`{|}"); i >= 0 {
 			t.Fatalf("strict mode: accepted URL with the character %q in it: %q", loc[i], loc)
 		}
+		if !bracketsInPlace(loc) {
+			t.Fatalf("strict mode: accepted URL with a square bracket that is not around an IPv6 address: %q", loc)
+		}
+		if !queryEscaped(loc) {
+			t.Fatalf("strict mode: accepted URL with a percent sign in its query that begins no percent-encoding: %q", loc)
+		}
 	}
+}
+
+// bracketsInPlace tells whether loc, a URL net/url reads, has its square
+// brackets where a URL may hold them, which is decided here independently of
+// the parser: it has none, or it has one of each and its host is written in
+// them. net/url reads only an IPv6 address as a host that begins with one.
+func bracketsInPlace(loc string) bool {
+	opening, closing := strings.Count(loc, "["), strings.Count(loc, "]")
+	if opening+closing == 0 {
+		return true
+	}
+	parsed, err := neturl.Parse(loc)
+	return err == nil && opening == 1 && closing == 1 && strings.HasPrefix(parsed.Host, "[")
+}
+
+// queryEscaped tells whether every percent sign in the query of loc, a URL
+// net/url reads, begins a percent-encoding, which net/url is asked about.
+func queryEscaped(loc string) bool {
+	parsed, err := neturl.Parse(loc)
+	if err != nil {
+		return false
+	}
+	_, err = neturl.QueryUnescape(parsed.RawQuery)
+	return err == nil
 }
 
 // collectLocs runs parse over content and returns every location derived from
@@ -498,7 +530,7 @@ func assertStrictExtensionURLs(t *testing.T, content string) {
 		parsed, err := neturl.Parse(url)
 		return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != "" &&
 			len(url) <= maxLocLength && !strings.ContainsFunc(url, func(r rune) bool { return r <= ' ' || r == 0x7f }) &&
-			!strings.ContainsAny(url, "\"<>\\^`{|}")
+			!strings.ContainsAny(url, "\"<>\\^`{|}") && bracketsInPlace(url) && queryEscaped(url)
 	}
 	for _, u := range s.urls {
 		var known, others []string
@@ -568,7 +600,7 @@ func assertResultCopies(t *testing.T, mode string, strict bool, content string) 
 // RSS, Atom and plain text — with untrusted content. Every location the parser
 // hands back must satisfy the documented URL invariants in both tolerant and
 // strict mode, in strict mode it must be on the host of the sitemap as well
-// and hold no character that has no place in a URL, parsing must be
+// and hold no character that has no place in a URL where it stands, parsing must be
 // deterministic, a byte order mark put before the
 // document must change nothing, no text value may have whitespace around it,
 // tolerant mode must percent-encode the URLs of the extensions that it can,
@@ -637,6 +669,10 @@ func FuzzParse(f *testing.F) {
 		`<sitemapindex><sitemap><loc>https://example.com/a.xml</loc><lastmod>2024-01-15T10:30:00+01:00</lastmod></sitemap><sitemap><loc>https://example.com/b.xml</loc><lastmod>2024-01-15 10:30:00</lastmod></sitemap><sitemap><loc>https://example.com/a.xml</loc><lastmod>2024-01-16</lastmod></sitemap><sitemap><loc>https://example.com/b.xml</loc><lastmod/></sitemap><sitemap><loc>https://www.example.com/c.xml</loc><lastmod>yesterday</lastmod></sitemap><sitemap><lastmod>no location</lastmod></sitemap></sitemapindex>`,
 		`<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:x="urn:x"><channel><item><link>https://example.com/a</link><atom:link rel="alternate" href="https://example.com/a.atom"/><x:pubDate>yesterday</x:pubDate></item><item><x:link>https://example.com/other</x:link><pubDate>Mon, 15 Jan 2024 10:30:00 GMT</pubDate></item></channel></rss>`,
 		`<feed xmlns="http://www.w3.org/2005/Atom" xmlns:x="urn:x"><entry><x:link href="https://example.com/other"/><link href="https://example.com/a"/><x:updated>never</x:updated></entry><a:entry xmlns:a="urn:a"><link href="https://example.com/b"/><a:link href="https://example.com/c"/></a:entry></feed>`,
+		`<urlset><url><loc>https://example.com/a[1]</loc></url><url><loc>https://example.com/search?id[]=1&amp;q=100%</loc></url><url><loc>https://example.com/page#[top]</loc></url><url><loc>https://example.com/b%5B1%5D?q=100%25&amp;r=%4</loc></url><url><loc>https://exa]mple.com/c</loc></url></urlset>`,
+		"https://example.com/text[1]\nhttps://example.com/text?q=%zz\nhttps://[2001:db8::1]/text[2]\nhttps://[fe80::1%25en]0]/text\n",
+		`<sitemapindex><sitemap><loc>https://example.com/sitemap.xml?ids[]=1</loc></sitemap><sitemap><loc>https://example.com/sitemap.xml?zoom=100%</loc></sitemap></sitemapindex>`,
+		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://example.com/p</loc><image:image><image:loc>https://[2001:db8::1]:8443/a.jpg</image:loc><image:license>https://[2001:db8::1]/licence[1]</image:license></image:image><image:image><image:loc>https://cdn.example.net/b.jpg?size[]=1</image:loc></image:image><video:video><video:thumbnail_loc>https://cdn.example.net/t.jpg?zoom=100%</video:thumbnail_loc></video:video><video:video><video:thumbnail_loc>https://cdn.example.net/t.jpg</video:thumbnail_loc><video:content_loc>https://cdn.example.net/v.mp4?q=%4</video:content_loc><video:view_count>-1</video:view_count></video:video><xhtml:link rel="alternate" hreflang="de" href="https://example.com/de?id]=1"/></url></urlset>`,
 		`<sitemapindex><sitemap><loc>`,
 		"",
 		"not xml at all",
@@ -810,6 +846,78 @@ func FuzzFeedNamespaces(f *testing.F) {
 // unzip enforces its cap. It is small enough that mutated seeds regularly land
 // on both sides of it.
 const fuzzUnzipLimit = 64
+
+// FuzzStrictURL checks what strict mode takes for a URL of an extension against
+// arbitrary text. A URL it accepts must satisfy the URL invariants and hold no
+// character that has no place in a URL where it stands. What it rejects it must
+// reject with a *ValidationError that names the URL, and the two that tell the
+// place of a square bracket and of a percent sign must agree with what is
+// decided here independently of them.
+func FuzzStrictURL(f *testing.F) {
+	seeds := []string{
+		"https://example.com/a?b=c#d",
+		"http://user:secret@example.com:8080/a%20b?c=%7C#%5B",
+		"https://example.com/a[1]?b[]=1&c=[2]#[3]",
+		"https://example.com/a]b",
+		"https://exa]mple.com/",
+		"https://[2001:db8::1]:8443/a",
+		"https://[2001:db8::1]/a[1]",
+		"https://[2001:db8::1]/]",
+		"https://[fe80::1%25eth0]/a",
+		"https://[fe80::1%25en]0]/",
+		"https://user@[::1]?b=[",
+		"https://example.com/search?q=100%",
+		"https://example.com/search?q=%4",
+		"https://example.com/search?q=%4G&r=%41",
+		"https://example.com/search?q=100%25#100%",
+		"https://example.com/100%?q=1",
+		"https://example.com/a|b[c]%",
+		"https://example.com/caf\u00e9?q=%\u00e9",
+		"/a[b]?c=%",
+		"ftp://example.com/a[b]",
+		"https:///a[b]",
+		"",
+	}
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, rawURL string) {
+		err := extensionURLError(rawURL, true)
+		if err == nil {
+			assertLocInvariants(t, "strict", []string{rawURL})
+			assertNoExcludedCharacter(t, []string{rawURL})
+			return
+		}
+		var validationErr *ValidationError
+		if !errors.As(err, &validationErr) || validationErr.URL != rawURL {
+			t.Fatalf("strict mode: %q is rejected with %#v, which is no *ValidationError that names it", rawURL, err)
+		}
+
+		// A URL is turned down over a square bracket exactly if it has one out of
+		// place, and over its query exactly if a percent sign in it begins no
+		// percent-encoding. What else is wrong with a URL is reported first.
+		parsed, parseErr := neturl.Parse(rawURL)
+		if parseErr != nil {
+			return
+		}
+		message := validationErr.Err.Error()
+		if strings.Contains(message, "the character '['") || strings.Contains(message, "the character ']'") {
+			if bracketsInPlace(rawURL) {
+				t.Fatalf("strict mode: %q is rejected with %q, but its square brackets are around an IPv6 address", rawURL, message)
+			}
+		}
+		if strings.Contains(message, "in the query") {
+			if queryEscaped(rawURL) {
+				t.Fatalf("strict mode: %q is rejected with %q, but its query is percent-encoded", rawURL, message)
+			}
+			var escapeErr neturl.EscapeError
+			if _, unescapeErr := neturl.QueryUnescape(parsed.RawQuery); !errors.As(err, &escapeErr) || escapeErr != unescapeErr {
+				t.Fatalf("strict mode: %q is rejected with %q, net/url has %v for its query", rawURL, message, unescapeErr)
+			}
+		}
+	})
+}
 
 // FuzzUnzip checks that gzip handling survives arbitrary bytes, that any data
 // the package compresses can be read back unchanged, and that the
@@ -1013,6 +1121,7 @@ func FuzzParseRobotsTXT(f *testing.F) {
 		"Sitemap: https://bücher.example/sitemap.xml\nSitemap: https://xn--bcher-kva.example:8443/sitemap.xml\nSitemap: //BÜCHER.example/sitemap.xml\nSitemap: https://bücher_x.example/sitemap.xml\n",
 		"Sitemap: https://example.com/sitemap.xml?city=münchen\nSitemap: /sitemap.xml?city=m%C3%BCnchen&q=café au lait\n",
 		"Sitemap: https://example.com/sitemap|1.xml\nSitemap: https://example.com/sitemap.xml?tags={a}^\nSitemap: https://cdn.example.net/<sitemap>.xml\n",
+		"Sitemap: https://example.com/sitemap.xml?ids[]=1\nSitemap: https://cdn.example.net/sitemap.xml?zoom=100%\nSitemap: https://[2001:db8::1]/sitemap.xml\nSitemap: https://[2001:db8::1]/sitemap[1].xml\n",
 		"",
 	}
 	for _, seed := range seeds {
