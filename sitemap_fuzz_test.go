@@ -12,6 +12,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"golang.org/x/net/idna"
 )
 
 // fuzzBaseURL is the sitemap URL that fuzzed content is treated as having been
@@ -72,10 +75,33 @@ func assertLocInvariants(t *testing.T, mode string, locs []string) {
 	}
 }
 
+// assertASCIIHosts checks what tolerant mode guarantees on top of that: the
+// name of the host is in ASCII. A name that is not is one that has no ASCII
+// form, which IDNA is asked about here independently of the parser, or one
+// that is not UTF-8 or has the replacement character in it.
+func assertASCIIHosts(t *testing.T, locs []string) {
+	t.Helper()
+
+	for _, loc := range locs {
+		parsed, err := neturl.Parse(loc)
+		if err != nil {
+			t.Fatalf("tolerant mode: accepted unparsable URL %q: %v", loc, err)
+		}
+		host := parsed.Hostname()
+		if strings.ContainsFunc(host, func(r rune) bool { return r > 0x7f }) && !strings.ContainsRune(host, utf8.RuneError) {
+			if ascii, err := idna.Lookup.ToASCII(host); err == nil && ascii != "" {
+				t.Fatalf("tolerant mode: host of %q is not in its ASCII form %q", loc, ascii)
+			}
+		}
+	}
+}
+
 // assertOnSitemapHost checks what strict mode guarantees on top of that for the
 // locations a sitemap lists: each is on the protocol, the host and the port of
 // fuzzBaseURL. The letter case of the host makes no difference, and neither
-// does it whether the default port of HTTPS is named.
+// does it whether the default port of HTTPS is named. A host that is not
+// written in ASCII is that of fuzzBaseURL if it is the name IDNA looks it up
+// by, which is asked here independently of the parser.
 func assertOnSitemapHost(t *testing.T, locs []string) {
 	t.Helper()
 
@@ -87,7 +113,11 @@ func assertOnSitemapHost(t *testing.T, locs []string) {
 		if parsed.Scheme != "https" {
 			t.Fatalf("strict mode: accepted URL of another protocol than the sitemap: %q", loc)
 		}
-		if !strings.EqualFold(parsed.Hostname(), "example.com") {
+		host := parsed.Hostname()
+		if ascii, err := idna.Lookup.ToASCII(host); err == nil && ascii != "" {
+			host = ascii
+		}
+		if !strings.EqualFold(host, "example.com") {
 			t.Fatalf("strict mode: accepted URL on another host than the sitemap: %q", loc)
 		}
 		if port := parsed.Port(); port != "" && port != "443" {
@@ -263,6 +293,11 @@ func FuzzParse(f *testing.F) {
 		`<rss><channel><item><link>//</link></item><item><link>//::</link></item><item><link>https:///no-host</link></item></channel></rss>`,
 		`<feed><entry><link href="//"/></entry><entry><link href="//:8080/port-only"/></entry><entry><link href="https://:"/></entry></feed>`,
 		"https:///no-host\nhttps://:8080/port-only\nhttps://\nhttps://user@/user-only\nhttps://example.com/host\n",
+		`<urlset><url><loc>https://bücher.example/a</loc></url><url><loc>https://BÜCHER.example:8443/b</loc></url><url><loc>https://xn--bcher-kva.example/c</loc></url><url><loc>https://b%C3%BCcher.example/d</loc></url><url><loc>//bücher.example/e</loc></url><url><loc>https://user@bücher.example:/f g</loc></url></urlset>`,
+		"<urlset><url><loc>https://\uff45\uff58\uff41\uff4d\uff50\uff4c\uff45.com/a</loc></url><url><loc>https://example\u3002com/b</loc></url><url><loc>https://\uff25xample.com:443/c</loc></url><url><loc>https://exa\uff0fmple.com/d</loc></url><url><loc>https://example.com\u00ad/e</loc></url></urlset>",
+		"<urlset><url><loc>https://bücher_x.example/a</loc></url><url><loc>https://-bücher.example/b</loc></url><url><loc>https://b%FFcher.example/c</loc></url><url><loc>https://b%EF%BF%BDcher.example/f</loc></url><url><loc>https://\u00ad/d</loc></url><url><loc>https://[fe80::1%25zöne]/e</loc></url></urlset>",
+		`<sitemapindex><sitemap><loc>https://bücher.example/sitemap-1.xml</loc></sitemap><sitemap><loc>https://xn--bcher-kva.example/sitemap-1.xml</loc></sitemap><sitemap><loc>https://例え.テスト/sitemap-2.xml</loc></sitemap></sitemapindex>`,
+		"https://bücher.example/text\nhttps://faß.example/text\nhttps://bu\u0308cher.example/text\n",
 		`<sitemapindex><sitemap><loc>`,
 		"",
 		"not xml at all",
@@ -284,6 +319,8 @@ func FuzzParse(f *testing.F) {
 			assertLocInvariants(t, mode, locs)
 			if strict {
 				assertOnSitemapHost(t, locs)
+			} else {
+				assertASCIIHosts(t, locs)
 			}
 
 			// Parsing the same bytes twice must produce the same result.
@@ -446,6 +483,7 @@ func FuzzParseRobotsTXT(f *testing.F) {
 		"Sitemap: https://example.com/site map.xml?v=a b\nSitemap: https://EXAMPLE.com:8443/other-port.xml\n",
 		"Sitemap: //\nSitemap: ///no-host.xml\nSitemap: //:8080/port-only.xml\nSitemap: //::\nSitemap: //example.com:80:80/two-ports.xml\n",
 		"Sitemap: https:///no-host.xml\nSitemap: https://:8080/port-only.xml\nSitemap: https:no-slash.xml\nSitemap: https://user@/user-only.xml\n",
+		"Sitemap: https://bücher.example/sitemap.xml\nSitemap: https://xn--bcher-kva.example:8443/sitemap.xml\nSitemap: //BÜCHER.example/sitemap.xml\nSitemap: https://bücher_x.example/sitemap.xml\n",
 		"",
 	}
 	for _, seed := range seeds {
@@ -479,6 +517,9 @@ func FuzzParseRobotsTXT(f *testing.F) {
 
 			locs := robotsTXTLocs(strict, content)
 			assertLocInvariants(t, mode, locs)
+			if !strict {
+				assertASCIIHosts(t, locs)
+			}
 
 			if again := robotsTXTLocs(strict, content); !slicesEqual(locs, again) {
 				t.Fatalf("%s mode: result is not deterministic: %q vs %q", mode, locs, again)

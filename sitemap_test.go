@@ -6415,12 +6415,16 @@ func TestCanonicalChangeFreq(t *testing.T) {
 
 // TestS_Parse_SameHost verifies which URLs strict mode takes to be on the host of the
 // sitemap. The name of a host is not case-sensitive, and a URL that names no port is on
-// the default port of its protocol, so neither difference makes for another host. A
-// different name or port does. Tolerant mode does not compare the hosts at all.
+// the default port of its protocol, so neither difference makes for another host. Neither
+// does the form an internationalised domain name is written in: its Unicode form and its
+// Punycode form name one host. A different name or port does make for another host.
+// Tolerant mode does not compare the hosts at all.
 func TestS_Parse_SameHost(t *testing.T) {
 	const (
-		httpsSitemap = "https://example.com/sitemap.xml"
-		httpSitemap  = "http://example.com/sitemap.xml"
+		httpsSitemap    = "https://example.com/sitemap.xml"
+		httpSitemap     = "http://example.com/sitemap.xml"
+		unicodeSitemap  = "https://bücher.example/sitemap.xml"
+		punycodeSitemap = "https://xn--bcher-kva.example/sitemap.xml"
 	)
 
 	tests := []struct {
@@ -6445,6 +6449,17 @@ func TestS_Parse_SameHost(t *testing.T) {
 		{"IPv6 address in capitals with the default port", "https://[2001:db8::1]/sitemap.xml", "https://[2001:DB8::1]:443/page", true},
 		{"host that is not ASCII in capitals", "https://bücher.example/sitemap.xml", "https://BÜCHER.example/page", true},
 		{"user information on the URL", httpsSitemap, "https://user@example.com/page", true},
+		{"Punycode form in a sitemap of the Unicode form", unicodeSitemap, "https://xn--bcher-kva.example/page", true},
+		{"Punycode form in capitals in a sitemap of the Unicode form", unicodeSitemap, "https://XN--BCHER-KVA.EXAMPLE/page", true},
+		{"Unicode form in a sitemap of the Punycode form", punycodeSitemap, "https://bücher.example/page", true},
+		{"Unicode form in capitals in a sitemap of the Punycode form", punycodeSitemap, "https://BÜCHER.example/page", true},
+		{"Unicode form that is percent-encoded in a sitemap of the Punycode form", punycodeSitemap, "https://b%C3%BCcher.example/page", true},
+		{"Unicode form with a combining character in a sitemap of the Punycode form", punycodeSitemap, "https://bu\u0308cher.example/page", true},
+		{"Unicode form with the default port in a sitemap of the Punycode form", punycodeSitemap, "https://bücher.example:443/page", true},
+		{"Unicode form with user information in a sitemap of the Punycode form", punycodeSitemap, "https://user@bücher.example/page", true},
+		{"Unicode form on the port of the sitemap of the Punycode form", "https://xn--bcher-kva.example:8443/sitemap.xml", "https://bücher.example:8443/page", true},
+		{"host in fullwidth letters", httpsSitemap, "https://\uff45\uff58\uff41\uff4d\uff50\uff4c\uff45.com/page", true},
+		{"host that is no domain name in capitals", "https://bücher_x.example/sitemap.xml", "https://BÜCHER_X.example/page", true},
 
 		{"other host", httpsSitemap, "https://example.org/page", false},
 		{"subdomain", httpsSitemap, "https://www.example.com/page", false},
@@ -6461,6 +6476,15 @@ func TestS_Parse_SameHost(t *testing.T) {
 		{"port that begins with the default one", httpsSitemap, "https://example.com:4430/page", false},
 		{"same port on another host", "https://example.com:8443/sitemap.xml", "https://example.org:8443/page", false},
 		{"other IPv6 address", "https://[2001:db8::1]/sitemap.xml", "https://[2001:db8::2]/page", false},
+		{"other internationalised host", unicodeSitemap, "https://münchen.example/page", false},
+		{"Punycode form of another internationalised host", unicodeSitemap, "https://xn--mnchen-3ya.example/page", false},
+		{"Unicode form of another internationalised host", punycodeSitemap, "https://münchen.example/page", false},
+		{"host without the diacritic", unicodeSitemap, "https://bucher.example/page", false},
+		{"host with the diacritic", "https://bucher.example/sitemap.xml", "https://bücher.example/page", false},
+		{"subdomain of an internationalised host", punycodeSitemap, "https://www.bücher.example/page", false},
+		{"internationalised host with a trailing dot", punycodeSitemap, "https://bücher.example./page", false},
+		{"internationalised host on another port", punycodeSitemap, "https://bücher.example:8443/page", false},
+		{"what the Punycode form of a host that is no domain name would be", "https://bücher_x.example/sitemap.xml", "https://xn--bcher_x-n2a.example/page", false},
 	}
 
 	for _, test := range tests {
@@ -6600,6 +6624,26 @@ func TestSameHost(t *testing.T) {
 		{"http://example.com/", "http://example.com:443/", false},
 		{"https://example.com:8443/", "https://example.com:8444/", false},
 		{"https://example.com:8443/", "https://example.org:8443/", false},
+		{"https://bücher.example/", "https://bücher.example/", true},
+		{"https://bücher.example/", "https://BÜCHER.example/", true},
+		{"https://bücher.example/", "https://xn--bcher-kva.example/", true},
+		{"https://bücher.example/", "https://XN--BCHER-KVA.example/", true},
+		{"https://BÜCHER.example/", "https://xn--bcher-kva.example:443/", true},
+		{"https://bücher.example/", "https://b%C3%BCcher.example/", true},
+		{"https://bücher.example/", "https://bu\u0308cher.example/", true},
+		{"https://bücher.example:8443/", "https://xn--bcher-kva.example:8443/", true},
+		{"https://例え.テスト/", "https://xn--r8jz45g.xn--zckzah/", true},
+		{"https://example.com/", "https://\uff45\uff58\uff41\uff4d\uff50\uff4c\uff45.com/", true},
+		{"https://example.com/", "https://example\u3002com/", true},
+		{"https://bücher_x.example/", "https://BÜCHER_X.example/", true},
+		{"https://bücher.example/", "https://münchen.example/", false},
+		{"https://bücher.example/", "https://xn--mnchen-3ya.example/", false},
+		{"https://bücher.example/", "https://bucher.example/", false},
+		{"https://bücher.example/", "https://www.xn--bcher-kva.example/", false},
+		{"https://bücher.example/", "https://xn--bcher-kva.example./", false},
+		{"https://bücher.example/", "https://xn--bcher-kva.example:8443/", false},
+		{"https://bücher_x.example/", "https://xn--bcher_x-n2a.example/", false},
+		{"https://bücher_x.example/", "https://bücher.example/", false},
 	}
 
 	for _, test := range tests {
@@ -6614,6 +6658,408 @@ func TestSameHost(t *testing.T) {
 			}
 			mustEqual(t, "sameHost", sameHost(a, b), test.want)
 			mustEqual(t, "sameHost the other way round", sameHost(b, a), test.want)
+		})
+	}
+}
+
+// TestAsciiHostname verifies the name a host is taken to have in ASCII: the name itself if
+// it is in ASCII, the Punycode form of an internationalised domain name, and the name
+// itself again if it is neither.
+func TestAsciiHostname(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"empty", "", ""},
+		{"ASCII", "example.com", "example.com"},
+		{"ASCII in capitals", "EXAMPLE.com", "EXAMPLE.com"},
+		{"ASCII that is no domain name", "under_score.example", "under_score.example"},
+		{"IPv4 address", "192.0.2.1", "192.0.2.1"},
+		{"IPv6 address", "2001:db8::1", "2001:db8::1"},
+		{"Punycode form", "xn--bcher-kva.example", "xn--bcher-kva.example"},
+		{"Punycode form in capitals", "XN--BCHER-KVA.example", "XN--BCHER-KVA.example"},
+
+		{"Unicode form", "bücher.example", "xn--bcher-kva.example"},
+		{"Unicode form in capitals", "BÜCHER.EXAMPLE", "xn--bcher-kva.example"},
+		{"Unicode form with a combining character", "bu\u0308cher.example", "xn--bcher-kva.example"},
+		{"subdomain", "www.bücher.example", "www.xn--bcher-kva.example"},
+		{"trailing dot", "bücher.example.", "xn--bcher-kva.example."},
+		{"every label", "例え.テスト", "xn--r8jz45g.xn--zckzah"},
+		{"single label", "bücher", "xn--bcher-kva"},
+		{"fullwidth letters", "\uff45\uff58\uff41\uff4d\uff50\uff4c\uff45.com", "example.com"},
+		{"ideographic full stop", "example\u3002com", "example.com"},
+
+		{"underscore", "bücher_x.example", "bücher_x.example"},
+		{"space", "bü cher.example", "bü cher.example"},
+		{"leading hyphen", "-bücher.example", "-bücher.example"},
+		{"trailing hyphen", "bücher-.example", "bücher-.example"},
+		{"fullwidth slash", "exa\uff0fmple.com", "exa\uff0fmple.com"},
+		{"fullwidth colon", "exa\uff1ample.com", "exa\uff1ample.com"},
+		{"fullwidth at sign", "exa\uff20mple.com", "exa\uff20mple.com"},
+		{"not UTF-8", "b\xffcher.example", "b\xffcher.example"},
+		{"replacement character", "b\ufffdcher.example", "b\ufffdcher.example"},
+		{"IPv6 address with a zone that is not ASCII", "fe80::1%zöne", "fe80::1%zöne"},
+		{"nothing but a character that is ignored", "\u00ad", "\u00ad"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := asciiHostname(test.host)
+			mustEqual(t, "asciiHostname", got, test.want)
+			// The name in ASCII is its own name in ASCII.
+			mustEqual(t, "asciiHostname of the result", asciiHostname(got), got)
+		})
+	}
+}
+
+// TestAsciiHost verifies that only the name of the host is converted: the port stays where
+// it is, and an address in brackets is left as it is.
+func TestAsciiHost(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"ASCII", "https://example.com/page", "example.com"},
+		{"ASCII with a port", "https://Example.com:8443/page", "Example.com:8443"},
+		{"no host", "/page", ""},
+		{"Unicode form", "https://bücher.example/page", "xn--bcher-kva.example"},
+		{"Unicode form with a port", "https://bücher.example:8443/page", "xn--bcher-kva.example:8443"},
+		{"Unicode form with an empty port", "https://bücher.example:/page", "xn--bcher-kva.example:"},
+		{"Unicode form with user information", "https://user:secret@bücher.example/page", "xn--bcher-kva.example"},
+		{"Unicode form that is percent-encoded", "https://b%C3%BCcher.example:8443/page", "xn--bcher-kva.example:8443"},
+		{"no domain name", "https://bücher_x.example:8443/page", "bücher_x.example:8443"},
+		{"IPv6 address", "https://[2001:db8::1]:8443/page", "[2001:db8::1]:8443"},
+		{"IPv6 address with a zone that is not ASCII", "https://[fe80::1%25zöne]:8443/page", "[fe80::1%zöne]:8443"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			u, err := neturl.Parse(test.url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustEqual(t, "asciiHost", asciiHost(u), test.want)
+		})
+	}
+
+	// net/url takes only an IP address between brackets. Whatever else stands there is left
+	// alone as well, a name that could be converted included.
+	t.Run("name in brackets", func(t *testing.T) {
+		mustEqual(t, "asciiHost", asciiHost(&neturl.URL{Scheme: "https", Host: "[bücher.example]:8443"}), "[bücher.example]:8443")
+	})
+}
+
+func TestIsASCII(t *testing.T) {
+	tests := []struct {
+		s    string
+		want bool
+	}{
+		{"", true},
+		{"example.com", true},
+		{"\x00\x7f", true},
+		{"\x80", false},
+		{"\u0080", false},
+		{"bücher", false},
+		{"ü", false},
+		{"example.com\xff", false},
+		{"\xffexample.com", false},
+	}
+
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("%q", test.s), func(t *testing.T) {
+			mustEqual(t, "isASCII", isASCII(test.s), test.want)
+		})
+	}
+}
+
+// TestS_Parse_InternationalisedHost verifies how the URL of a page on an internationalised
+// host comes back. Tolerant mode returns the name of the host in ASCII, in its Punycode
+// form, whichever way the document writes it: that is the name a request for the page goes
+// to, and net/url would write the name percent-encoded. A name in ASCII is left as it is,
+// and so is one that is no domain name, which comes back percent-encoded. Strict mode
+// returns the URL the way the document gives it. It makes no difference which format lists
+// the URL.
+func TestS_Parse_InternationalisedHost(t *testing.T) {
+	tests := []struct {
+		name string
+		loc  string
+		// tolerant is the URL tolerant mode returns.
+		tolerant string
+		// strict tells whether strict mode accepts the URL in a sitemap on its host.
+		strict bool
+	}{
+		{"Unicode form", "https://bücher.example/page", "https://xn--bcher-kva.example/page", true},
+		{"Unicode form in capitals", "https://BÜCHER.Example/page", "https://xn--bcher-kva.example/page", true},
+		{"Unicode form that is percent-encoded", "https://b%C3%BCcher.example/page", "https://xn--bcher-kva.example/page", true},
+		{"Unicode form with a combining character", "https://bu\u0308cher.example/page", "https://xn--bcher-kva.example/page", true},
+		{"Punycode form", "https://xn--bcher-kva.example/page", "https://xn--bcher-kva.example/page", true},
+		{"Punycode form in capitals", "https://XN--BCHER-KVA.example/page", "https://XN--BCHER-KVA.example/page", true},
+		{"subdomain", "https://www.bücher.example/page", "https://www.xn--bcher-kva.example/page", true},
+		{"every label", "https://例え.テスト/page", "https://xn--r8jz45g.xn--zckzah/page", true},
+		{"trailing dot", "https://bücher.example./page", "https://xn--bcher-kva.example./page", true},
+		{"port", "https://bücher.example:8443/page", "https://xn--bcher-kva.example:8443/page", true},
+		{"empty port", "https://bücher.example:/page", "https://xn--bcher-kva.example:/page", true},
+		{"user information", "https://user:secret@bücher.example/page", "https://user:secret@xn--bcher-kva.example/page", true},
+		{"HTTP", "http://bücher.example/page", "http://xn--bcher-kva.example/page", true},
+		{"no path", "https://bücher.example", "https://xn--bcher-kva.example", true},
+		{"path that is not ASCII", "https://bücher.example/bücher", "https://xn--bcher-kva.example/b%C3%BCcher", true},
+		{"fullwidth letters", "https://\uff45\uff58\uff41\uff4d\uff50\uff4c\uff45.com/page", "https://example.com/page", true},
+		{"space in the path", "https://bücher.example/a b", "https://xn--bcher-kva.example/a%20b", false},
+		{"relative reference that names the host", "//bücher.example/page", "https://xn--bcher-kva.example/page", false},
+		{"relative reference that names no host", "/page", "https://xn--bcher-kva.example/page", false},
+
+		{"no domain name", "https://bücher_x.example/page", "https://b%C3%BCcher_x.example/page", true},
+		{"no domain name with a port", "https://-bücher.example:8443/page", "https://-b%C3%BCcher.example:8443/page", true},
+		{"not UTF-8", "https://b%FFcher.example/page", "https://b%FFcher.example/page", true},
+		{"replacement character", "https://b\ufffdcher.example/page", "https://b%EF%BF%BDcher.example/page", true},
+		{"ASCII", "https://example.com/page", "https://example.com/page", true},
+		{"ASCII in capitals", "https://EXAMPLE.com/page", "https://EXAMPLE.com/page", true},
+		{"IPv6 address", "https://[2001:DB8::1]:8443/page", "https://[2001:DB8::1]:8443/page", true},
+	}
+	formats := []struct {
+		name    string
+		path    string
+		content func(loc string) string
+	}{
+		{"urlset", "/sitemap.xml", func(loc string) string {
+			return `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + loc + `</loc></url></urlset>`
+		}},
+		{"text", "/sitemap.txt", func(loc string) string { return loc + "\n" }},
+		{"RSS", "/rss.xml", func(loc string) string {
+			return `<rss version="2.0"><channel><item><link>` + loc + `</link></item></channel></rss>`
+		}},
+		{"Atom", "/atom.xml", func(loc string) string {
+			return `<feed xmlns="http://www.w3.org/2005/Atom"><entry><link href="` + loc + `"/></entry></feed>`
+		}},
+	}
+
+	for _, format := range formats {
+		for _, test := range tests {
+			// A line of a text sitemap is an entry only when it is an absolute URL.
+			if format.name == "text" && !strings.Contains(test.loc, "://") {
+				continue
+			}
+			content := format.content(test.loc)
+
+			t.Run(format.name+", "+test.name+", tolerant mode", func(t *testing.T) {
+				s := New()
+				requireParse(t, s, "https://bücher.example"+format.path, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), []string{test.tolerant})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+			})
+
+			if !test.strict {
+				continue
+			}
+			t.Run(format.name+", "+test.name+", strict mode", func(t *testing.T) {
+				loc, err := neturl.Parse(test.loc)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s := New().SetStrict(true)
+				requireParse(t, s, loc.Scheme+"://"+loc.Host+format.path, &content)
+
+				assertStringSlice(t, "URLs", locsOf(s), []string{test.loc})
+				assertStringSlice(t, "errors", errorsOf(s), []string{})
+			})
+		}
+	}
+
+	// An error about a URL names it with the host in ASCII as well, where it names the URL
+	// the location resolves to.
+	t.Run("errors, tolerant mode", func(t *testing.T) {
+		long := "https://bücher.example/" + strings.Repeat("a", maxLocLength)
+		content := "ftp://bücher.example/page\n" + long + "\nhttps://bücher.example/page\n"
+		content = `<urlset><url><loc>` + strings.ReplaceAll(strings.TrimSpace(content), "\n", `</loc></url><url><loc>`) + `</loc></url></urlset>`
+		s := New()
+		requireParse(t, s, "https://bücher.example/sitemap.xml", &content)
+
+		resolved := "https://xn--bcher-kva.example/" + strings.Repeat("a", maxLocLength)
+		assertStringSlice(t, "URLs", locsOf(s), []string{"https://xn--bcher-kva.example/page"})
+		assertStringSlice(t, "errors", errorsOf(s), []string{
+			`validate "ftp://xn--bcher-kva.example/page": unsupported scheme "ftp"`,
+			fmt.Sprintf(`validate %q: URL exceeds maximum length of %d characters (%d)`, resolved, maxLocLength, len(resolved)),
+		})
+	})
+}
+
+// TestS_Parse_InternationalisedHost_SitemapIndex verifies how the sitemaps a sitemap index
+// lists on an internationalised host are requested. Tolerant mode requests each by the
+// Punycode form of its host, so a sitemap that is listed in both forms is fetched once.
+// Strict mode requests a sitemap the way the index names it, and takes both forms for the
+// host of the index.
+func TestS_Parse_InternationalisedHost_SitemapIndex(t *testing.T) {
+	// newClient returns a client that answers every request with a sitemap of one page,
+	// which is named after the sitemap, and the hosts and paths it was asked for.
+	newClient := func() (*http.Client, *[]string) {
+		requested := &[]string{}
+		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			*requested = append(*requested, req.URL.Host+req.URL.Path)
+			page := strings.TrimSuffix(strings.TrimPrefix(req.URL.Path, "/sitemap-"), ".xml")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader(`<urlset><url><loc>https://bücher.example/page-` + page + `</loc></url></urlset>`)),
+				Request:    req,
+			}, nil
+		})}, requested
+	}
+
+	content := `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://bücher.example/sitemap-1.xml</loc></sitemap>
+  <sitemap><loc>https://xn--bcher-kva.example/sitemap-2.xml</loc></sitemap>
+  <sitemap><loc>https://BÜCHER.example:443/sitemap-3.xml</loc></sitemap>
+  <sitemap><loc>https://münchen.example/sitemap-4.xml</loc></sitemap>
+</sitemapindex>`
+
+	for _, index := range []string{"https://bücher.example/sitemap-index.xml", "https://xn--bcher-kva.example/sitemap-index.xml"} {
+		t.Run("tolerant mode, index at "+index, func(t *testing.T) {
+			client, requested := newClient()
+			s := New().SetMultiThread(false).SetHTTPClient(client)
+			requireParse(t, s, index, &content)
+
+			assertStringSlice(t, "requests", *requested, []string{
+				"xn--bcher-kva.example/sitemap-1.xml",
+				"xn--bcher-kva.example/sitemap-2.xml",
+				"xn--bcher-kva.example:443/sitemap-3.xml",
+				"xn--mnchen-3ya.example/sitemap-4.xml",
+			})
+			assertStringSlice(t, "URLs", locsOf(s), []string{
+				"https://xn--bcher-kva.example/page-1",
+				"https://xn--bcher-kva.example/page-2",
+				"https://xn--bcher-kva.example/page-3",
+				"https://xn--bcher-kva.example/page-4",
+			})
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+
+		t.Run("strict mode, index at "+index, func(t *testing.T) {
+			indexURL, err := neturl.Parse(index)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, requested := newClient()
+			s := New().SetStrict(true).SetMultiThread(false).SetHTTPClient(client)
+			requireParse(t, s, index, &content)
+
+			assertStringSlice(t, "requests", *requested, []string{
+				"bücher.example/sitemap-1.xml",
+				"xn--bcher-kva.example/sitemap-2.xml",
+				"BÜCHER.example:443/sitemap-3.xml",
+			})
+			assertStringSlice(t, "URLs", locsOf(s), []string{
+				"https://bücher.example/page-1",
+				"https://bücher.example/page-2",
+				"https://bücher.example/page-3",
+			})
+			assertStringSlice(t, "errors", errorsOf(s), []string{
+				fmt.Sprintf(`validate "https://münchen.example/sitemap-4.xml": strict mode: host "münchen.example" does not match sitemap host %q`, indexURL.Host),
+			})
+		})
+	}
+
+	t.Run("tolerant mode, sitemap listed in every form", func(t *testing.T) {
+		content := `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://bücher.example/sitemap-1.xml</loc></sitemap>
+  <sitemap><loc>https://xn--bcher-kva.example/sitemap-1.xml</loc></sitemap>
+  <sitemap><loc>https://BÜCHER.example/sitemap-1.xml</loc></sitemap>
+  <sitemap><loc>https://b%C3%BCcher.example/sitemap-1.xml</loc></sitemap>
+  <sitemap><loc>/sitemap-1.xml</loc></sitemap>
+</sitemapindex>`
+		client, requested := newClient()
+		s := New().SetMultiThread(false).SetHTTPClient(client)
+		requireParse(t, s, "https://bücher.example/sitemap-index.xml", &content)
+
+		assertStringSlice(t, "requests", *requested, []string{"xn--bcher-kva.example/sitemap-1.xml"})
+		assertStringSlice(t, "URLs", locsOf(s), []string{"https://xn--bcher-kva.example/page-1"})
+		assertStringSlice(t, "errors", errorsOf(s), []string{})
+	})
+}
+
+// TestS_Parse_InternationalisedHost_RobotsTXT verifies the same for the sitemaps a
+// robots.txt names: tolerant mode requests them by the Punycode form of their host, and
+// strict mode takes the pages of a sitemap to be on its host whichever form names it.
+func TestS_Parse_InternationalisedHost_RobotsTXT(t *testing.T) {
+	robots := "Sitemap: https://bücher.example/sitemap-1.xml\nSitemap: https://xn--bcher-kva.example/sitemap-2.xml\n"
+
+	for _, strict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("strict=%v", strict), func(t *testing.T) {
+			var requested []string
+			client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				requested = append(requested, req.URL.Host+req.URL.Path)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader("https://bücher.example/page-of" + strings.TrimSuffix(req.URL.Path, ".xml") + "\n")),
+					Request:    req,
+				}, nil
+			})}
+			s := New().SetStrict(strict).SetMultiThread(false).SetHTTPClient(client)
+			requireParse(t, s, "https://bücher.example/robots.txt", &robots)
+
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+			if strict {
+				assertStringSlice(t, "requests", requested, []string{"bücher.example/sitemap-1.xml", "xn--bcher-kva.example/sitemap-2.xml"})
+				assertStringSlice(t, "URLs", locsOf(s), []string{"https://bücher.example/page-of/sitemap-1", "https://bücher.example/page-of/sitemap-2"})
+				return
+			}
+			assertStringSlice(t, "requests", requested, []string{"xn--bcher-kva.example/sitemap-1.xml", "xn--bcher-kva.example/sitemap-2.xml"})
+			assertStringSlice(t, "URLs", locsOf(s), []string{"https://xn--bcher-kva.example/page-of/sitemap-1", "https://xn--bcher-kva.example/page-of/sitemap-2"})
+		})
+	}
+}
+
+// TestS_Parse_InternationalisedHost_Filters verifies that the patterns of SetFollow and
+// SetRules are matched against the URL as it is returned: with the Punycode form of the
+// host in tolerant mode, and the way the document writes it in strict mode.
+func TestS_Parse_InternationalisedHost_Filters(t *testing.T) {
+	const (
+		punycodePattern = `^https://xn--bcher-kva\.example/`
+		unicodePattern  = `^https://bücher\.example/`
+	)
+	tests := []struct {
+		name    string
+		strict  bool
+		pattern string
+		matches bool
+	}{
+		{"tolerant mode, pattern of the Punycode form", false, punycodePattern, true},
+		{"tolerant mode, pattern of the Unicode form", false, unicodePattern, false},
+		{"strict mode, pattern of the Unicode form", true, unicodePattern, true},
+		{"strict mode, pattern of the Punycode form", true, punycodePattern, false},
+	}
+
+	for _, test := range tests {
+		t.Run("rules, "+test.name, func(t *testing.T) {
+			content := `<urlset><url><loc>https://bücher.example/page</loc></url></urlset>`
+			s := New().SetStrict(test.strict).SetRules([]string{test.pattern})
+			requireParse(t, s, "https://bücher.example/sitemap.xml", &content)
+
+			mustEqual(t, "URLs", s.GetURLCount() == 1, test.matches)
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+
+		t.Run("follow, "+test.name, func(t *testing.T) {
+			content := `<sitemapindex><sitemap><loc>https://bücher.example/sitemap-1.xml</loc></sitemap></sitemapindex>`
+			requests := 0
+			client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				requests++
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(`<urlset><url><loc>https://bücher.example/page</loc></url></urlset>`)),
+					Request:    req,
+				}, nil
+			})}
+			s := New().SetStrict(test.strict).SetMultiThread(false).SetHTTPClient(client).SetFollow([]string{test.pattern})
+			requireParse(t, s, "https://bücher.example/sitemap-index.xml", &content)
+
+			mustEqual(t, "sitemap is fetched", requests == 1, test.matches)
+			mustEqual(t, "URLs", s.GetURLCount() == 1, test.matches)
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
 		})
 	}
 }

@@ -17,8 +17,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/net/html/charset"
+	"golang.org/x/net/idna"
 )
 
 type (
@@ -2370,11 +2372,12 @@ func (s *S) validateAndFilterHreflangs(links []AlternateLink) ([]AlternateLink, 
 // name a host: a page or a sitemap is on one, and a URL without one cannot be requested.
 // In tolerant mode (strict=false), relative URLs are resolved against baseURL and a space in
 // the URL is percent-encoded before the length check. A reference that begins with "//" names
-// its host itself, see namesNoHost. What is returned is a URL neturl.Parse accepts: a location
-// that does not resolve to one is rejected.
+// its host itself, see namesNoHost. An internationalised host name is returned in ASCII, see
+// asciiHost. What is returned is a URL neturl.Parse accepts: a location that does not resolve
+// to one is rejected.
 // In strict mode (strict=true), URLs must additionally be absolute HTTP(S) URLs without a
 // space or a control character in them, see strictURLError, on the same host and protocol as
-// baseURL, see sameHost.
+// baseURL, see sameHost. The URL is returned as the document gives it.
 // baseURL is the URL the sitemap was served from: the location of the sitemap, whichever URL
 // the request for it began at.
 // Returns the resolved URL string and an error if validation fails.
@@ -2419,6 +2422,7 @@ func (s *S) resolveAndValidate(loc string, baseURL string, onBaseHost bool) (str
 
 	// Tolerant mode: resolve relative URLs against the base
 	resolved := base.ResolveReference(parsed)
+	resolved.Host = asciiHost(resolved)
 	if resolved.Scheme != "http" && resolved.Scheme != "https" {
 		return loc, &ValidationError{URL: resolved.String(), Err: fmt.Errorf("unsupported scheme %q", resolved.Scheme)}
 	}
@@ -2502,8 +2506,11 @@ var defaultPorts = map[string]string{"http": "80", "https": "443"}
 // case, and a URL without a port is on the default port of its protocol. So
 // "https://Example.com:443/" is on the host of "https://example.com/", while
 // "https://example.com:8443/" and "https://www.example.com/" are not.
+// An internationalised domain name is one host however it is written: its names are compared
+// in ASCII, see asciiHostname, so "https://bücher.example/" is on the host of
+// "https://xn--bcher-kva.example/".
 func sameHost(a, b *neturl.URL) bool {
-	return strings.EqualFold(a.Hostname(), b.Hostname()) && portOf(a) == portOf(b)
+	return strings.EqualFold(asciiHostname(a.Hostname()), asciiHostname(b.Hostname())) && portOf(a) == portOf(b)
 }
 
 // portOf returns the port u is on: the one it names, or the default port of its protocol.
@@ -2512,6 +2519,51 @@ func portOf(u *neturl.URL) string {
 		return port
 	}
 	return defaultPorts[u.Scheme]
+}
+
+// asciiHost returns the host of u, port included, with the name of the host in ASCII, see
+// asciiHostname. neturl writes a name that is not in ASCII percent-encoded
+// ("b%C3%BCcher.example"), which is neither the name the document gives nor the one a request
+// is sent to.
+func asciiHost(u *neturl.URL) string {
+	// Nearly every host is in ASCII, and there is nothing to do for it. An IP address in
+	// brackets is no domain name, whatever stands between the brackets.
+	if isASCII(u.Host) || strings.HasPrefix(u.Host, "[") {
+		return u.Host
+	}
+	// What follows the name is the port, if the URL names one.
+	name := u.Hostname()
+	return asciiHostname(name) + strings.TrimPrefix(u.Host, name)
+}
+
+// asciiHostname returns the name of a host in ASCII. A name that is in ASCII already is
+// returned as it is. An internationalised domain name is returned in its Punycode form, the
+// name it is looked up by (RFC 5891): "bücher.example" is "xn--bcher-kva.example". It is
+// converted the way net/http converts the host of a URL it requests, so the name is the one a
+// request for the URL goes to. That maps the name before it encodes it, capitals to small
+// letters for one: "BÜCHER.example" is "xn--bcher-kva.example" too.
+// A name that is neither, for holding what a domain name must not, is returned as it is. So is
+// one with the replacement character in it, which is what bytes that are not UTF-8 are read
+// as and what they leave behind where a document was decoded: it is no part of a name,
+// though the tables of some Unicode versions let it pass.
+func asciiHostname(name string) string {
+	if isASCII(name) || strings.ContainsRune(name, utf8.RuneError) {
+		return name
+	}
+	if ascii, err := idna.Lookup.ToASCII(name); err == nil && ascii != "" {
+		return ascii
+	}
+	return name
+}
+
+// isASCII tells whether s holds nothing but ASCII characters.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // gzipPrefix is what gzip content begins with, and every member of it: the two bytes that
