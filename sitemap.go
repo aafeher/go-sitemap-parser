@@ -44,11 +44,12 @@ type (
 		robotsTxtSitemapURLs []string
 		// fetchedURLs tracks sitemap URLs already fetched in the current Parse
 		// call to prevent duplicate HTTP requests when the same URL is referenced
-		// from multiple sitemap indexes or robots.txt directives.
+		// from multiple sitemap indexes or robots.txt directives. A URL is kept
+		// as its requestKey, so that every spelling of it is found.
 		fetchedURLs map[string]struct{}
 		// sitemaps are the sitemaps the documents of the current Parse call list, each of
 		// them once and in the order they were found, and listedURLs tells where in them the
-		// sitemap of a URL is. There are no more of them than the limit set with
+		// sitemap of a URL is, by the requestKey of the URL. There are no more of them than the limit set with
 		// SetMaxSitemaps allows: how many sitemaps the documents list is up to the server.
 		sitemaps   []Sitemap
 		listedURLs map[string]int
@@ -1920,7 +1921,8 @@ func (s *S) checkAndUnzipContent(url string, content string) (unzipped string, o
 
 // claimSitemap decides whether the sitemap at url is to be fetched, and counts it as fetched
 // if it is. It returns fetch as false for a sitemap that was fetched already: a sitemap is
-// fetched once in a call, however many documents list it.
+// fetched once in a call, however many documents list it and however they spell its URL, see
+// requestKey.
 //
 // It returns limited as true if a limit of the call is reached, which goes for every sitemap
 // that is still to come as well, and notes that a sitemap had to be left out for it. The limit
@@ -1929,9 +1931,10 @@ func (s *S) checkAndUnzipContent(url string, content string) (unzipped string, o
 //
 // If fetchedURLs has not been initialised (e.g. in direct unit tests), it is initialised here.
 func (s *S) claimSitemap(url string) (fetch, limited bool) {
+	key := requestKey(url)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, fetched := s.fetchedURLs[url]; fetched {
+	if _, fetched := s.fetchedURLs[key]; fetched {
 		return false, false
 	}
 	if s.limits.maxSitemaps > 0 && len(s.fetchedURLs) >= s.limits.maxSitemaps {
@@ -1944,12 +1947,72 @@ func (s *S) claimSitemap(url string) (fetch, limited bool) {
 	if s.fetchedURLs == nil {
 		s.fetchedURLs = make(map[string]struct{})
 	}
-	s.fetchedURLs[url] = struct{}{}
+	s.fetchedURLs[key] = struct{}{}
 	return true, false
 }
 
+// requestKey returns what tells the request for rawURL from the request for another URL: two
+// URLs with the same key are requested from the same host by the same request, so they are
+// one document.
+//
+// The key is rawURL without what makes no difference to the request. The protocol and the
+// name of the host are in lower case, and the name is in ASCII, see asciiHostname. The port is
+// left out if it is the default one of the protocol, and so is the fragment, which is not
+// sent. So "HTTPS://Example.com:443/sitemap.xml#top" has the key of
+// "https://example.com/sitemap.xml".
+//
+// The path and the query are not touched: "/Sitemap.xml" and "/sitemap.xml" are two documents
+// to a server, as "/sitemap.xml?" and "/sitemap.xml" may be. A host name that ends with a dot
+// is not taken for the one without it either.
+//
+// A URL that cannot be parsed, or that names no host, is its own key, and so is one whose host
+// has a colon in its name without being an IP address in brackets.
+func requestKey(rawURL string) string {
+	u, err := neturl.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	host := u.Host
+	// An IP address in brackets is left as it is, with the zone it may name.
+	if !strings.HasPrefix(host, "[") {
+		name := u.Hostname()
+		if strings.Contains(name, ":") {
+			return rawURL
+		}
+		// A name that has no form in ASCII is no name of a host, and is left as it is.
+		if host = asciiHostname(name); isASCII(host) {
+			host = strings.ToLower(host)
+		}
+		if port := u.Port(); port != "" {
+			host += ":" + port
+		}
+	}
+	if port, ok := defaultPorts[u.Scheme]; ok {
+		host = strings.TrimSuffix(host, ":"+port)
+	}
+
+	// What follows the host is taken from rawURL as it stands, so that nothing of it is
+	// written another way than the document has it.
+	rest := rawURL
+	if i := strings.IndexByte(rest, '#'); i >= 0 {
+		rest = rest[:i]
+	}
+	rest = rest[strings.Index(rest, "//")+2:]
+	if i := strings.IndexAny(rest, "/?"); i >= 0 {
+		rest = rest[i:]
+	} else {
+		rest = ""
+	}
+	userinfo := ""
+	if u.User != nil {
+		userinfo = u.User.String() + "@"
+	}
+	return u.Scheme + "://" + userinfo + host + rest
+}
+
 // listSitemap adds sitemap to the sitemaps the call found, unless it is among them already:
-// a sitemap is listed once in a call, however many documents list it.
+// a sitemap is listed once in a call, however many documents list it and however they spell
+// its URL, see requestKey. It is listed by the URL it was first found with.
 //
 // Of the dates the documents give for a sitemap, the latest is kept, and a date takes the
 // place of none. Which document is read first is a matter of timing when the documents are
@@ -1962,7 +2025,8 @@ func (s *S) claimSitemap(url string) (fetch, limited bool) {
 //
 // Must be called with s.mu held, unless no other goroutine has access to s.
 func (s *S) listSitemap(sitemap Sitemap) {
-	if i, listed := s.listedURLs[sitemap.Loc]; listed {
+	key := requestKey(sitemap.Loc)
+	if i, listed := s.listedURLs[key]; listed {
 		if isLater(sitemap.LastMod, s.sitemaps[i].LastMod) {
 			s.sitemaps[i].LastMod = sitemap.LastMod
 		}
@@ -1975,7 +2039,7 @@ func (s *S) listSitemap(sitemap Sitemap) {
 	if s.listedURLs == nil {
 		s.listedURLs = make(map[string]int)
 	}
-	s.listedURLs[sitemap.Loc] = len(s.sitemaps)
+	s.listedURLs[key] = len(s.sitemaps)
 	s.sitemaps = append(s.sitemaps, sitemap)
 }
 

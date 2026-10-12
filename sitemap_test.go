@@ -16759,3 +16759,171 @@ func TestTypedErrors_ValidationError(t *testing.T) {
 		t.Error("expected non-nil Unwrap")
 	}
 }
+
+func TestRequestKey(t *testing.T) {
+	tests := []struct {
+		rawURL string
+		want   string
+	}{
+		{"https://example.com/sitemap.xml", "https://example.com/sitemap.xml"},
+		// The protocol and the name of the host are in lower case.
+		{"HTTPS://example.com/sitemap.xml", "https://example.com/sitemap.xml"},
+		{"https://Example.COM/sitemap.xml", "https://example.com/sitemap.xml"},
+		// The name of the host is in ASCII.
+		{"https://bücher.example/sitemap.xml", "https://xn--bcher-kva.example/sitemap.xml"},
+		{"https://BÜCHER.example/sitemap.xml", "https://xn--bcher-kva.example/sitemap.xml"},
+		{"https://XN--BCHER-KVA.example/sitemap.xml", "https://xn--bcher-kva.example/sitemap.xml"},
+		// The default port of the protocol is left out, another port is not.
+		{"https://example.com:443/sitemap.xml", "https://example.com/sitemap.xml"},
+		{"http://example.com:80/sitemap.xml", "http://example.com/sitemap.xml"},
+		{"https://example.com:/sitemap.xml", "https://example.com/sitemap.xml"},
+		{"https://example.com:80/sitemap.xml", "https://example.com:80/sitemap.xml"},
+		{"http://example.com:443/sitemap.xml", "http://example.com:443/sitemap.xml"},
+		{"https://Example.com:8443/sitemap.xml", "https://example.com:8443/sitemap.xml"},
+		{"https://example.com:4430/sitemap.xml", "https://example.com:4430/sitemap.xml"},
+		// The fragment is left out.
+		{"https://example.com/sitemap.xml#top", "https://example.com/sitemap.xml"},
+		{"https://example.com/sitemap.xml?a=1#top", "https://example.com/sitemap.xml?a=1"},
+		{"https://example.com#top", "https://example.com"},
+		{"HTTPS://Example.com:443/sitemap.xml#top", "https://example.com/sitemap.xml"},
+		// The path and the query are as the URL has them.
+		{"https://example.com/Sitemap.xml", "https://example.com/Sitemap.xml"},
+		{"https://example.com/a%2fb.xml", "https://example.com/a%2fb.xml"},
+		{"https://example.com/a%2Fb.xml", "https://example.com/a%2Fb.xml"},
+		{"https://example.com/sitemap.xml?", "https://example.com/sitemap.xml?"},
+		{"https://example.com/sitemap.xml?A=B", "https://example.com/sitemap.xml?A=B"},
+		{"https://example.com/a//b.xml", "https://example.com/a//b.xml"},
+		{"https://example.com/münchen.xml", "https://example.com/münchen.xml"},
+		{"https://Example.com", "https://example.com"},
+		{"https://Example.com/", "https://example.com/"},
+		{"https://Example.com?a=/b", "https://example.com?a=/b"},
+		{"https://Example.com:443?a=1", "https://example.com?a=1"},
+		// A name that has no form in ASCII is as the URL has it.
+		{"HTTPS://BÜCHER_x.example:443/sitemap.xml#top", "https://BÜCHER_x.example/sitemap.xml"},
+		// A host name that ends with a dot is another name.
+		{"https://example.com./sitemap.xml", "https://example.com./sitemap.xml"},
+		// An IP address in brackets is as the URL has it, but for the default port.
+		{"http://[::1]/sitemap.xml", "http://[::1]/sitemap.xml"},
+		{"http://[::1]:80/sitemap.xml", "http://[::1]/sitemap.xml"},
+		{"http://[::1]:8080/sitemap.xml", "http://[::1]:8080/sitemap.xml"},
+		{"http://[2001:DB8::80]/sitemap.xml", "http://[2001:DB8::80]/sitemap.xml"},
+		{"http://[fe80::1%25En0]:80/sitemap.xml", "http://[fe80::1%En0]/sitemap.xml"},
+		{"http://192.0.2.1:80/sitemap.xml", "http://192.0.2.1/sitemap.xml"},
+		// The user information is kept.
+		{"https://User:Pass@Example.com/sitemap.xml", "https://User:Pass@example.com/sitemap.xml"},
+		{"https://user@example.com:443/sitemap.xml", "https://user@example.com/sitemap.xml"},
+		// A URL of another protocol has no default port.
+		{"ftp://Example.com:21/sitemap.xml", "ftp://example.com:21/sitemap.xml"},
+		{"//Example.com/sitemap.xml", "://example.com/sitemap.xml"},
+		{"ftp://[::1]:/sitemap.xml", "ftp://[::1]:/sitemap.xml"},
+		// A URL that cannot be parsed, or that names no host, is its own key.
+		{"https://exa mple.com/sitemap.xml", "https://exa mple.com/sitemap.xml"},
+		{"https://Example.com/%zz", "https://Example.com/%zz"},
+		{"/Sitemap.xml#top", "/Sitemap.xml#top"},
+		{"HTTPS:///sitemap.xml#top", "HTTPS:///sitemap.xml#top"},
+		{"mailto:User@Example.com", "mailto:User@Example.com"},
+		{"HTTP://Example::/sitemap.xml#top", "HTTP://Example::/sitemap.xml#top"},
+		// So is one whose host has a colon in its name, which neturl.Parse lets pass where
+		// the protocol is not one it knows.
+		{"FTP://Example::#top", "FTP://Example::#top"},
+		{"//:Example:80#top", "//:Example:80#top"},
+		{"FTP://Example.com:/sitemap.xml", "ftp://example.com/sitemap.xml"},
+		{"", ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.rawURL, func(t *testing.T) {
+			mustEqual(t, "key", requestKey(test.rawURL), test.want)
+			// The key of a key is the key itself.
+			mustEqual(t, "key of the key", requestKey(test.want), test.want)
+		})
+	}
+}
+
+// TestS_Parse_SitemapListedInSeveralSpellings verifies that a sitemap is fetched once when the
+// documents of a call list it more than once and spell its URL differently, in ways that make
+// no difference to the request: the letter case of the protocol and of the host, the default
+// port, and a fragment. A URL that differs in its path or its query is another sitemap.
+func TestS_Parse_SitemapListedInSeveralSpellings(t *testing.T) {
+	// newClient returns a client that answers every request with a sitemap of one page on the
+	// host of the request, and counts the requests it was sent.
+	newClient := func() (*http.Client, *atomic.Int64) {
+		requests := &atomic.Int64{}
+		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			requests.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader(`<urlset><url><loc>http://` + req.URL.Host + `/page</loc></url></urlset>`)),
+				Request:    req,
+			}, nil
+		})}, requests
+	}
+
+	tests := []struct {
+		name      string
+		locations []string
+		requests  int64
+	}{
+		{"one spelling", []string{"http://example.com/a.xml", "http://example.com/a.xml"}, 1},
+		{"letter case of the host", []string{"http://example.com/a.xml", "http://Example.COM/a.xml"}, 1},
+		{"letter case of the protocol", []string{"http://example.com/a.xml", "HTTP://example.com/a.xml"}, 1},
+		{"default port", []string{"http://example.com/a.xml", "http://example.com:80/a.xml"}, 1},
+		{"fragment", []string{"http://example.com/a.xml", "http://example.com/a.xml#top"}, 1},
+		{"all of them", []string{"http://example.com/a.xml", "HTTP://EXAMPLE.com:80/a.xml#top", "http://Example.com/a.xml#end"}, 1},
+		{"none as the request has it", []string{"http://EXAMPLE.com:80/a.xml", "HTTP://Example.com/a.xml#top", "http://example.com/a.xml"}, 1},
+		{"another port", []string{"http://example.com/a.xml", "http://example.com:8080/a.xml"}, 2},
+		{"letter case of the path", []string{"http://example.com/a.xml", "http://example.com/A.xml"}, 2},
+		{"empty query", []string{"http://example.com/a.xml", "http://example.com/a.xml?"}, 2},
+		{"another host", []string{"http://example.com/a.xml", "http://www.example.com/a.xml"}, 2},
+	}
+
+	documents := []struct {
+		name    string
+		url     string
+		content func(locations []string) string
+	}{
+		{"sitemap index", "http://example.com/sitemap-index.xml", func(locations []string) string {
+			var b strings.Builder
+			b.WriteString(`<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`)
+			for _, location := range locations {
+				b.WriteString("<sitemap><loc>" + location + "</loc></sitemap>")
+			}
+			b.WriteString("</sitemapindex>")
+			return b.String()
+		}},
+		{"robots.txt", "http://example.com/robots.txt", func(locations []string) string {
+			return "Sitemap: " + strings.Join(locations, "\nSitemap: ") + "\n"
+		}},
+	}
+
+	for _, document := range documents {
+		for _, test := range tests {
+			for _, strict := range []bool{false, true} {
+				for _, multiThread := range []bool{false, true} {
+					name := fmt.Sprintf("%s/%s/strict=%t/multiThread=%t", document.name, test.name, strict, multiThread)
+					t.Run(name, func(t *testing.T) {
+						// Strict mode takes a sitemap on another host or port than its index
+						// for one that is not valid, and does not fetch it.
+						want := test.requests
+						if strict && document.name == "sitemap index" && (test.name == "another port" || test.name == "another host") {
+							want = 1
+						}
+
+						client, requests := newClient()
+						s := New().SetStrict(strict).SetMultiThread(multiThread).SetHTTPClient(client)
+						content := document.content(test.locations)
+						requireParse(t, s, document.url, &content)
+
+						mustEqual(t, "requests", requests.Load(), want)
+						// Every sitemap that was fetched has one page, which is returned.
+						mustEqual(t, "URLs", int64(s.GetURLCount()), want)
+						// A sitemap is listed once as well, by the URL it was first found with.
+						mustEqual(t, "sitemaps", int64(s.GetSitemapCount()), want)
+						mustEqual(t, "first sitemap", s.GetSitemaps()[0].Loc, test.locations[0])
+					})
+				}
+			}
+		}
+	}
+}

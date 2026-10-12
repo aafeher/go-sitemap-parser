@@ -191,7 +191,7 @@ s := sitemap.New().SetMaxSitemaps(1000)
 The limit is one of the call, not of a sitemap index: the sitemaps a `robots.txt` or a sitemap index lists count on all levels together.
 
 - Every sitemap the call requests counts, whether or not the request succeeds.
-- A sitemap that is listed more than once is requested, and counted, once.
+- A sitemap that is listed more than once is requested, and counted, once. That goes for a URL that is spelt another way too, where the difference is none to the request: `HTTPS://Example.com:443/sitemap.xml#top` is the sitemap at `https://example.com/sitemap.xml`. The letter case of the protocol and of the host, the default port of the protocol and a fragment make no difference; the path and the query do, so `/Sitemap.xml` and `/sitemap.xml` are two sitemaps.
 - The document passed to `Parse()` does not count.
 
 Once the limit is reached, the sitemaps that are left are not fetched, and a `*ParseError` is recorded in `GetErrors()`, once for the call. It names the URL passed to `Parse()`:
@@ -980,7 +980,7 @@ Each `Sitemap` struct contains the following fields:
 
 What is among them, and what is not:
 - A sitemap is listed **whether or not it was fetched**: one that the [follow rules](#follow-rules) leave out, one that could not be fetched, and one that a limit of the call kept from being fetched (see [Max depth](#max-depth), [Max sitemaps](#max-sitemaps) and [Max URLs](#max-urls)) are all listed. What a sitemap index lists is known only if the index itself was fetched.
-- A sitemap is listed **once**, however many documents list it.
+- A sitemap is listed **once**, however many documents list it. A URL that differs from another only in what makes no difference to the request (the letter case of the protocol and of the host, the default port, a fragment, see [Max sitemaps](#max-sitemaps)) is the same sitemap, and is listed by the URL it was first found with.
 - A location that is rejected (an empty one, one that is no HTTP or HTTPS URL, one that strict mode does not accept) is reported via [`GetErrors()`](#geterrors) and not listed.
 - The document passed to `Parse()` is not listed, unless a document of the call lists it.
 
