@@ -15,7 +15,9 @@ import (
 // Parse takes the document for a robots.txt when the path of the URL ends in a
 // segment that reads "robots.txt". The letter case makes no difference, and
 // neither does a query or a fragment that follows the path. Every other URL
-// is taken for that of a sitemap.
+// is taken for that of a sitemap, unless it is redirected to a URL like that:
+// the URL the document is served from tells as well as the one that is asked
+// for.
 //
 // Of a robots.txt only the "Sitemap:" lines are read. The name of the
 // directive is not case-sensitive, a line may be indented, and a "#" begins a
@@ -29,6 +31,12 @@ import (
 func main() {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The robots.txt is at another URL as well, which redirects to it.
+		if r.URL.Path == "/crawlers" {
+			http.Redirect(w, r, "/robots.txt", http.StatusMovedPermanently)
+			return
+		}
+
 		// The server does not tell the letter cases of a path apart.
 		if strings.EqualFold(r.URL.Path, "/robots.txt") {
 			fmt.Fprintf(w, `# robots.txt of the example
@@ -55,6 +63,10 @@ Sitemap: %[1]s/sitemap-pages.xml
 		fmt.Printf("=== %s ===\n", path)
 		parse(sitemap.New(), server.URL, path)
 	}
+
+	// This one is not, but the URL it is redirected to is.
+	fmt.Println("=== /crawlers, redirected to /robots.txt ===")
+	parse(sitemap.New(), server.URL, "/crawlers")
 
 	fmt.Println("=== /robots.txt, strict mode ===")
 	parse(sitemap.New().SetStrict(true), server.URL, "/robots.txt")

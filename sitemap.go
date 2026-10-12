@@ -1074,8 +1074,11 @@ func (s *S) GetStrict() bool {
 // fetches URLs from the sitemap files mentioned in the robots.txt. A URL is
 // that of a robots.txt when the last segment of its path is "robots.txt", in
 // whichever letter case it is written and whether or not a query or a fragment
-// follows it: "https://example.com/robots.txt?v=2" is one.
-// If the URL is not that of a robots.txt, the content is checked
+// follows it: "https://example.com/robots.txt?v=2" is one. The URL the document
+// was served from counts as well as the given one: a URL of another name that
+// is redirected to a robots.txt is read as a robots.txt, and so is a
+// robots.txt that is redirected to a URL of another name.
+// If neither URL is that of a robots.txt, the content is checked
 // and unzipped if necessary, then parsed and fetched.
 // The content of a document is not kept once the document is parsed.
 //
@@ -1208,7 +1211,9 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 		return s, err
 	}
 
-	if namesRobotsTXT(s.mainURL) {
+	// A document is a robots.txt by the URL it was asked for as, or by the one it was served
+	// from: a request that is redirected to a robots.txt is answered with one.
+	if namesRobotsTXT(s.mainURL) || namesRobotsTXT(servedFrom) {
 		s.mu.Lock()
 		s.parseRobotsTXT(content)
 		locations := s.robotsTXTSitemapLocations(servedFrom)

@@ -11618,21 +11618,30 @@ func TestS_Parse_RobotsTXT_Recognised(t *testing.T) {
 	}
 }
 
-// TestS_Parse_RobotsTXT_RecognisedByTheURLPassed verifies that it is the URL passed to
-// Parse that tells whether the document is a robots.txt, not the URL a redirect leads to.
+// TestS_Parse_RobotsTXT_RecognisedByEitherURL verifies that the document is a robots.txt
+// when the URL passed to Parse is that of one, and when the URL a redirect leads to is:
+// either of them tells. A document that neither of them names a robots.txt is none,
+// whatever the URLs between them are and whatever it holds, and a document that is passed
+// in is told by its URL alone.
 // The sitemaps a robots.txt names are resolved against the URL it was served from.
-func TestS_Parse_RobotsTXT_RecognisedByTheURLPassed(t *testing.T) {
-	const robotsTXT = "Sitemap: /sitemap.xml\n"
+func TestS_Parse_RobotsTXT_RecognisedByEitherURL(t *testing.T) {
+	const robotsTXT = "Sitemap: sitemap.xml\n"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/robots.txt":
 			http.Redirect(w, r, "/moved/rules", http.StatusMovedPermanently)
-		case "/rules":
-			http.Redirect(w, r, "/moved/robots.txt", http.StatusMovedPermanently)
-		case "/moved/rules", "/moved/robots.txt":
+		case "/rules", "/Rules":
+			http.Redirect(w, r, "/moved/ROBOTS.TXT?v=2#top", http.StatusMovedPermanently)
+		case "/twice":
+			http.Redirect(w, r, "/rules", http.StatusFound)
+		case "/through/robots.txt":
+			http.Redirect(w, r, "/moved/rules", http.StatusFound)
+		case "/through":
+			http.Redirect(w, r, "/through/robots.txt", http.StatusFound)
+		case "/moved/rules", "/moved/ROBOTS.TXT":
 			_, _ = fmt.Fprint(w, robotsTXT)
-		case "/sitemap.xml":
+		case "/moved/sitemap.xml":
 			_, _ = fmt.Fprintf(w, `<urlset><url><loc>http://%s/page</loc></url></urlset>`, r.Host)
 		default:
 			http.NotFound(w, r)
@@ -11648,16 +11657,69 @@ func TestS_Parse_RobotsTXT_RecognisedByTheURLPassed(t *testing.T) {
 		assertStringSlice(t, "errors", errorsOf(s), []string{})
 	})
 
-	t.Run("a URL of another name that redirects to a robots.txt", func(t *testing.T) {
+	for name, path := range map[string]string{
+		"a URL of another name that redirects to a robots.txt":           "/rules",
+		"a URL that reaches a robots.txt through another redirect":       "/twice",
+		"a URL of another name that redirects to one, strict mode":       "/Rules",
+		"a URL of another name with a query, redirected to a robots.txt": "/rules?from=/sitemap.xml",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := New().SetMultiThread(false).SetStrict(path == "/Rules")
+			requireParse(t, s, server.URL+path, nil)
+
+			if path == "/Rules" {
+				// Strict mode has no relative URL for a sitemap of a robots.txt, which
+				// tells that the document is read as one in that mode too.
+				assertStringSlice(t, "URLs", locsOf(s), []string{})
+				assertStringSlice(t, "errors", errorsOf(s), []string{
+					`validate "sitemap.xml": strict mode: unsupported scheme ""`,
+				})
+				return
+			}
+			assertStringSlice(t, "URLs", locsOf(s), []string{server.URL + "/page"})
+			assertStringSlice(t, "sitemaps", listedLocs(s), []string{server.URL + "/moved/sitemap.xml"})
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+		})
+	}
+
+	// The URLs a request passes on its way do not tell: only the one it began at and the
+	// one it ended at.
+	t.Run("a robots.txt between two URLs of another name", func(t *testing.T) {
 		s := New().SetMultiThread(false)
-		_, err := s.Parse(server.URL+"/rules", nil)
+		_, err := s.Parse(server.URL+"/through", nil)
 
 		var parseErr *ParseError
 		if !errors.As(err, &parseErr) {
 			t.Fatalf("expected a *ParseError, got %T: %v", err, err)
 		}
-		mustEqual(t, "URL of the error", parseErr.URL, server.URL+"/moved/robots.txt")
+		mustEqual(t, "URL of the error", parseErr.URL, server.URL+"/moved/rules")
 		mustEqual(t, "error", parseErr.Err.Error(), `unrecognized sitemap format (root element: "")`)
+		assertStringSlice(t, "URLs", locsOf(s), []string{})
+	})
+
+	t.Run("a URL of another name that is not redirected", func(t *testing.T) {
+		s := New().SetMultiThread(false)
+		_, err := s.Parse(server.URL+"/moved/rules", nil)
+
+		var parseErr *ParseError
+		if !errors.As(err, &parseErr) {
+			t.Fatalf("expected a *ParseError, got %T: %v", err, err)
+		}
+		mustEqual(t, "URL of the error", parseErr.URL, server.URL+"/moved/rules")
+		assertStringSlice(t, "URLs", locsOf(s), []string{})
+	})
+
+	// A document that is passed in is not fetched, so there is no redirect to tell.
+	t.Run("content passed in for a URL that redirects to a robots.txt", func(t *testing.T) {
+		content := robotsTXT
+		s := New().SetMultiThread(false)
+		_, err := s.Parse(server.URL+"/rules", &content)
+
+		var parseErr *ParseError
+		if !errors.As(err, &parseErr) {
+			t.Fatalf("expected a *ParseError, got %T: %v", err, err)
+		}
+		mustEqual(t, "URL of the error", parseErr.URL, server.URL+"/rules")
 		assertStringSlice(t, "URLs", locsOf(s), []string{})
 	})
 }
