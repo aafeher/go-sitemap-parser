@@ -846,6 +846,81 @@ func FuzzFeedNamespaces(f *testing.F) {
 	})
 }
 
+// FuzzEntryNamespaces checks that an element of another namespace changes
+// nothing about what an entry of a sitemap or of a sitemap index is read as: a
+// <url> yields the page, the values and the errors, and a <sitemap> the
+// sitemap, the date and the errors that they yield without such an element,
+// in both modes, whatever the element holds, whether it stands before or after
+// the element of the entry that has its name, whether or not the entry has
+// that element at all, and whether the entry is in the namespace of the
+// protocol or in none.
+func FuzzEntryNamespaces(f *testing.F) {
+	for places := range uint8(16) {
+		f.Add("https://example.com/a", "2024-01-15", "daily", "0.5", "https://example.com/other", "2023-02-03", places)
+		f.Add("https://example.com/a", "2024-01-15T10:30:00Z", "", "", "", "", places)
+		f.Add("/a b", "yesterday", "sometimes", "2", "ftp://example.com/other", "high", places)
+	}
+	f.Add("", "", "", "", "https://example.com/other", "never", uint8(0))
+	f.Add(" https://example.com/\u00e9 ", " 2024-01 ", " Daily ", " 1.0 ", "https://example.com/<other>", "\"&'", uint8(3))
+
+	f.Fuzz(func(t *testing.T, loc, lastMod, changeFreq, priority, otherLoc, other string, places uint8) {
+		loc, lastMod, changeFreq, priority = escaped(loc), escaped(lastMod), escaped(changeFreq), escaped(priority)
+		otherLoc, other = escaped(otherLoc), escaped(other)
+
+		ownLoc := `<loc>` + loc + `</loc>`
+		ownValues := `<lastmod>` + lastMod + `</lastmod><changefreq>` + changeFreq + `</changefreq><priority>` + priority + `</priority>`
+		otherLocs := `<x:loc>` + otherLoc + `</x:loc>`
+		otherValues := `<x:lastmod>` + other + `</x:lastmod><x:changefreq>` + other + `</x:changefreq><x:priority>` + other + `</x:priority>`
+		namespace := ` xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"`
+		if places&16 != 0 {
+			// An element of no namespace is one of another namespace only for an entry
+			// that is in one.
+			otherLocs += `<loc xmlns="">` + otherLoc + `</loc>`
+			otherValues += `<lastmod xmlns="">` + other + `</lastmod><priority xmlns="">` + other + `</priority>`
+		} else if places&32 != 0 {
+			namespace = ""
+		}
+		if places&4 != 0 {
+			ownLoc = ""
+		}
+		if places&8 != 0 {
+			ownValues = ""
+		}
+		mixedLocs, mixedValues := ownLoc+otherLocs, ownValues+otherValues
+		if places&1 != 0 {
+			mixedLocs = otherLocs + ownLoc
+		}
+		if places&2 != 0 {
+			mixedValues = otherValues + ownValues
+		}
+		plain, mixed := ownLoc+ownValues, mixedLocs+mixedValues
+
+		documents := []struct {
+			name, document string
+			read           func(s *S) []string
+		}{
+			{name: "sitemap", document: `<urlset` + namespace + ` xmlns:x="urn:example:x"><url>%s</url></urlset>`, read: valuedLocs},
+			{name: "sitemap index", document: `<sitemapindex` + namespace + ` xmlns:x="urn:example:x"><sitemap>%s</sitemap></sitemapindex>`, read: datedSitemaps},
+		}
+		for _, document := range documents {
+			for _, strict := range []bool{false, true} {
+				read := func(elements string) (entries, errs []string) {
+					s := New().SetStrict(strict)
+					followNone(s)
+					s.parse(fuzzBaseURL, strings.Replace(document.document, "%s", elements, 1))
+					return document.read(s), errorsOf(s)
+				}
+				entries, errs := read(plain)
+				mixedEntries, mixedErrs := read(mixed)
+				if !slicesEqual(mixedEntries, entries) || !slicesEqual(mixedErrs, errs) {
+					t.Fatalf("%s, strict=%v: %q is read as %q with the errors %q, and %q as %q with the errors %q",
+						document.name, strict, plain, entries, errs, mixed, mixedEntries, mixedErrs)
+				}
+			}
+		}
+	})
+}
+
 // fuzzUnzipLimit is the decompressed-size limit FuzzUnzip uses to check that
 // unzip enforces its cap. It is small enough that mutated seeds regularly land
 // on both sides of it.

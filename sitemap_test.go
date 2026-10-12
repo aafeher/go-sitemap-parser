@@ -9098,8 +9098,13 @@ func TestS_parseURLSet_Entries(t *testing.T) {
 		},
 		{
 			name: "url of another namespace",
-			data: `<urlset xmlns:x="urn:x"><x:url><loc>` + page + `1</loc></x:url></urlset>`,
+			data: `<urlset xmlns:x="urn:x"><x:url><x:loc>` + page + `1</x:loc></x:url></urlset>`,
 			want: []string{page + "1"},
+		},
+		{
+			name: "url of another namespace than its loc",
+			data: `<urlset xmlns:x="urn:x"><x:url><loc>` + page + `1</loc></x:url></urlset>`,
+			want: []string{""},
 		},
 		{
 			name: "what is not an element is passed over",
@@ -17218,4 +17223,222 @@ func TestFirstDate(t *testing.T) {
 		})
 	}
 	mustEqual(t, "one element", firstDate(first).name, "<first>")
+}
+
+// valuedLocs returns the locations of the URLs s has collected, each followed
+// by the date, the change frequency and the priority of the URL, in a slice
+// that is never nil.
+func valuedLocs(s *S) []string {
+	list := []string{}
+	for _, u := range s.GetURLs() {
+		changeFreq, priority := "-", "-"
+		if u.ChangeFreq != nil {
+			changeFreq = string(*u.ChangeFreq)
+		}
+		if u.Priority != nil {
+			priority = fmt.Sprint(*u.Priority)
+		}
+		list = append(list, strings.Join([]string{u.Loc, dateText(u.LastMod), changeFreq, priority}, " "))
+	}
+	return list
+}
+
+// TestS_Parse_URLSet_ElementsOfOtherNamespaces verifies that the elements of
+// a <url> are told from those of other formats by their namespace: a <loc>, a
+// <lastmod>, a <changefreq> and a <priority> are read only if they are in the
+// namespace of the <url> they stand in, whichever that is, and an element of
+// that name of another namespace changes nothing, wherever it stands and
+// whatever it holds. The elements of the extensions are told by their own
+// namespace, as they were.
+func TestS_Parse_URLSet_ElementsOfOtherNamespaces(t *testing.T) {
+	const (
+		protocol = `xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"`
+		others   = `xmlns:x="urn:example:x" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"`
+		own      = `<loc>https://example.com/a</loc><lastmod>2024-01-15</lastmod><changefreq>daily</changefreq><priority>0.5</priority>`
+		read     = "https://example.com/a 2024-01-15T00:00:00Z daily 0.5"
+		missing  = `validate "https://example.com/sitemap.xml": <loc> of an entry is empty or missing`
+	)
+
+	tests := []struct {
+		name   string
+		urlset string
+		want   []string
+		errors []string
+	}{
+		{
+			name:   "after those of the url",
+			urlset: `<urlset ` + protocol + ` ` + others + `><url>` + own + `<x:loc>https://example.com/other</x:loc><x:lastmod>2023-02-03</x:lastmod><x:changefreq>never</x:changefreq><x:priority>0.9</x:priority></url></urlset>`,
+			want:   []string{read},
+		},
+		{
+			name:   "before those of the url",
+			urlset: `<urlset ` + protocol + ` ` + others + `><url><x:loc>https://example.com/other</x:loc><x:lastmod>2023-02-03</x:lastmod><x:changefreq>never</x:changefreq><x:priority>0.9</x:priority>` + own + `</url></urlset>`,
+			want:   []string{read},
+		},
+		{
+			name:   "empty",
+			urlset: `<urlset ` + protocol + ` ` + others + `><url>` + own + `<x:loc/><x:lastmod/><x:changefreq/><x:priority/></url></urlset>`,
+			want:   []string{read},
+		},
+		{
+			name:   "not valid",
+			urlset: `<urlset ` + protocol + ` ` + others + `><url>` + own + `<x:loc>ftp://example.com/</x:loc><x:lastmod>yesterday</x:lastmod><x:changefreq>sometimes</x:changefreq><x:priority>high</x:priority></url></urlset>`,
+			want:   []string{read},
+		},
+		{
+			name:   "of no namespace",
+			urlset: `<urlset ` + protocol + ` ` + others + `><url>` + own + `<loc xmlns="">https://example.com/other</loc><lastmod xmlns="">2023-02-03</lastmod><changefreq xmlns="">never</changefreq><priority xmlns="">0.9</priority></url></urlset>`,
+			want:   []string{read},
+		},
+		{
+			name:   "loc of an image that is not within an image",
+			urlset: `<urlset ` + protocol + ` ` + others + `><url><loc>https://example.com/a</loc><image:loc>https://example.com/a.png</image:loc></url></urlset>`,
+			want:   []string{"https://example.com/a - - -"},
+		},
+		{
+			name:   "url without a namespace",
+			urlset: `<urlset ` + others + `><url>` + own + `<x:loc>https://example.com/other</x:loc><x:lastmod>yesterday</x:lastmod><x:changefreq>never</x:changefreq><x:priority>high</x:priority></url></urlset>`,
+			want:   []string{read},
+		},
+		{
+			name:   "url with a prefix",
+			urlset: `<s:urlset xmlns:s="http://www.sitemaps.org/schemas/sitemap/0.9" ` + others + `><s:url><s:loc>https://example.com/a</s:loc><loc>https://example.com/other</loc><s:lastmod>2024-01-15</s:lastmod><lastmod>yesterday</lastmod><s:changefreq>daily</s:changefreq><changefreq>never</changefreq><s:priority>0.5</s:priority><priority>high</priority></s:url></s:urlset>`,
+			want:   []string{read},
+		},
+		{
+			name:   "url of another namespace than the urlset",
+			urlset: `<urlset ` + protocol + ` ` + others + `><x:url><x:loc>https://example.com/a</x:loc><loc>https://example.com/other</loc><x:lastmod>2024-01-15</x:lastmod><x:changefreq>daily</x:changefreq><x:priority>0.5</x:priority><priority>high</priority></x:url></urlset>`,
+			want:   []string{read},
+		},
+		{
+			name:   "none of the url",
+			urlset: `<urlset ` + protocol + ` ` + others + `><url><x:loc>https://example.com/other</x:loc><x:lastmod>2023-02-03</x:lastmod></url></urlset>`,
+			want:   []string{},
+			errors: []string{missing},
+		},
+		{
+			name:   "loc of the url only",
+			urlset: `<urlset ` + protocol + ` ` + others + `><url><loc>https://example.com/a</loc><x:lastmod>2023-02-03</x:lastmod><x:changefreq>never</x:changefreq><x:priority>0.9</x:priority></url></urlset>`,
+			want:   []string{"https://example.com/a - - -"},
+		},
+		{
+			name:   "within an element of another namespace",
+			urlset: `<urlset ` + protocol + ` ` + others + `><url>` + own + `<x:more><loc>https://example.com/other</loc><priority>0.9</priority></x:more></url></urlset>`,
+			want:   []string{read},
+		},
+	}
+
+	for _, test := range tests {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", test.name, strict), func(t *testing.T) {
+				s := New().SetStrict(strict)
+				requireParse(t, s, "https://example.com/sitemap.xml", &test.urlset)
+
+				assertStringSlice(t, "URLs", valuedLocs(s), test.want)
+				assertStringSlice(t, "errors", errorsOf(s), append([]string{}, test.errors...))
+			})
+		}
+	}
+
+	// The elements of the extensions are read next to those of other formats,
+	// whichever namespace the <url> is in.
+	for name, urlset := range map[string]string{
+		"url of the protocol":       `<urlset ` + protocol + ` ` + others + `><url><loc>https://example.com/a</loc>%s</url></urlset>`,
+		"url without a namespace":   `<urlset ` + others + `><url><loc>https://example.com/a</loc>%s</url></urlset>`,
+		"url of another namespace":  `<x:urlset ` + others + `><x:url><x:loc>https://example.com/a</x:loc>%s</x:url></x:urlset>`,
+		"url in that of the images": `<urlset xmlns="http://www.google.com/schemas/sitemap-image/1.1" ` + others + `><url><loc>https://example.com/a</loc>%s</url></urlset>`,
+	} {
+		t.Run("extensions, "+name, func(t *testing.T) {
+			content := fmt.Sprintf(urlset, `<x:image><x:loc>https://example.com/other.png</x:loc></x:image>`+
+				`<image:image><image:loc>https://example.com/a.png</image:loc></image:image>`+
+				`<x:link rel="alternate" hreflang="fr" href="https://example.com/other"/>`+
+				`<xhtml:link rel="alternate" hreflang="de" href="https://example.com/de"/>`+
+				`<image:image><image:loc>https://example.com/b.png</image:loc></image:image>`)
+			s := New()
+			requireParse(t, s, "https://example.com/sitemap.xml", &content)
+
+			assertStringSlice(t, "URLs", valuedLocs(s), []string{"https://example.com/a - - -"})
+			assertStringSlice(t, "errors", errorsOf(s), []string{})
+			assertStringSlice(t, "URLs of the extensions", extensionURLsOf(s.GetURLs()[0]),
+				[]string{"https://example.com/a.png", "", "https://example.com/b.png", "", "https://example.com/de"})
+		})
+	}
+}
+
+// TestS_Parse_SitemapIndex_ElementsOfOtherNamespaces verifies that the
+// elements of a <sitemap> of a sitemap index are told from those of other
+// formats by their namespace, like those of a <url>.
+func TestS_Parse_SitemapIndex_ElementsOfOtherNamespaces(t *testing.T) {
+	const (
+		protocol = `xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"`
+		own      = `<loc>https://example.com/a.xml</loc><lastmod>2024-01-15</lastmod>`
+		read     = "https://example.com/a.xml 2024-01-15T00:00:00Z"
+	)
+
+	tests := []struct {
+		name   string
+		index  string
+		want   []string
+		errors []string
+	}{
+		{
+			name:  "after those of the sitemap",
+			index: `<sitemapindex ` + protocol + ` xmlns:x="urn:example:x"><sitemap>` + own + `<x:loc>https://example.com/other.xml</x:loc><x:lastmod>2023-02-03</x:lastmod></sitemap></sitemapindex>`,
+			want:  []string{read},
+		},
+		{
+			name:  "before those of the sitemap",
+			index: `<sitemapindex ` + protocol + ` xmlns:x="urn:example:x"><sitemap><x:loc>https://example.com/other.xml</x:loc><x:lastmod>2023-02-03</x:lastmod>` + own + `</sitemap></sitemapindex>`,
+			want:  []string{read},
+		},
+		{
+			name:  "empty",
+			index: `<sitemapindex ` + protocol + ` xmlns:x="urn:example:x"><sitemap>` + own + `<x:loc/><x:lastmod/></sitemap></sitemapindex>`,
+			want:  []string{read},
+		},
+		{
+			name:  "not valid",
+			index: `<sitemapindex ` + protocol + ` xmlns:x="urn:example:x"><sitemap>` + own + `<x:loc>ftp://example.com/</x:loc><x:lastmod>yesterday</x:lastmod></sitemap></sitemapindex>`,
+			want:  []string{read},
+		},
+		{
+			name:  "of no namespace",
+			index: `<sitemapindex ` + protocol + `><sitemap>` + own + `<loc xmlns="">https://example.com/other.xml</loc><lastmod xmlns="">yesterday</lastmod></sitemap></sitemapindex>`,
+			want:  []string{read},
+		},
+		{
+			name:  "sitemap without a namespace",
+			index: `<sitemapindex xmlns:x="urn:example:x"><sitemap>` + own + `<x:loc>https://example.com/other.xml</x:loc><x:lastmod>yesterday</x:lastmod></sitemap></sitemapindex>`,
+			want:  []string{read},
+		},
+		{
+			name:  "sitemap with a prefix",
+			index: `<s:sitemapindex xmlns:s="http://www.sitemaps.org/schemas/sitemap/0.9"><s:sitemap><s:loc>https://example.com/a.xml</s:loc><loc>https://example.com/other.xml</loc><s:lastmod>2024-01-15</s:lastmod><lastmod>yesterday</lastmod></s:sitemap></s:sitemapindex>`,
+			want:  []string{read},
+		},
+		{
+			name:   "none of the sitemap",
+			index:  `<sitemapindex ` + protocol + ` xmlns:x="urn:example:x"><sitemap><x:loc>https://example.com/other.xml</x:loc><x:lastmod>2023-02-03</x:lastmod></sitemap></sitemapindex>`,
+			want:   []string{},
+			errors: []string{`validate "https://example.com/sitemap.xml": <loc> of an entry is empty or missing`},
+		},
+		{
+			name:  "loc of the sitemap only",
+			index: `<sitemapindex ` + protocol + ` xmlns:x="urn:example:x"><sitemap><loc>https://example.com/a.xml</loc><x:lastmod>2023-02-03</x:lastmod></sitemap></sitemapindex>`,
+			want:  []string{"https://example.com/a.xml -"},
+		},
+	}
+
+	for _, test := range tests {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", test.name, strict), func(t *testing.T) {
+				s := New().SetStrict(strict)
+				followNone(s)
+				requireParse(t, s, "https://example.com/sitemap.xml", &test.index)
+
+				assertStringSlice(t, "sitemaps", datedSitemaps(s), test.want)
+				assertStringSlice(t, "errors", errorsOf(s), append([]string{}, test.errors...))
+			})
+		}
+	}
 }

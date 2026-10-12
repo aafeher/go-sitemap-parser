@@ -115,11 +115,16 @@ type (
 	// sitemapIndex is a structure of <sitemapindex>. The <lastmod> of an entry is read as
 	// text, so that one that cannot be parsed costs only itself, see urlEntry.
 	sitemapIndex struct {
-		XMLName xml.Name `xml:"sitemapindex"`
-		Sitemap []struct {
-			Loc     string  `xml:"loc"`
-			LastMod *string `xml:"lastmod"`
-		} `xml:"sitemap"`
+		XMLName xml.Name       `xml:"sitemapindex"`
+		Sitemap []sitemapEntry `xml:"sitemap"`
+	}
+
+	// sitemapEntry is a <sitemap> of a sitemap index. It is read by its UnmarshalXML method,
+	// which takes the elements of the protocol and leaves those of other formats, see
+	// decodeOwnChildren.
+	sitemapEntry struct {
+		Loc     string
+		LastMod *string
 	}
 
 	// urlEntry is the form in which a <url> element is decoded: a URL whose elements holding a
@@ -127,6 +132,10 @@ type (
 	// value that cannot be parsed would fail the whole document; read as text, it costs only
 	// itself. The fields below take these elements over from the fields of the embedded
 	// structure that name the same element, and convert fills those in from the text.
+	//
+	// It is read by its UnmarshalXML method, which tells the elements of the protocol from
+	// those of other formats by their namespace, see decodeOwnChildren. The names of the
+	// elements below are the ones encoding/xml would read the fields from.
 	urlEntry struct {
 		URL
 		LastModText  *string      `xml:"lastmod"`
@@ -2927,14 +2936,15 @@ func (v invalidValue) err() error {
 }
 
 // decodeOwnChildren reads the children of the element start, which d has just read the start
-// of, up to the end of the element. It is what the UnmarshalXML method of an item of a feed
-// reads the item with.
+// of, up to the end of the element. It is what the UnmarshalXML method of an entry of a
+// document reads the entry with: an item of a feed, a <url> of a sitemap, a <sitemap> of a
+// sitemap index.
 //
 // A child is decoded into what target returns for it, a pointer, and skipped together with
 // what it contains if target returns nil. target is given the local name of a child that is
 // in the namespace of start, and an empty one for every other child, together with the full
-// name of the child: an element of the feed is told by its local name, an element of another
-// format by its namespace and its local name together.
+// name of the child: an element of the format of the entry is told by its local name, an
+// element of another format by its namespace and its local name together.
 //
 // A feed holds elements of other formats beside its own, which are told apart by their
 // namespace alone: an RSS item may have an <atom:link> next to its <link>. encoding/xml reads
@@ -2947,6 +2957,10 @@ func (v invalidValue) err() error {
 // not the one the format prescribes: none for RSS, that of Atom for Atom. A feed that puts
 // its elements into another namespace, or that has a prefix, is read as it was before the
 // namespaces were looked at.
+//
+// The same goes for a <url> and for a <sitemap>, whose own elements are those in the
+// namespace the entry is in, whether that is the one of the protocol or not. A <url> holds
+// the elements of the extensions beside them, and may hold those of any other format.
 func decodeOwnChildren(d *xml.Decoder, start xml.StartElement, target func(own string, name xml.Name) any) error {
 	for {
 		token, err := d.Token()
@@ -2972,6 +2986,58 @@ func decodeOwnChildren(d *xml.Decoder, start xml.StartElement, target func(own s
 			return nil
 		}
 	}
+}
+
+// UnmarshalXML reads the <loc> and the <lastmod> of the entry, see decodeOwnChildren. The last
+// element of a name counts if the entry has more than one.
+func (entry *sitemapEntry) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	return decodeOwnChildren(d, start, func(own string, _ xml.Name) any {
+		switch own {
+		case "loc":
+			return &entry.Loc
+		case "lastmod":
+			return &entry.LastMod
+		}
+		return nil
+	})
+}
+
+// The names of the elements of the extensions that are read from a <url>.
+var (
+	imageElement    = xml.Name{Space: "http://www.google.com/schemas/sitemap-image/1.1", Local: "image"}
+	newsElement     = xml.Name{Space: "http://www.google.com/schemas/sitemap-news/0.9", Local: "news"}
+	videoElement    = xml.Name{Space: "http://www.google.com/schemas/sitemap-video/1.1", Local: "video"}
+	hreflangElement = xml.Name{Space: "http://www.w3.org/1999/xhtml", Local: "link"}
+)
+
+// UnmarshalXML reads the elements of the <url>: those of the protocol, which are the ones in
+// the namespace of the <url>, and those of the extensions, which are told by their own
+// namespace, see decodeOwnChildren. The last element of a name counts if the <url> has more
+// than one of an element it may have one of.
+func (e *urlEntry) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	return decodeOwnChildren(d, start, func(own string, name xml.Name) any {
+		switch own {
+		case "loc":
+			return &e.Loc
+		case "lastmod":
+			return &e.LastModText
+		case "changefreq":
+			return &e.ChangeFreq
+		case "priority":
+			return &e.PriorityText
+		}
+		switch name {
+		case imageElement:
+			return &e.Images
+		case newsElement:
+			return &e.NewsEntry
+		case videoElement:
+			return &e.VideoEntries
+		case hreflangElement:
+			return &e.Hreflangs
+		}
+		return nil
+	})
 }
 
 // dublinCoreDate is the name of the <date> of Dublin Core, which a feed writes as <dc:date>.
