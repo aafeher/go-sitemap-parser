@@ -404,6 +404,39 @@ s := sitemap.New().SetHTTPClient(&http.Client{Timeout: 30 * time.Second})
 
 See [`examples/httpclient`](examples/httpclient/main.go) for a runnable example.
 
+##### Requests to internal addresses
+
+The parser requests the URLs a document lists: the sitemaps of a sitemap index and of a `robots.txt`, and whatever such a request is redirected to. A document that is not trusted can therefore direct a parser that runs within a network at what only that network reaches: a service of the machine itself, of the local network, or the metadata service of a cloud (server-side request forgery, SSRF).
+
+The host of a URL does not tell where a request goes. A name resolves to whatever address its owner gives it, and an address has several spellings: `127.0.0.1`, `localhost`, `[::ffff:127.0.0.1]` and, to many resolvers, `2130706433` are the same machine. So a pattern set with `SetFollow()` cannot keep the parser out of a network, and neither can a look at the URL. What is to be checked is the address a connection is about to be made to, which the `Control` function of the `net.Dialer` of a client is called with:
+
+```go
+dialer := &net.Dialer{
+    Control: func(_, address string, _ syscall.RawConn) error {
+        addrPort, err := netip.ParseAddrPort(address)
+        if err != nil || !isPublic(addrPort.Addr()) {
+            return fmt.Errorf("%w: %s", errNotPublic, address)
+        }
+        return nil
+    },
+}
+
+transport := http.DefaultTransport.(*http.Transport).Clone()
+transport.DialContext = dialer.DialContext
+transport.Proxy = nil
+
+s := sitemap.New().SetHTTPClient(&http.Client{
+    Timeout:   10 * time.Second,
+    Transport: transport,
+})
+```
+
+`Control` is called for every connection of the client, once the host of the URL is resolved and before the connection is made: for the URL passed to `Parse()`, for the sitemaps a document lists and for the URLs these are redirected to. A request it refuses is not sent, and is reported as a `*NetworkError` that wraps the error `Control` returned, so `errors.Is(err, errNotPublic)` tells it from a request that failed.
+
+`isPublic` and `errNotPublic` are the caller's own: which addresses are internal depends on the network the parser runs in. The transport is to use no proxy, as a client connects to its proxy and the address checked would be that of the proxy; where a proxy is used, the check is for the proxy to make.
+
+See [`examples/ssrf`](examples/ssrf/main.go) for a runnable example with a function that tells the addresses of the public internet from the others, and [SECURITY.md](SECURITY.md#network-requests) for the other means of restricting the requests of the parser.
+
 #### Strict mode
 
 By default, the parser operates in **tolerant mode**: relative URLs found in `<loc>` elements are automatically resolved against the parent sitemap URL. This handles real-world sitemaps that may not fully comply with the specification.
@@ -694,7 +727,7 @@ So when `http://example.com/sitemap.xml` redirects to `https://www.example.com/s
 
 This goes for the URL passed to `Parse()` and for every sitemap fetched on the way alike: the sitemaps of a sitemap index and those a `robots.txt` names. When the content is passed in through `urlContent`, nothing is fetched and the document is located at the URL given.
 
-Which redirects are followed is up to the HTTP client. The default one stops after 10 consecutive requests, as Go's `http.Client` does by default; a client set with `SetHTTPClient()` decides in its `CheckRedirect`. A fetch that fails is reported as a `*NetworkError` naming the URL that was requested.
+Which redirects are followed is up to the HTTP client. The default one stops after 10 consecutive requests, as Go's `http.Client` does by default; a client set with `SetHTTPClient()` decides in its `CheckRedirect`. A redirect can lead to any address; a client that checks the address of every connection it makes holds for redirects too, see [Requests to internal addresses](#requests-to-internal-addresses). A fetch that fails is reported as a `*NetworkError` naming the URL that was requested.
 
 See [`examples/redirect`](examples/redirect/main.go) for a runnable example.
 

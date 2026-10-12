@@ -862,6 +862,10 @@ func (s *S) compilePatterns(field string, patterns []string) []*regexp.Regexp {
 // When set, the provided client is used for all HTTP requests instead of the
 // internally created default client. This allows callers to configure custom
 // transports, proxies, TLS settings, authentication, or timeout strategies.
+// It is also the means of keeping the parser from requesting the addresses of an internal
+// network, which a document that is not trusted may list: with a client whose net.Dialer
+// checks the address of every connection it makes in its Control function. SECURITY.md
+// describes the check, and examples/ssrf is a client that makes it.
 // When a custom client is provided, SetFetchTimeout has no effect; the
 // client's own Timeout field controls the request deadline.
 // Pass nil to reset to the default client behaviour.
@@ -1642,6 +1646,10 @@ func (s *S) releaseSlot() {
 // The URL the content was served from is url itself, unless the request was redirected: then
 // it is the URL the last redirect led to.
 // The HTTP status must be 200 (OK) for the request to be successful.
+// The host that is requested is not restricted here: url is the one Parse was called for or
+// one a document lists, and the client follows the redirects of either. Keeping the requests
+// to what the parser is meant to reach is up to the caller, with SetFollow and with the client
+// set with SetHTTPClient, see SECURITY.md.
 // The response body is automatically closed after reading using a defer statement.
 // The supplied context is attached to the HTTP request, so cancelling it aborts
 // the in-flight transfer.
