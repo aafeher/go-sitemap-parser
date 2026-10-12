@@ -14159,7 +14159,7 @@ func TestS_Parse_Atom_Updated(t *testing.T) {
 	content := `<feed xmlns="http://www.w3.org/2005/Atom">
 <updated>2024-01-13T08:00:00Z</updated>
 <entry><link href="https://example.com/dated"/><updated>2024-01-15T10:30:00+01:00</updated><published>2023-01-01T00:00:00Z</published></entry>
-<entry><link href="https://example.com/undated"/><published>2023-01-01T00:00:00Z</published><source><updated>2024-01-14T08:00:00Z</updated></source></entry>
+<entry><link href="https://example.com/undated"/><source><updated>2024-01-14T08:00:00Z</updated></source></entry>
 <entry><link href="https://example.com/empty"/><updated/></entry>
 <entry><link href="https://example.com/blank"/><updated>
   </updated></entry>
@@ -14455,7 +14455,7 @@ func TestS_Parse_Atom_Namespaces(t *testing.T) {
 		{
 			name: "other elements of the feed",
 			feed: plain,
-			entries: `<entry><id>https://example.com/id</id><link href="https://example.com/a"/><content src="https://example.com/content"/><published>` + date + `</published></entry>` +
+			entries: `<entry><id>https://example.com/id</id><link href="https://example.com/a"/><content src="https://example.com/content"/><summary>` + date + `</summary></entry>` +
 				`<entry><id>https://example.com/id</id><content src="https://example.com/content"/></entry>`,
 			want: []string{"https://example.com/a -"},
 		},
@@ -16926,4 +16926,296 @@ func TestS_Parse_SitemapListedInSeveralSpellings(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestS_Parse_RSS_DublinCoreDate verifies that the <dc:date> of an RSS item is its date when
+// the item has no <pubDate>, or an empty one, in each of the formats a <lastmod> may be in,
+// that a <pubDate> comes first wherever it stands and whatever it holds, and that the element
+// is told by its namespace, not by its prefix.
+func TestS_Parse_RSS_DublinCoreDate(t *testing.T) {
+	const feed = `<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:d="http://purl.org/dc/elements/1.1/" xmlns:terms="http://purl.org/dc/terms/"><channel>
+<dc:date>2024-01-13T08:00:00Z</dc:date>
+%s
+</channel></rss>`
+
+	tests := []struct {
+		name   string
+		items  string
+		want   []string
+		errors []string
+	}{
+		{
+			name:  "date and time",
+			items: `<item><link>https://example.com/a</link><dc:date>2024-01-15T10:30:00+01:00</dc:date></item>`,
+			want:  []string{"https://example.com/a 2024-01-15T09:30:00Z"},
+		},
+		{
+			name:  "day",
+			items: `<item><link>https://example.com/a</link><dc:date> 2024-01-15 </dc:date></item>`,
+			want:  []string{"https://example.com/a 2024-01-15T00:00:00Z"},
+		},
+		{
+			name:  "before the link",
+			items: `<item><dc:date>2024-01-15T10:30:00Z</dc:date><link>https://example.com/a</link></item>`,
+			want:  []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:  "another prefix",
+			items: `<item><link>https://example.com/a</link><d:date>2024-01-15T10:30:00Z</d:date></item>`,
+			want:  []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:  "namespace declared on the element",
+			items: `<item><link>https://example.com/a</link><date xmlns="http://purl.org/dc/elements/1.1/">2024-01-15T10:30:00Z</date></item>`,
+			want:  []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:  "last one counts",
+			items: `<item><link>https://example.com/a</link><dc:date>2024-01-14T10:30:00Z</dc:date><dc:date>2024-01-15T10:30:00Z</dc:date></item>`,
+			want:  []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:  "pubDate comes first, after it",
+			items: `<item><link>https://example.com/a</link><dc:date>2024-01-15T10:30:00Z</dc:date><pubDate>Tue, 16 Jan 2024 08:00:00 GMT</pubDate></item>`,
+			want:  []string{"https://example.com/a 2024-01-16T08:00:00Z"},
+		},
+		{
+			name:  "pubDate comes first, before it",
+			items: `<item><link>https://example.com/a</link><pubDate>Tue, 16 Jan 2024 08:00:00 GMT</pubDate><dc:date>2024-01-15T10:30:00Z</dc:date></item>`,
+			want:  []string{"https://example.com/a 2024-01-16T08:00:00Z"},
+		},
+		{
+			name:  "empty pubDate",
+			items: `<item><link>https://example.com/a</link><pubDate/><dc:date>2024-01-15T10:30:00Z</dc:date></item>`,
+			want:  []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name: "blank pubDate",
+			items: `<item><link>https://example.com/a</link><pubDate>
+  </pubDate><dc:date>2024-01-15T10:30:00Z</dc:date></item>`,
+			want: []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:   "pubDate that is no date",
+			items:  `<item><link>https://example.com/a</link><pubDate>yesterday</pubDate><dc:date>2024-01-15T10:30:00Z</dc:date></item>`,
+			want:   []string{"https://example.com/a -"},
+			errors: []string{`validate "https://example.com/a": invalid <pubDate> value "yesterday"`},
+		},
+		{
+			name:  "empty",
+			items: `<item><link>https://example.com/a</link><dc:date/></item><item><link>https://example.com/b</link><pubDate/><dc:date> </dc:date></item>`,
+			want:  []string{"https://example.com/a -", "https://example.com/b -"},
+		},
+		{
+			name:   "no date",
+			items:  `<item><link>https://example.com/a</link><dc:date>Mon, 15 Jan 2024 10:30:00 GMT</dc:date></item>`,
+			want:   []string{"https://example.com/a -"},
+			errors: []string{`validate "https://example.com/a": invalid <dc:date> value "Mon, 15 Jan 2024 10:30:00 GMT"`},
+		},
+		{
+			name:  "other elements named date",
+			items: `<item><link>https://example.com/a</link><date>2024-01-15T10:30:00Z</date><terms:date>2024-01-15T10:30:00Z</terms:date><dc:created>2024-01-15T10:30:00Z</dc:created><dc:pubDate>Tue, 16 Jan 2024 08:00:00 GMT</dc:pubDate></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		{
+			name:  "date of the channel is not that of an item",
+			items: `<item><link>https://example.com/a</link></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		{
+			name:  "date within another element",
+			items: `<item><link>https://example.com/a</link><source><dc:date>2024-01-15T10:30:00Z</dc:date></source></item>`,
+			want:  []string{"https://example.com/a -"},
+		},
+		{
+			name:  "item without a link",
+			items: `<item><dc:date>not a date</dc:date></item>`,
+			want:  []string{},
+		},
+	}
+
+	for _, test := range tests {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", test.name, strict), func(t *testing.T) {
+				content := fmt.Sprintf(feed, test.items)
+				s := New().SetStrict(strict)
+				requireParse(t, s, "https://example.com/feed.xml", &content)
+
+				assertStringSlice(t, "URLs", datedLocs(s), test.want)
+				assertStringSlice(t, "errors", errorsOf(s), append([]string{}, test.errors...))
+			})
+		}
+	}
+
+	t.Run("feed in a namespace", func(t *testing.T) {
+		content := `<rss xmlns="http://backend.userland.com/rss2" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>
+<item><link>https://example.com/a</link><dc:date>2024-01-15T10:30:00Z</dc:date></item>
+</channel></rss>`
+		s := New()
+		requireParse(t, s, "https://example.com/feed.xml", &content)
+		assertStringSlice(t, "URLs", datedLocs(s), []string{"https://example.com/a 2024-01-15T10:30:00Z"})
+	})
+
+	// The element is told by its full name, whatever namespace the item is in.
+	t.Run("item in the namespace of Dublin Core", func(t *testing.T) {
+		content := `<rss xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>
+<dc:item><dc:link>https://example.com/a</dc:link><dc:date>2024-01-15T10:30:00Z</dc:date></dc:item>
+</channel></rss>`
+		s := New()
+		requireParse(t, s, "https://example.com/feed.xml", &content)
+		assertStringSlice(t, "URLs", datedLocs(s), []string{"https://example.com/a 2024-01-15T10:30:00Z"})
+	})
+}
+
+// TestS_Parse_Atom_ModifiedAndPublished verifies that an Atom entry without an <updated>, or
+// with an empty one, takes its date from its <modified>, and from its <published> if it has
+// neither, wherever the elements stand, and that an element of another namespace is not read.
+func TestS_Parse_Atom_ModifiedAndPublished(t *testing.T) {
+	const (
+		atom10 = `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:x="https://example.com/ns">%s</feed>`
+		atom03 = `<feed version="0.3" xmlns="http://purl.org/atom/ns#" xmlns:x="https://example.com/ns">%s</feed>`
+	)
+
+	tests := []struct {
+		name    string
+		feed    string
+		entries string
+		want    []string
+		errors  []string
+	}{
+		{
+			name:    "modified of Atom 0.3",
+			feed:    atom03,
+			entries: `<entry><link rel="alternate" type="text/html" href="https://example.com/a"/><issued>2024-01-10T10:30:00Z</issued><created>2024-01-11T10:30:00Z</created><modified>2024-01-15T10:30:00+01:00</modified></entry>`,
+			want:    []string{"https://example.com/a 2024-01-15T09:30:00Z"},
+		},
+		{
+			name:    "modified, day",
+			feed:    atom03,
+			entries: `<entry><modified> 2024-01-15 </modified><link href="https://example.com/a"/></entry>`,
+			want:    []string{"https://example.com/a 2024-01-15T00:00:00Z"},
+		},
+		{
+			name:    "published",
+			feed:    atom10,
+			entries: `<entry><link href="https://example.com/a"/><published>2024-01-15T10:30:00Z</published></entry>`,
+			want:    []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:    "updated comes first",
+			feed:    atom10,
+			entries: `<entry><link href="https://example.com/a"/><published>2024-01-14T10:30:00Z</published><modified>2024-01-15T10:30:00Z</modified><updated>2024-01-16T10:30:00Z</updated></entry>`,
+			want:    []string{"https://example.com/a 2024-01-16T10:30:00Z"},
+		},
+		{
+			name:    "updated comes first, before the others",
+			feed:    atom10,
+			entries: `<entry><link href="https://example.com/a"/><updated>2024-01-16T10:30:00Z</updated><modified>2024-01-15T10:30:00Z</modified><published>2024-01-14T10:30:00Z</published></entry>`,
+			want:    []string{"https://example.com/a 2024-01-16T10:30:00Z"},
+		},
+		{
+			name:    "modified comes before published",
+			feed:    atom10,
+			entries: `<entry><link href="https://example.com/a"/><published>2024-01-14T10:30:00Z</published><modified>2024-01-15T10:30:00Z</modified></entry>`,
+			want:    []string{"https://example.com/a 2024-01-15T10:30:00Z"},
+		},
+		{
+			name:    "empty updated",
+			feed:    atom10,
+			entries: `<entry><link href="https://example.com/a"/><updated/><modified> </modified><published>2024-01-14T10:30:00Z</published></entry>`,
+			want:    []string{"https://example.com/a 2024-01-14T10:30:00Z"},
+		},
+		{
+			name:    "updated that is no date",
+			feed:    atom10,
+			entries: `<entry><link href="https://example.com/a"/><updated>yesterday</updated><published>2024-01-14T10:30:00Z</published></entry>`,
+			want:    []string{"https://example.com/a -"},
+			errors:  []string{`validate "https://example.com/a": invalid <updated> value "yesterday"`},
+		},
+		{
+			name:    "modified that is no date",
+			feed:    atom03,
+			entries: `<entry><link href="https://example.com/a"/><modified>yesterday</modified><published>2024-01-14T10:30:00Z</published></entry>`,
+			want:    []string{"https://example.com/a -"},
+			errors:  []string{`validate "https://example.com/a": invalid <modified> value "yesterday"`},
+		},
+		{
+			name:    "published that is no date",
+			feed:    atom10,
+			entries: `<entry><link href="https://example.com/a"/><published>Mon, 15 Jan 2024 10:30:00 GMT</published></entry>`,
+			want:    []string{"https://example.com/a -"},
+			errors:  []string{`validate "https://example.com/a": invalid <published> value "Mon, 15 Jan 2024 10:30:00 GMT"`},
+		},
+		{
+			name:    "last one of a name counts",
+			feed:    atom10,
+			entries: `<entry><link href="https://example.com/a"/><published>2024-01-13T10:30:00Z</published><published>2024-01-14T10:30:00Z</published></entry><entry><link href="https://example.com/b"/><modified>2024-01-13T10:30:00Z</modified><modified>2024-01-14T10:30:00Z</modified></entry>`,
+			want:    []string{"https://example.com/a 2024-01-14T10:30:00Z", "https://example.com/b 2024-01-14T10:30:00Z"},
+		},
+		{
+			name:    "all empty",
+			feed:    atom10,
+			entries: `<entry><link href="https://example.com/a"/><updated/><modified/><published/></entry><entry><link href="https://example.com/b"/><published> </published></entry>`,
+			want:    []string{"https://example.com/a -", "https://example.com/b -"},
+		},
+		{
+			name:    "elements of another namespace",
+			feed:    atom10,
+			entries: `<entry><link href="https://example.com/a"/><x:modified>2024-01-15T10:30:00Z</x:modified><x:published>2024-01-14T10:30:00Z</x:published><published xmlns="">2024-01-14T10:30:00Z</published></entry>`,
+			want:    []string{"https://example.com/a -"},
+		},
+		{
+			name:    "dates of the source of the entry",
+			feed:    atom10,
+			entries: `<entry><link href="https://example.com/a"/><source><modified>2024-01-15T10:30:00Z</modified><published>2024-01-14T10:30:00Z</published></source></entry>`,
+			want:    []string{"https://example.com/a -"},
+		},
+		{
+			name:    "entry without a link",
+			feed:    atom10,
+			entries: `<entry><published>not a date</published></entry>`,
+			want:    []string{},
+		},
+	}
+
+	for _, test := range tests {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, strict=%v", test.name, strict), func(t *testing.T) {
+				content := fmt.Sprintf(test.feed, test.entries)
+				s := New().SetStrict(strict)
+				requireParse(t, s, "https://example.com/feed.xml", &content)
+
+				assertStringSlice(t, "URLs", datedLocs(s), test.want)
+				assertStringSlice(t, "errors", errorsOf(s), append([]string{}, test.errors...))
+			})
+		}
+	}
+}
+
+func TestFirstDate(t *testing.T) {
+	text := func(s string) *string { return &s }
+	first := dateElement{name: "<first>"}
+	second := dateElement{name: "<second>"}
+
+	tests := []struct {
+		name          string
+		first, second *string
+		want          string
+	}{
+		{"neither", nil, nil, "<first>"},
+		{"first", text("a"), nil, "<first>"},
+		{"second", nil, text("b"), "<second>"},
+		{"both", text("a"), text("b"), "<first>"},
+		{"first empty", text(""), text("b"), "<second>"},
+		{"first blank", text(" \n\t"), text("b"), "<second>"},
+		{"both empty", text(""), text(" "), "<first>"},
+		{"second empty", nil, text(""), "<first>"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			first.text, second.text = test.first, test.second
+			mustEqual(t, "element", firstDate(first, second).name, test.want)
+		})
+	}
+	mustEqual(t, "one element", firstDate(first).name, "<first>")
 }

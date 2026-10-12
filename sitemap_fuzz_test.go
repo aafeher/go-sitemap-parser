@@ -773,7 +773,10 @@ func escaped(text string) string {
 // an entry of an Atom feed yield the page, the date and the errors that they
 // yield without such an element, in both modes, whatever the element holds,
 // whether it stands before or after the element of the feed that has its name,
-// and whether or not the item has that element at all.
+// and whether or not the item has that element at all. That goes for the
+// elements an item takes its date from when it lacks the one of its format: a
+// <date> that is not the one of Dublin Core, and a <modified> and a
+// <published> that are not those of Atom.
 func FuzzFeedNamespaces(f *testing.F) {
 	const rssDate, atomDate = "Mon, 15 Jan 2024 10:30:00 GMT", "2024-01-15T10:30:00Z"
 	for places := range uint8(16) {
@@ -815,13 +818,14 @@ func FuzzFeedNamespaces(f *testing.F) {
 			`<link>`+link+`</link>`,
 			`<x:link>`+otherLink+`</x:link><atom:link rel="alternate" href="`+otherLink+`"/>`,
 			`<pubDate>`+date+`</pubDate>`,
-			`<x:pubDate>`+otherDate+`</x:pubDate>`,
+			`<x:pubDate>`+otherDate+`</x:pubDate><x:date>`+otherDate+`</x:date><date>`+otherDate+`</date><atom:published>`+otherDate+`</atom:published>`,
 		)
 		feeds[1].plain, feeds[1].mixed = item(
 			`<link href="`+link+`"/>`,
 			`<x:link href="`+otherLink+`"/><link xmlns="" rel="alternate" href="`+otherLink+`"/>`,
 			`<updated>`+date+`</updated>`,
-			`<x:updated>`+otherDate+`</x:updated><updated xmlns="">`+otherDate+`</updated>`,
+			`<x:updated>`+otherDate+`</x:updated><updated xmlns="">`+otherDate+`</updated>`+
+				`<x:modified>`+otherDate+`</x:modified><modified xmlns="">`+otherDate+`</modified><x:published>`+otherDate+`</x:published><published xmlns="">`+otherDate+`</published>`,
 		)
 
 		for _, feed := range feeds {

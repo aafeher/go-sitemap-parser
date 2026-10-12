@@ -13,7 +13,7 @@ A Go package to parse XML Sitemaps compliant with the [Sitemaps.org protocol](ht
 ## Features
 - Recursive parsing (sitemap index → sitemaps → URLs)
 - The sitemaps a call finds can be queried, whether or not they were fetched, with the date a sitemap index gives for each
-- The date a page was last modified is returned for the pages of RSS and Atom feeds as well (`<pubDate>`, `<updated>`)
+- The date a page was last modified is returned for the pages of RSS and Atom feeds as well (`<pubDate>` or `<dc:date>`, `<updated>`, `<modified>` or `<published>`)
 - Iterators over the URLs and the errors of a call (`URLs()`, `Errors()`), the URLs as copies that are the caller's own
 - Concurrent (multi-threaded) fetching and parsing
 - Configurable follow rules to filter which sitemaps to parse
@@ -50,17 +50,24 @@ A `robots.txt` is recognised by the URL passed to `Parse()`: the document is rea
 Of a `robots.txt` only the `Sitemap:` lines are read. The name of the directive is not case-sensitive, the line may be indented, and what follows a `#` is a comment. The sitemaps the lines name are fetched and parsed; how their URLs are checked is described under [Strict mode](#strict-mode). See [`examples/robots`](examples/robots/main.go) for a runnable example.
 
 Of a feed, the location of a page and the date it was last modified are taken, of a text sitemap the location only. `ChangeFreq` and `Priority` are `nil` for their URLs, and they have nothing of the extensions:
-- RSS: the `<link>` of every `<item>`, and the `<pubDate>` of the item as `LastMod`, see [`examples/rss`](examples/rss/main.go)
-- Atom: for every `<entry>`, the first `<link>` with `rel="alternate"` or without a `rel` attribute, and the `<updated>` of the entry as `LastMod`, see [`examples/atom`](examples/atom/main.go)
+- RSS: the `<link>` of every `<item>`, and the `<pubDate>` of the item as `LastMod`, or its `<dc:date>` if it has no `<pubDate>`, see [`examples/rss`](examples/rss/main.go)
+- Atom: for every `<entry>`, the first `<link>` with `rel="alternate"` or without a `rel` attribute, and the `<updated>` of the entry as `LastMod`, or its `<modified>` or `<published>` if it has no `<updated>`, see [`examples/atom`](examples/atom/main.go)
 - Plain text: every line that begins with `http://` or `https://`; empty lines, lines that begin with `#` and every other line are skipped, see [`examples/text`](examples/text/main.go). `LastMod` is `nil`
 
 The date of a feed entry is read in the format its feed prescribes:
 - `<pubDate>` holds a date and time of [RFC 822](https://www.rfc-editor.org/rfc/rfc822#section-5), such as `Mon, 15 Jan 2024 10:30:00 GMT`. The day of the week and the seconds may be left out, the year has four digits or two (`24` is 2024, `69` to `99` are 1969 to 1999), and the time zone is an offset (`+0100`) or one of the names `UT`, `GMT`, `UTC`, `Z`, `EST`, `EDT`, `CST`, `CDT`, `MST`, `MDT`, `PST` and `PDT`. A name stands for the zone the RFC says it does, whatever the time zone of the machine is. Another name (`CET`) is not known, and the date is not read
 - `<updated>` holds a date in one of the formats of a `<lastmod>`, among them the one Atom prescribes ([RFC 3339](https://www.rfc-editor.org/rfc/rfc3339), `2024-01-15T10:30:00Z`)
+- `<dc:date>`, `<modified>` and `<published>` hold a date in one of the formats of a `<lastmod>` as well
 
-The elements of a feed are told from those of other formats by their namespace. A feed may hold both: an RSS item often has an `<atom:link>` next to its `<link>`. An element is read only if it is in the namespace of the `<item>` or of the `<entry>` it stands in, which is none for an RSS item and that of Atom for an Atom entry. An `<atom:link>` is therefore neither the `<link>` of an RSS item nor read in its place, wherever it stands in the item, and an item that has no other link is skipped like one without a link.
+An entry may give its date in another element than the one its format has for it, and that element is read where the other is absent or empty:
+- An RSS item without a `<pubDate>` takes its date from its `<dc:date>`, the date of [Dublin Core](https://www.dublincore.org/specifications/dublin-core/dcmi-terms/elements11/date/), which feeds use for a date in the format the rest of the web writes its dates in. It is the one element of another namespace that is read, and it is told by that namespace (`http://purl.org/dc/elements/1.1/`), whatever its prefix.
+- An Atom entry without an `<updated>` takes its date from its `<modified>`, which is what Atom 0.3 calls the element, and if it has neither, from its `<published>`, the date the page was first available.
 
-An entry without a date has none, and so has one whose date is empty. A date in another format is left unset (`nil`) and reported as a `*ValidationError`, and the page is returned all the same, in both modes, see [Strict mode](#strict-mode). Only the date of the entry itself is read: neither the dates of the feed (`<lastBuildDate>` and the `<pubDate>` of an RSS channel, the `<updated>` of an Atom feed) nor the `<published>` of an Atom entry are.
+The element of the format comes first wherever it stands in the entry. One that holds something that is no date is the date of its entry all the same: it is reported, and the other element is not read in its place.
+
+The elements of a feed are told from those of other formats by their namespace. A feed may hold both: an RSS item often has an `<atom:link>` next to its `<link>`. An element is read only if it is in the namespace of the `<item>` or of the `<entry>` it stands in, which is none for an RSS item and that of Atom for an Atom entry. The `<dc:date>` of an RSS item is the one exception. An `<atom:link>` is therefore neither the `<link>` of an RSS item nor read in its place, wherever it stands in the item, and an item that has no other link is skipped like one without a link.
+
+An entry without a date has none, and so has one whose date is empty. A date in another format is left unset (`nil`) and reported as a `*ValidationError`, and the page is returned all the same, in both modes, see [Strict mode](#strict-mode). Only the date of the entry itself is read: the dates of the feed are not (`<lastBuildDate>`, `<pubDate>` and `<dc:date>` of an RSS channel, the `<updated>` and `<modified>` of an Atom feed), and neither are the `<issued>` and `<created>` of an entry of Atom 0.3.
 
 ## Requirements
 
@@ -531,7 +538,7 @@ A value that cannot be parsed never costs more than its own entry. The numbers a
 validate "https://example.com/page": invalid <lastmod> value "2024-01-15 10:30:00"
 ```
 
-The dates that are not those of a `<url>` are treated that way in both modes as well: the `<lastmod>` of an entry of a sitemap index, the `<pubDate>` of an RSS item and the `<updated>` of an Atom entry. One that cannot be parsed is left unset and reported, and that is all it costs, in strict mode too: the sitemap is listed and fetched, and the page is returned. The error names the sitemap or the page the date belongs to:
+The dates that are not those of a `<url>` are treated that way in both modes as well: the `<lastmod>` of an entry of a sitemap index, the `<pubDate>` of an RSS item and the `<updated>` of an Atom entry, and the elements that stand in for these (`<dc:date>`, `<modified>`, `<published>`). One that cannot be parsed is left unset and reported, and that is all it costs, in strict mode too: the sitemap is listed and fetched, and the page is returned. The error names the sitemap or the page the date belongs to:
 
 ```
 validate "https://example.com/sitemap-1.xml": invalid <lastmod> value "2024-01-15 10:30:00"
@@ -811,7 +818,7 @@ For URLs to change and for a list to sort, there is [`URLs()`](#urls), which yie
 
 Each `URL` struct contains the following fields:
 - `Loc` (`string`) — the URL location; never empty, an entry without a `<loc>` is skipped
-- `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`; also `nil` when the element is empty or the value cannot be parsed, see [Strict mode](#strict-mode). It is the `<lastmod>` of a `<url>`, the `<pubDate>` of an RSS item and the `<updated>` of an Atom entry, see [Formats supported](#formats-supported); a text sitemap gives no date
+- `LastMod` (`*LastModTime`) — last modification time (embeds `time.Time`), may be `nil`; also `nil` when the element is empty or the value cannot be parsed, see [Strict mode](#strict-mode). It is the `<lastmod>` of a `<url>`, the `<pubDate>` of an RSS item and the `<updated>` of an Atom entry, or the element that stands in for either, see [Formats supported](#formats-supported); a text sitemap gives no date
 - `ChangeFreq` (`*URLChangeFreq`) — change frequency hint, may be `nil`; also `nil` when the element is empty. Use the exported constants for comparison: `ChangeFreqAlways`, `ChangeFreqHourly`, `ChangeFreqDaily`, `ChangeFreqWeekly`, `ChangeFreqMonthly`, `ChangeFreqYearly`, `ChangeFreqNever`. Tolerant mode reads one of them in whatever letter case it is written and keeps a value that is none of them as the document gives it; strict mode skips an entry with either, so a field that is set equals one of the constants there, see [Strict mode](#strict-mode)
 - `Priority` (`*float32`) — crawl priority between 0.0 and 1.0, may be `nil`; also `nil` when the value cannot be parsed
 - `Images` (`[]Image`) — images associated with this URL via the Google Image Sitemap extension, may be `nil`

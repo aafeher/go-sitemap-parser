@@ -40,8 +40,9 @@
 // with its <lastmod>, <changefreq> and <priority>, and with what the image,
 // news, video and hreflang extensions say about the page, see [URL]. Of a feed,
 // the location of a page and the date it was last modified are taken: the
-// <pubDate> of an RSS item and the <updated> of an Atom entry. A text file
-// gives nothing but the location.
+// <pubDate> of an RSS item, or else its <dc:date>, and the <updated> of an
+// Atom entry, or else its <modified> or its <published>. A text file gives
+// nothing but the location.
 //
 // # Configuration
 //

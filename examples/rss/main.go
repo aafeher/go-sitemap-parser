@@ -20,22 +20,26 @@ import (
 // the time zone given as an offset or by one of the names that RFC knows. An
 // item without a date has none, and neither has one whose date is in another
 // format: that date is reported in GetErrors(), and the page is returned all
-// the same. The dates of the channel are not read. Nothing but the location
-// and the date is taken from a feed, so ChangeFreq and Priority are nil.
+// the same. An item without a <pubDate> takes its date from its <dc:date>,
+// the date of Dublin Core, which is in the format of a <lastmod>. The dates of
+// the channel are not read. Nothing but the location and the date is taken
+// from a feed, so ChangeFreq and Priority are nil.
 //
 // A feed may hold elements of other formats, which are told from its own by
 // their namespace: the <atom:link> of the channel and the one of the first
 // item are elements of Atom. Such an element is not read, so the <atom:link>
 // of the item is not taken for its <link>, wherever it stands in the item.
+// The <dc:date> is the one element of another format that is.
 //
 // The feed is passed in directly, so the example runs without network access.
 // To have it fetched, pass nil in place of the content.
 func main() {
 	// The first item has an <atom:link> after its <link>, the second one gives
 	// its time zone by name, the third one has a date that is not in the format
-	// of RSS, the fourth one has no date, and the last one has no <link>.
+	// of RSS, the fourth one has a <dc:date> in place of a <pubDate>, the fifth
+	// one has no date, and the last one has no <link>.
 	feed := `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>Example blog</title>
     <link>https://example.com/blog</link>
@@ -57,6 +61,11 @@ func main() {
       <title>Third post</title>
       <link>https://example.com/blog/third-post</link>
       <pubDate>2024-01-17T09:15:00Z</pubDate>
+    </item>
+    <item>
+      <title>Fourth post</title>
+      <link>https://example.com/blog/fourth-post</link>
+      <dc:date>2024-01-18T07:45:00Z</dc:date>
     </item>
     <item>
       <title>About</title>
