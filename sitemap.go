@@ -831,11 +831,13 @@ func (s *S) SetMaxValidationErrors(maxValidationErrors int) *S {
 // Patterns longer than maxRegexPatternLength characters are rejected with a *ConfigError.
 // Any errors encountered during compilation are recorded as *ConfigError values.
 // Each call replaces both the patterns and the errors recorded by the previous call.
+// The patterns are copied: the list that is passed in is the caller's own, and what is done
+// to it after the call changes neither the patterns in effect nor what GetFollow returns.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetFollow(regexes []string) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cfg.follow = regexes
+	s.cfg.follow = slices.Clone(regexes)
 	s.cfg.followRegexes = s.compilePatterns("follow", regexes)
 
 	return s
@@ -845,11 +847,12 @@ func (s *S) SetFollow(regexes []string) *S {
 // Patterns longer than maxRegexPatternLength characters are rejected with a *ConfigError.
 // Any errors encountered during compilation are recorded as *ConfigError values.
 // Each call replaces both the patterns and the errors recorded by the previous call.
+// The patterns are copied, as those of SetFollow are.
 // The function returns a pointer to the S structure to allow method chaining.
 func (s *S) SetRules(regexes []string) *S {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cfg.rules = regexes
+	s.cfg.rules = slices.Clone(regexes)
 	s.cfg.rulesRegexes = s.compilePatterns("rules", regexes)
 
 	return s

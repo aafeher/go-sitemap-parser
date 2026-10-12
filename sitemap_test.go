@@ -704,6 +704,43 @@ func TestS_GetConfiguration_CopySemantics(t *testing.T) {
 	mustEqual(t, "GetRules after mutation", s.GetRules()[0], `/product/`)
 }
 
+// TestS_SetFollow_SetRules_CopyThePatterns verifies that SetFollow and SetRules
+// keep a copy of the list they are passed: what the caller does to its list
+// after the call changes neither what GetFollow and GetRules return, which are
+// the patterns in effect, nor the patterns a call goes by. A list is kept nil
+// or empty as it was passed.
+func TestS_SetFollow_SetRules_CopyThePatterns(t *testing.T) {
+	index := `<sitemapindex><sitemap><loc>https://example.com/a.xml</loc></sitemap><sitemap><loc>https://example.com/b.xml</loc></sitemap></sitemapindex>`
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		body := `<urlset><url><loc>https://example.com/page` + req.URL.Path + `</loc></url><url><loc>https://example.com/other` + req.URL.Path + `</loc></url></urlset>`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})}
+
+	// The lists have room for another pattern, so that one that is appended to
+	// them is written where the instance would read it, had it kept the list.
+	follow := append(make([]string, 0, 4), `/a\.xml$`)
+	rules := append(make([]string, 0, 4), `/page/`)
+	s := New().SetMultiThread(false).SetHTTPClient(client).SetFollow(follow).SetRules(rules)
+
+	follow[0], rules[0] = `/b\.xml$`, `/other/`
+	_, _ = append(follow, `(`), append(rules, `(`)
+
+	assertStringSlice(t, "GetFollow", s.GetFollow(), []string{`/a\.xml$`})
+	assertStringSlice(t, "GetRules", s.GetRules(), []string{`/page/`})
+	mustEqual(t, "capacity of the patterns kept", cap(s.cfg.follow)+cap(s.cfg.rules), 2)
+
+	requireParse(t, s, "https://example.com/sitemap.xml", &index)
+	assertStringSlice(t, "URLs", locsOf(s), []string{"https://example.com/page/a.xml"})
+	assertStringSlice(t, "errors", errorsOf(s), []string{})
+
+	t.Run("nil and empty lists", func(t *testing.T) {
+		s := New().SetFollow(nil).SetRules([]string{})
+		mustEqual(t, "follow is nil", s.cfg.follow == nil, true)
+		mustEqual(t, "rules is nil", s.cfg.rules == nil, false)
+		mustEqual(t, "patterns", len(s.GetFollow())+len(s.GetRules()), 0)
+	})
+}
+
 func TestImage_validateAndFilterImages(t *testing.T) {
 	tests := []struct {
 		name       string

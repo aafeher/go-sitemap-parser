@@ -345,6 +345,8 @@ A sitemap that is not followed is still among the sitemaps [`GetSitemaps()`](#ge
 If no follow rules are provided, all sitemaps are followed.
 Patterns longer than 1,000 characters are rejected and reported via `GetErrors()`.
 
+The list is copied: what is done to it after the call changes neither the patterns in effect nor what `GetFollow()` returns. Call `SetFollow()` again to change them.
+
 The expressions are matched against the absolute URL of a sitemap, a relative one being resolved first. In tolerant mode that is the URL as it is requested: with a space or a character that is not in ASCII percent-encoded (`m%C3%BCnchen`, not `münchen`), and with an [internationalised host name](#internationalised-host-names) in its Punycode form. They match anywhere in the URL unless they are anchored: `example\.com` also matches `https://example.com.evil.test/sitemap.xml`, `^https://example\.com/` does not.
 
 ```go
@@ -371,6 +373,8 @@ It is a list of regular expressions. Only URLs that match one of these expressio
 The expressions are matched against the URL as `GetURLs()` returns it. In tolerant mode that is the URL with a space or a character that is not in ASCII percent-encoded (`m%C3%BCnchen`, not `münchen`), and with an [internationalised host name](#internationalised-host-names) in its Punycode form.
 If no rules are provided, all URLs found are included.
 Patterns longer than 1,000 characters are rejected and reported via `GetErrors()`.
+
+The list is copied: what is done to it after the call changes neither the patterns in effect nor what `GetRules()` returns. Call `SetRules()` again to change them.
 
 ```go
 s := sitemap.New()
