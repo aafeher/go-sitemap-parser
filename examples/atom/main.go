@@ -21,16 +21,19 @@ import (
 // It is read in the formats of a <lastmod>, among them the one Atom
 // prescribes. An entry without a date has none, and neither has one whose
 // date is in another format: that date is reported in GetErrors(), and the
-// page is returned all the same. The <updated> of the feed is not read, and
-// neither is the <published> of an entry. Nothing but the location and the
-// date is taken from a feed, so ChangeFreq and Priority are nil.
+// page is returned all the same. An entry without an <updated> takes its date
+// from its <modified>, which is what Atom 0.3 calls the element, or else from
+// its <published>, the date the page was first available. The <updated> of
+// the feed is not read. Nothing but the location and the date is taken from a
+// feed, so ChangeFreq and Priority are nil.
 //
 // The feed is passed in directly, so the example runs without network access.
 // To have it fetched, pass nil in place of the content.
 func main() {
 	// The first entry has a link without a rel attribute, the second one an
 	// enclosure in front of its page, the third one a date that is not in a
-	// format of Atom, the fourth one no date, and the last one no page at all.
+	// format of Atom, the fourth one a <published> and no <updated>, the fifth
+	// one no date, and the last one no page at all.
 	feed := `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <title>Example blog</title>
@@ -53,6 +56,11 @@ func main() {
     <title>Third post</title>
     <link href="https://example.com/blog/third-post"/>
     <updated>Wed, 17 Jan 2024 09:15:00 GMT</updated>
+  </entry>
+  <entry>
+    <title>Fourth post</title>
+    <link href="https://example.com/blog/fourth-post"/>
+    <published>2024-01-18T07:45:00Z</published>
   </entry>
   <entry>
     <title>About</title>

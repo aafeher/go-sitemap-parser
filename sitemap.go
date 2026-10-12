@@ -190,6 +190,10 @@ type (
 		// PubDate is the content of <pubDate>, nil if the item has none. It is read as
 		// text, so that one that cannot be parsed costs only itself, see urlEntry.
 		PubDate *string
+		// DCDate is the content of the <date> of Dublin Core, which a feed writes as
+		// <dc:date>, nil if the item has none. It is the date of an item without a
+		// <pubDate>, see date.
+		DCDate *string
 	}
 
 	// atom is a structure of <feed> for Atom 1.0 feeds.
@@ -206,6 +210,11 @@ type (
 		// Updated is the content of <updated>, nil if the entry has none. It is read as
 		// text, like the <pubDate> of an RSS item.
 		Updated *string
+		// Modified is the content of <modified>, which is what Atom 0.3 has for <updated>,
+		// and Published that of <published>, the date the page was first available. They
+		// are the date of an entry without an <updated>, in this order, see date.
+		Modified  *string
+		Published *string
 	}
 
 	// atomLink is a <link> of an Atom entry.
@@ -404,7 +413,9 @@ type (
 	// text sitemap.
 	//
 	// LastMod is the date the page was last modified: the <lastmod> of a <url>, the <pubDate>
-	// of an RSS item and the <updated> of an Atom entry. A text sitemap gives no date. No
+	// of an RSS item and the <updated> of an Atom entry. An RSS item without a <pubDate> takes
+	// it from its <dc:date>, an Atom entry without an <updated> from its <modified> or else
+	// from its <published>. A text sitemap gives no date. No
 	// other field but Loc is set for a page of a feed or of a text sitemap.
 	//
 	// In the URLs that Parse and ParseContext collect, no text value has whitespace around it:
@@ -480,7 +491,8 @@ type (
 
 	// LastModTime is the date, or the date and time, that an element of a document holds: a
 	// <lastmod> of a sitemap or of a sitemap index, a date element of an extension, the
-	// <pubDate> of an RSS item or the <updated> of an Atom entry. It embeds time.Time.
+	// <pubDate> of an RSS item or the <updated> of an Atom entry, or the element that stands
+	// in for either. It embeds time.Time.
 	//
 	// In the URLs and the sitemaps that Parse and ParseContext collect, a field of this type
 	// is nil when the element is absent, when it is empty, and when what it holds cannot be
@@ -2536,7 +2548,7 @@ func (s *S) parseRSSContent(url, content string) {
 		return
 	}
 	for _, item := range rssFeed.Channel.Item {
-		s.addURL(item.Link, url, dateElement{name: "<pubDate>", text: item.PubDate, parse: parseRFC822Time})
+		s.addURL(item.Link, url, item.date())
 	}
 }
 
@@ -2555,7 +2567,7 @@ func (s *S) parseFeedContent(url, content string) {
 				break
 			}
 		}
-		s.addURL(loc, url, dateElement{name: "<updated>", text: entry.Updated, parse: parseLastModTime})
+		s.addURL(loc, url, entry.date())
 	}
 }
 
@@ -2918,9 +2930,11 @@ func (v invalidValue) err() error {
 // of, up to the end of the element. It is what the UnmarshalXML method of an item of a feed
 // reads the item with.
 //
-// A child that is in the namespace of start is decoded into what target returns for its local
-// name, a pointer. Every other child is skipped together with what it contains: one that
-// target returns nil for, and one of another namespace.
+// A child is decoded into what target returns for it, a pointer, and skipped together with
+// what it contains if target returns nil. target is given the local name of a child that is
+// in the namespace of start, and an empty one for every other child, together with the full
+// name of the child: an element of the feed is told by its local name, an element of another
+// format by its namespace and its local name together.
 //
 // A feed holds elements of other formats beside its own, which are told apart by their
 // namespace alone: an RSS item may have an <atom:link> next to its <link>. encoding/xml reads
@@ -2933,7 +2947,7 @@ func (v invalidValue) err() error {
 // not the one the format prescribes: none for RSS, that of Atom for Atom. A feed that puts
 // its elements into another namespace, or that has a prefix, is read as it was before the
 // namespaces were looked at.
-func decodeOwnChildren(d *xml.Decoder, start xml.StartElement, target func(name string) any) error {
+func decodeOwnChildren(d *xml.Decoder, start xml.StartElement, target func(own string, name xml.Name) any) error {
 	for {
 		token, err := d.Token()
 		if err != nil {
@@ -2941,10 +2955,11 @@ func decodeOwnChildren(d *xml.Decoder, start xml.StartElement, target func(name 
 		}
 		switch element := token.(type) {
 		case xml.StartElement:
-			var into any
+			own := ""
 			if element.Name.Space == start.Name.Space {
-				into = target(element.Name.Local)
+				own = element.Name.Local
 			}
+			into := target(own, element.Name)
 			if into == nil {
 				err = d.Skip()
 			} else {
@@ -2959,33 +2974,79 @@ func decodeOwnChildren(d *xml.Decoder, start xml.StartElement, target func(name 
 	}
 }
 
-// UnmarshalXML reads the <link> and the <pubDate> of the item, see decodeOwnChildren. The last
-// element of a name counts if the item has more than one.
+// dublinCoreDate is the name of the <date> of Dublin Core, which a feed writes as <dc:date>.
+// Feeds use the elements of Dublin Core for what their own format has no element for, and RSS
+// feeds this one for a date in the format the rest of the web writes its dates in.
+var dublinCoreDate = xml.Name{Space: "http://purl.org/dc/elements/1.1/", Local: "date"}
+
+// UnmarshalXML reads the <link>, the <pubDate> and the <dc:date> of the item, see
+// decodeOwnChildren. The last element of a name counts if the item has more than one.
 func (item *rssItem) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
-	return decodeOwnChildren(d, start, func(name string) any {
-		switch name {
-		case "link":
+	return decodeOwnChildren(d, start, func(own string, name xml.Name) any {
+		switch {
+		case own == "link":
 			return &item.Link
-		case "pubDate":
+		case own == "pubDate":
 			return &item.PubDate
+		case name == dublinCoreDate:
+			return &item.DCDate
 		}
 		return nil
 	})
 }
 
-// UnmarshalXML reads the <link> elements and the <updated> of the entry, see
-// decodeOwnChildren. The last <updated> counts if the entry has more than one.
+// date returns the element that holds the date of the item: its <pubDate>, or its <dc:date>
+// if it has no <pubDate>, see firstDate. A <dc:date> is a date of the W3C format, like a
+// <lastmod>.
+func (item rssItem) date() dateElement {
+	return firstDate(
+		dateElement{name: "<pubDate>", text: item.PubDate, parse: parseRFC822Time},
+		dateElement{name: "<dc:date>", text: item.DCDate, parse: parseLastModTime},
+	)
+}
+
+// UnmarshalXML reads the <link> elements and the dates of the entry, see decodeOwnChildren.
+// The last date of a name counts if the entry has more than one.
 func (entry *atomEntry) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
-	return decodeOwnChildren(d, start, func(name string) any {
-		switch name {
+	return decodeOwnChildren(d, start, func(own string, _ xml.Name) any {
+		switch own {
 		case "link":
 			entry.Link = append(entry.Link, atomLink{})
 			return &entry.Link[len(entry.Link)-1]
 		case "updated":
 			return &entry.Updated
+		case "modified":
+			return &entry.Modified
+		case "published":
+			return &entry.Published
 		}
 		return nil
 	})
+}
+
+// date returns the element that holds the date of the entry: its <updated>, its <modified> if
+// it has no <updated>, or its <published> if it has neither, see firstDate. An entry of Atom
+// 1.0 has to have an <updated>, so the others count for a feed of Atom 0.3, and for one that
+// does not keep to its format.
+func (entry atomEntry) date() dateElement {
+	return firstDate(
+		dateElement{name: "<updated>", text: entry.Updated, parse: parseLastModTime},
+		dateElement{name: "<modified>", text: entry.Modified, parse: parseLastModTime},
+		dateElement{name: "<published>", text: entry.Published, parse: parseLastModTime},
+	)
+}
+
+// firstDate returns the first of elements that holds something. An element that is absent or
+// empty gives no date, so the next one is looked at; one that holds what is no date is the
+// date of its item all the same, and is reported, rather than passed over in silence.
+// If none of them holds anything, the first one is returned.
+func firstDate(elements ...dateElement) dateElement {
+	for _, element := range elements {
+		if element.text != nil && strings.TrimSpace(*element.text) != "" {
+			return element
+		}
+	}
+	return elements[0]
 }
 
 // parseRSS parses the RSS 2.0 data and returns an rss object and an error, see decodeDocument.
