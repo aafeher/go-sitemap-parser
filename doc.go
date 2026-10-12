@@ -71,6 +71,13 @@
 // restricts the sitemaps that are fetched, [S.SetRules] the URLs that are
 // collected.
 //
+// A call requests the sitemaps the documents list wherever they are, and
+// follows the redirects of its requests. Where the documents are not trusted,
+// a client set with [S.SetHTTPClient] keeps the parser from the addresses of
+// an internal network by checking the address of every connection it makes:
+// SECURITY.md describes the check, and examples/ssrf of the repository is a
+// client that makes it.
+//
 // # Errors
 //
 // Parse and ParseContext return an error when the call fails for the URL it
