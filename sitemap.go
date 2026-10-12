@@ -1163,7 +1163,7 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	// over into this one, whichever way this call ends. Configuration errors are the
 	// exception: they belong to the instance rather than to a call, and keep blocking
 	// parsing until the offending setting is corrected.
-	s.mainURL = ""
+	s.mainURL = url
 	s.robotsTxtSitemapURLs = nil
 	s.fetchedURLs = make(map[string]struct{})
 	s.sitemaps = nil
@@ -1205,7 +1205,6 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 	}
 	s.mu.Unlock()
 
-	s.mainURL = url
 	content, servedFrom, err := s.setContent(ctx, urlContent)
 	if err != nil {
 		s.mu.Lock()
@@ -2098,16 +2097,102 @@ func (s *S) hasRoomForURL() bool {
 // a whole, so the sitemaps the call fetches bound their number, and it is recorded in any
 // case: which sitemaps a call could not fetch or parse is not lost for the entries of another.
 //
+// An error about a document is recorded no larger than maxErrorTextLength allows, see
+// boundError.
+//
 // Must be called with s.mu held, unless no other goroutine has access to s.
 func (s *S) addError(err error) {
+	if s.hasRoomForError(err) {
+		s.boundError(err)
+		s.errs = append(s.errs, err)
+	}
+}
+
+// hasRoomForError tells whether err is one to record, and counts it if it is, see addError.
+func (s *S) hasRoomForError(err error) bool {
 	if _, ok := err.(*ValidationError); ok {
 		if s.limits.maxValidationErrors > 0 && s.limits.validationErrors >= s.limits.maxValidationErrors {
 			s.limits.validationErrorsLeftOut = true
-			return
+			return false
 		}
 		s.limits.validationErrors++
 	}
-	s.errs = append(s.errs, err)
+	return true
+}
+
+// maxErrorTextLength is the length in bytes up to which an error about a document holds a
+// text as it is: the URL the error names, and the message of its cause. It is twice the
+// length a URL of a sitemap may have, so that a cause that quotes a URL of that length, or the
+// host of one next to the host of another, is held whole.
+const maxErrorTextLength = 2 * maxLocLength
+
+// errorTextCut is what a text of an error ends in when it was cut short.
+const errorTextCut = "…"
+
+// boundError cuts the texts of err short that are longer than maxErrorTextLength, if err is
+// a *ValidationError or a *ParseError: the errors about what a document holds.
+//
+// Such an error quotes the document: the location that is not valid, the value that is no
+// date, the name of an element. What a document holds is as long as its author likes, a
+// <loc> of several megabytes included, and a call may record as many validation errors as
+// SetMaxValidationErrors allows. Held whole, the errors of a call took up as much memory as
+// the documents they are about.
+//
+// The URL of an error is cut to its first maxErrorTextLength bytes, with errorTextCut after
+// them. The URL the call was made for is the exception: it is the caller's own, and an error
+// that names it names it whole. A cause whose message is longer than that is replaced by an
+// error with the message cut the same way, which is all that is kept of it: errors.Is and
+// errors.As no longer find what the cause was or wrapped. The causes that are matched that
+// way have short messages: the error of a limit, and that of a context.
+//
+// A *NetworkError is left as it is. It names a URL that was requested, which is no longer
+// than a URL of a sitemap may be unless it is the URL of the call, and what its cause wraps
+// is what tells a failed request from one that was refused or timed out.
+//
+// The error is changed in place: it is the error a call returns as well when it is about the
+// document the call was made for.
+func (s *S) boundError(err error) {
+	switch e := err.(type) {
+	case *ValidationError:
+		e.URL, e.Err = s.boundErrorURL(e.URL), boundErrorCause(e.Err)
+	case *ParseError:
+		e.URL, e.Err = s.boundErrorURL(e.URL), boundErrorCause(e.Err)
+	}
+}
+
+// boundErrorURL returns url as an error is to name it, see boundError.
+func (s *S) boundErrorURL(url string) string {
+	if url == s.mainURL {
+		return url
+	}
+	return cutErrorText(url)
+}
+
+// boundErrorCause returns cause as an error is to hold it, see boundError.
+func boundErrorCause(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	message := cause.Error()
+	if len(message) <= maxErrorTextLength {
+		return cause
+	}
+	return errors.New(cutErrorText(message))
+}
+
+// cutErrorText returns text if it is of at most maxErrorTextLength bytes, and its first
+// maxErrorTextLength bytes followed by errorTextCut otherwise. A character is not cut in
+// two: the bytes of one that does not fit are left out. What is returned shares no memory
+// with a text that was cut.
+func cutErrorText(text string) string {
+	if len(text) <= maxErrorTextLength {
+		return text
+	}
+	end := maxErrorTextLength
+	for cut := 0; cut < utf8.UTFMax-1 && !utf8.RuneStart(text[end]); cut++ {
+		end--
+	}
+	return text[:end] + errorTextCut
 }
 
 // addErrors records errs as errors of the call, see addError.
@@ -2304,7 +2389,7 @@ func (s *S) newDocument() *S {
 		return nil
 	}
 
-	document := &S{cfg: s.cfg}
+	document := &S{cfg: s.cfg, mainURL: s.mainURL}
 	document.limits.maxSitemaps = s.limits.maxSitemaps
 	if s.limits.maxURLs > 0 {
 		document.limits.maxURLs = s.limits.maxURLs - len(s.urls)
@@ -2343,8 +2428,13 @@ func (s *S) addDocument(document *S) {
 	}
 	s.limits.sitemapsLeftOut = s.limits.sitemapsLeftOut || document.limits.sitemapsLeftOut
 	// There was room for these errors when the document was begun as well, and the ones there
-	// is no room for any more are left out here.
-	s.addErrors(document.errs)
+	// is no room for any more are left out here. They were cut to size when the document
+	// recorded them.
+	for _, err := range document.errs {
+		if s.hasRoomForError(err) {
+			s.errs = append(s.errs, err)
+		}
+	}
 	s.limits.validationErrorsLeftOut = s.limits.validationErrorsLeftOut || document.limits.validationErrorsLeftOut
 }
 

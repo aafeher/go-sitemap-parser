@@ -1061,6 +1061,8 @@ All types implement `Unwrap()`, enabling `errors.Is` traversal to the root cause
 
 No more `*ValidationError` values are recorded than `SetMaxValidationErrors()` allows, see [Max validation errors](#max-validation-errors). The errors of the other types are all recorded.
 
+An error about a document quotes it: the location that is not valid, the value that is no date. What it quotes may be of any length, so a `*ValidationError` and a `*ParseError` hold no text longer than 4,096 bytes, which is twice the length a URL of a sitemap may have. A `URL` that is longer is cut to its first 4,096 bytes, and ends in `…` to tell that it was. The URL passed to `Parse()` is named whole whatever its length. An `Err` whose message is longer is replaced by an error with the message cut the same way, and `errors.Is` and `errors.As` find nothing beyond it. So a `<loc>` of a megabyte is reported with an error of a few kilobytes, which still tells what is wrong with it: `URL exceeds maximum length of 2048 characters (1048576)`. A `*NetworkError` is left as it is.
+
 The error that `Parse()` / `ParseContext()` return is one of these as well, see [Parse](#parse).
 
 The slice returned is the list the instance keeps, not a copy of it, like the one [`GetURLs()`](#geturls) returns. It must not be modified: an error that is set or moved in it is set or moved for every other caller as well. Appending to it is safe, as the slice has no capacity to spare and `append` therefore copies it. It does not change afterwards: errors recorded later are in what a later `GetErrors()` call returns. For a list to sort or to change, see [`Errors()`](#errors).

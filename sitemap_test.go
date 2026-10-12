@@ -17541,3 +17541,288 @@ func TestS_Parse_SitemapIndex_ElementsOfOtherNamespaces(t *testing.T) {
 		}
 	}
 }
+
+// TestCutErrorText verifies that a text of an error is returned as it is up to
+// maxErrorTextLength bytes, and cut to at most that many bytes beyond it, with
+// the mark of a cut after them and without a character cut in two.
+func TestCutErrorText(t *testing.T) {
+	fill := func(n int) string { return strings.Repeat("a", n) }
+
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "empty", text: "", want: ""},
+		{name: "short", text: "https://example.com/", want: "https://example.com/"},
+		{name: "as long as the limit", text: fill(maxErrorTextLength), want: fill(maxErrorTextLength)},
+		{name: "a byte longer", text: fill(maxErrorTextLength + 1), want: fill(maxErrorTextLength) + "…"},
+		{name: "much longer", text: fill(100 * maxErrorTextLength), want: fill(maxErrorTextLength) + "…"},
+		{name: "character that ends at the limit", text: fill(maxErrorTextLength-2) + "éa", want: fill(maxErrorTextLength-2) + "é…"},
+		{name: "character that begins at the limit", text: fill(maxErrorTextLength) + "é", want: fill(maxErrorTextLength) + "…"},
+		{name: "character of two bytes across the limit", text: fill(maxErrorTextLength-1) + "éa", want: fill(maxErrorTextLength-1) + "…"},
+		{name: "character of three bytes, one beyond the limit", text: fill(maxErrorTextLength-2) + "€a", want: fill(maxErrorTextLength-2) + "…"},
+		{name: "character of three bytes, two beyond the limit", text: fill(maxErrorTextLength-1) + "€a", want: fill(maxErrorTextLength-1) + "…"},
+		{name: "character of four bytes, one beyond the limit", text: fill(maxErrorTextLength-3) + "😀a", want: fill(maxErrorTextLength-3) + "…"},
+		{name: "character of four bytes, three beyond the limit", text: fill(maxErrorTextLength-1) + "😀a", want: fill(maxErrorTextLength-1) + "…"},
+		{name: "character of four bytes that ends at the limit", text: fill(maxErrorTextLength-4) + "😀a", want: fill(maxErrorTextLength-4) + "😀…"},
+		{name: "bytes that begin no character", text: fill(maxErrorTextLength-8) + strings.Repeat("\x80", 16), want: fill(maxErrorTextLength-8) + strings.Repeat("\x80", 5) + "…"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := cutErrorText(test.text)
+			if got != test.want {
+				t.Errorf("got %d bytes that end in %q, want %d bytes that end in %q",
+					len(got), got[max(0, len(got)-12):], len(test.want), test.want[max(0, len(test.want)-12):])
+			}
+		})
+	}
+
+	mustEqual(t, "limit", maxErrorTextLength, 4096)
+	mustEqual(t, "cause that is nil", boundErrorCause(nil), nil)
+
+	// A cause is kept as it is up to the same length, and replaced beyond it.
+	atLimit, beyond := errors.New(fill(maxErrorTextLength)), errors.New(fill(maxErrorTextLength+1))
+	mustEqual(t, "cause as long as the limit is kept", boundErrorCause(atLimit) == atLimit, true)
+	mustEqual(t, "cause a byte longer", boundErrorCause(beyond).Error(), fill(maxErrorTextLength)+"…")
+}
+
+// TestS_Parse_ErrorsAreBounded verifies that an error about a document is no
+// larger than its texts may be, however long the value of the document it
+// quotes is: the URL it names and the message of its cause are cut to
+// maxErrorTextLength bytes each. The type of the error stays what it is, and
+// an error whose texts are within the limit is recorded as it is.
+func TestS_Parse_ErrorsAreBounded(t *testing.T) {
+	const size = 1 << 18
+	long := strings.Repeat("a", size)
+	cut := func(text string) string { return text[:maxErrorTextLength] + "…" }
+
+	tests := []struct {
+		name    string
+		url     string
+		content string
+		strict  bool
+		// wantURL is the URL of the only error, wantCause the message of its cause.
+		wantURL   string
+		wantCause string
+	}{
+		{
+			name:      "location that is too long",
+			content:   `<urlset><url><loc>https://example.com/` + long + `</loc></url></urlset>`,
+			wantURL:   cut("https://example.com/" + long),
+			wantCause: fmt.Sprintf("URL exceeds maximum length of 2048 characters (%d)", len("https://example.com/")+size),
+		},
+		{
+			name:      "location that is too long, strict mode",
+			content:   `<urlset><url><loc>https://example.com/` + long + `</loc></url></urlset>`,
+			strict:    true,
+			wantURL:   cut("https://example.com/" + long),
+			wantCause: fmt.Sprintf("URL exceeds maximum length of 2048 characters (%d)", len("https://example.com/")+size),
+		},
+		{
+			name:      "location that cannot be parsed",
+			content:   `<urlset><url><loc>https://example.com/%zz` + long + `</loc></url></urlset>`,
+			wantURL:   cut("https://example.com/%zz" + long),
+			wantCause: cut(`parse "https://example.com/%zz` + long),
+		},
+		{
+			name:      "location of another host, strict mode",
+			content:   `<urlset><url><loc>https://` + long + `/</loc></url></urlset>`,
+			strict:    true,
+			wantURL:   cut("https://" + long),
+			wantCause: cut(`strict mode: host "` + long),
+		},
+		{
+			name:      "location of another scheme",
+			content:   `<urlset><url><loc>s` + long + `://example.com/</loc></url></urlset>`,
+			wantURL:   cut("s" + long),
+			wantCause: cut(`unsupported scheme "s` + long),
+		},
+		{
+			name:      "date",
+			content:   `<urlset><url><loc>https://example.com/a</loc><lastmod>` + long + `</lastmod></url></urlset>`,
+			wantURL:   "https://example.com/a",
+			wantCause: cut(`invalid <lastmod> value "` + long),
+		},
+		{
+			name:      "priority",
+			content:   `<urlset><url><loc>https://example.com/a</loc><priority>` + long + `</priority></url></urlset>`,
+			wantURL:   "https://example.com/a",
+			wantCause: cut(`invalid <priority> value "` + long),
+		},
+		{
+			name:      "change frequency, strict mode",
+			content:   `<urlset><url><loc>https://example.com/a</loc><changefreq>` + long + `</changefreq></url></urlset>`,
+			strict:    true,
+			wantURL:   "https://example.com/a",
+			wantCause: cut(`strict mode: invalid <changefreq> value "` + long),
+		},
+		{
+			name:      "location of an image",
+			content:   `<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"><url><loc>https://example.com/a</loc><image:image><image:loc>https://example.com/` + long + `</image:loc></image:image></url></urlset>`,
+			wantURL:   cut("https://example.com/" + long),
+			wantCause: fmt.Sprintf("URL exceeds maximum length of 2048 characters (%d)", len("https://example.com/")+size),
+		},
+		{
+			name:      "date of an item of a feed",
+			content:   `<rss><channel><item><link>https://example.com/a</link><pubDate>` + long + `</pubDate></item></channel></rss>`,
+			wantURL:   "https://example.com/a",
+			wantCause: cut(`invalid <pubDate> value "` + long),
+		},
+		{
+			name:      "line of a text sitemap",
+			content:   "https://example.com/" + long + "\n",
+			wantURL:   cut("https://example.com/" + long),
+			wantCause: fmt.Sprintf("URL exceeds maximum length of 2048 characters (%d)", len("https://example.com/")+size),
+		},
+		{
+			name:      "sitemap of a sitemap index",
+			content:   `<sitemapindex><sitemap><loc>https://example.com/` + long + `</loc></sitemap></sitemapindex>`,
+			wantURL:   cut("https://example.com/" + long),
+			wantCause: fmt.Sprintf("URL exceeds maximum length of 2048 characters (%d)", len("https://example.com/")+size),
+		},
+		{
+			name:      "sitemap of a robots.txt",
+			url:       "https://example.com/robots.txt",
+			content:   "Sitemap: https://example.com/" + long + "\n",
+			wantURL:   cut("https://example.com/" + long),
+			wantCause: fmt.Sprintf("URL exceeds maximum length of 2048 characters (%d)", len("https://example.com/")+size),
+		},
+		{
+			name:      "root element",
+			content:   `<` + long + `/>`,
+			wantURL:   "https://example.com/sitemap.xml",
+			wantCause: cut(`unrecognized sitemap format (root element: "` + long),
+		},
+		{
+			name:      "element that is not closed, strict mode",
+			content:   `<urlset><` + long + `></urlset>`,
+			strict:    true,
+			wantURL:   "https://example.com/sitemap.xml",
+			wantCause: cut(`XML syntax error on line 1: element <` + long),
+		},
+		{
+			name:      "texts within the limit",
+			content:   `<urlset><url><loc>https://example.com/` + long[:maxErrorTextLength-len("https://example.com/")] + `</loc></url></urlset>`,
+			wantURL:   "https://example.com/" + long[:maxErrorTextLength-len("https://example.com/")],
+			wantCause: fmt.Sprintf("URL exceeds maximum length of 2048 characters (%d)", maxErrorTextLength),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			url := test.url
+			if url == "" {
+				url = "https://example.com/sitemap.xml"
+			}
+			s := New().SetStrict(test.strict)
+			_, parseErr := s.Parse(url, &test.content)
+
+			errs := s.GetErrors()
+			if len(errs) != 1 {
+				t.Fatalf("got %d errors, want 1", len(errs))
+			}
+			var gotURL string
+			var cause error
+			switch e := errs[0].(type) {
+			case *ValidationError:
+				gotURL, cause = e.URL, e.Err
+			case *ParseError:
+				gotURL, cause = e.URL, e.Err
+				// The error of the document the call is made for is the one the
+				// call returns, cut like the one that is recorded.
+				mustEqual(t, "error returned is the one recorded", parseErr == errs[0], true)
+			default:
+				t.Fatalf("unexpected error type %T", errs[0])
+			}
+			if gotURL != test.wantURL {
+				t.Errorf("URL: got %d bytes, want %d", len(gotURL), len(test.wantURL))
+			}
+			if cause.Error() != test.wantCause {
+				t.Errorf("cause: got %d bytes that begin with %q, want %d that begin with %q",
+					len(cause.Error()), cause.Error()[:min(60, len(cause.Error()))], len(test.wantCause), test.wantCause[:min(60, len(test.wantCause))])
+			}
+			if size := len(errs[0].Error()); size > 2*maxErrorTextLength+100 {
+				t.Errorf("the message of the error is of %d bytes", size)
+			}
+		})
+	}
+
+	// The URL the call was made for is the caller's own: an error that names it names it
+	// whole, whereas its cause is cut like any other.
+	t.Run("URL of the call", func(t *testing.T) {
+		url := "https://example.com/" + long
+		content := `<` + long + `/>`
+		s := New()
+		_, err := s.Parse(url, &content)
+
+		var parseErr *ParseError
+		if !errors.As(err, &parseErr) {
+			t.Fatalf("expected a *ParseError, got %T", err)
+		}
+		mustEqual(t, "URL is whole", parseErr.URL == url, true)
+		mustEqual(t, "cause", parseErr.Err.Error() == cut(`unrecognized sitemap format (root element: "`+long), true)
+
+		content = `<urlset><url></url></urlset>`
+		requireParse(t, s, url, &content)
+		var validationErr *ValidationError
+		if errs := s.GetErrors(); len(errs) != 1 || !errors.As(errs[0], &validationErr) {
+			t.Fatalf("expected a *ValidationError, got %v", len(errs))
+		}
+		mustEqual(t, "URL is whole", validationErr.URL == url, true)
+	})
+
+	// A sitemap is located at the URL it was served from, which is as long as the server
+	// that redirects to it likes.
+	t.Run("URL a sitemap was served from", func(t *testing.T) {
+		path := "/" + long[:2*maxErrorTextLength]
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/index.xml":
+				_, _ = fmt.Fprint(w, `<sitemapindex><sitemap><loc>/moved.xml</loc></sitemap></sitemapindex>`)
+			case "/moved.xml":
+				http.Redirect(w, r, path, http.StatusFound)
+			default:
+				_, _ = fmt.Fprint(w, "not a sitemap")
+			}
+		}))
+		defer server.Close()
+
+		s := New()
+		requireParse(t, s, server.URL+"/index.xml", nil)
+
+		var parseErr *ParseError
+		if errs := s.GetErrors(); len(errs) != 1 || !errors.As(errs[0], &parseErr) {
+			t.Fatalf("expected a *ParseError, got %v", len(errs))
+		}
+		mustEqual(t, "URL", parseErr.URL == cut(server.URL+path), true)
+	})
+
+	// A cause whose message is within the limit is kept as it is, with what it wraps.
+	t.Run("cause that is kept", func(t *testing.T) {
+		content := `<urlset><url><loc>https://example.com/%zz</loc></url></urlset>`
+		s := New()
+		requireParse(t, s, "https://example.com/sitemap.xml", &content)
+
+		var urlErr *neturl.Error
+		if errs := s.GetErrors(); len(errs) != 1 || !errors.As(errs[0], &urlErr) {
+			t.Fatalf("expected an error that wraps a *url.Error, got %v", errs)
+		}
+	})
+
+	// A request names the URL it was made for, and what its error wraps is left alone.
+	t.Run("network error", func(t *testing.T) {
+		cause := errors.New(long)
+		client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return nil, cause
+		})}
+		_, err := New().SetHTTPClient(client).Parse("https://example.com/sitemap.xml", nil)
+
+		var networkErr *NetworkError
+		if !errors.As(err, &networkErr) {
+			t.Fatalf("expected a *NetworkError, got %T", err)
+		}
+		mustEqual(t, "cause is wrapped", errors.Is(err, cause), true)
+	})
+}

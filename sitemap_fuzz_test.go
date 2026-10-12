@@ -401,6 +401,40 @@ func assertSitemapsListed(t *testing.T, mode string, strict bool, content string
 	}
 }
 
+// assertErrorsBounded checks that an error about a document holds no text
+// longer than it may, whatever the document holds: its URL and the message of
+// its cause are of at most maxErrorTextLength bytes, and of those of the mark
+// of a cut beyond them. A text is valid UTF-8 if the document is.
+func assertErrorsBounded(t *testing.T, mode string, strict bool, content string) {
+	t.Helper()
+
+	s := New().SetStrict(strict)
+	s.parse(fuzzBaseURL, content)
+	for _, err := range s.errs {
+		var url string
+		var cause error
+		switch e := err.(type) {
+		case *ValidationError:
+			url, cause = e.URL, e.Err
+		case *ParseError:
+			url, cause = e.URL, e.Err
+		default:
+			t.Fatalf("%s mode: an error of the type %T about a document", mode, err)
+		}
+		for name, text := range map[string]string{"URL": url, "cause": cause.Error()} {
+			if len(text) > maxErrorTextLength+len(errorTextCut) {
+				t.Fatalf("%s mode: the %s of an error is of %d bytes", mode, name, len(text))
+			}
+			if len(text) > maxErrorTextLength && !strings.HasSuffix(text, errorTextCut) {
+				t.Fatalf("%s mode: the %s of an error is of %d bytes and does not end in %q", mode, name, len(text), errorTextCut)
+			}
+			if name == "URL" && utf8.ValidString(content) && !utf8.ValidString(text) {
+				t.Fatalf("%s mode: the URL of an error is not valid UTF-8: %q", mode, text)
+			}
+		}
+	}
+}
+
 // assertInvalidDates checks that a date which cannot be parsed costs nothing
 // but itself where it is the date of an entry of a feed or of a sitemap index,
 // in either mode: the page of the entry is returned, without a date, and the
@@ -673,6 +707,8 @@ func FuzzParse(f *testing.F) {
 		"https://example.com/text[1]\nhttps://example.com/text?q=%zz\nhttps://[2001:db8::1]/text[2]\nhttps://[fe80::1%25en]0]/text\n",
 		`<sitemapindex><sitemap><loc>https://example.com/sitemap.xml?ids[]=1</loc></sitemap><sitemap><loc>https://example.com/sitemap.xml?zoom=100%</loc></sitemap></sitemapindex>`,
 		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://example.com/p</loc><image:image><image:loc>https://[2001:db8::1]:8443/a.jpg</image:loc><image:license>https://[2001:db8::1]/licence[1]</image:license></image:image><image:image><image:loc>https://cdn.example.net/b.jpg?size[]=1</image:loc></image:image><video:video><video:thumbnail_loc>https://cdn.example.net/t.jpg?zoom=100%</video:thumbnail_loc></video:video><video:video><video:thumbnail_loc>https://cdn.example.net/t.jpg</video:thumbnail_loc><video:content_loc>https://cdn.example.net/v.mp4?q=%4</video:content_loc><video:view_count>-1</video:view_count></video:video><xhtml:link rel="alternate" hreflang="de" href="https://example.com/de?id]=1"/></url></urlset>`,
+		`<urlset><url><loc>https://example.com/é` + strings.Repeat("é", maxErrorTextLength) + `</loc><lastmod>` + strings.Repeat("ő", maxErrorTextLength) + `</lastmod></url><url><loc>https://` + strings.Repeat("a", 2*maxErrorTextLength) + `/%zz</loc></url></urlset>`,
+		`<` + strings.Repeat("é", maxErrorTextLength) + `/>`,
 		`<sitemapindex><sitemap><loc>`,
 		"",
 		"not xml at all",
@@ -724,6 +760,7 @@ func FuzzParse(f *testing.F) {
 			assertValidationErrorLimit(t, mode, strict, content)
 			assertSitemapsListed(t, mode, strict, content)
 			assertInvalidDates(t, mode, strict, content)
+			assertErrorsBounded(t, mode, strict, content)
 			assertResultCopies(t, mode, strict, content)
 		}
 	})

@@ -133,6 +133,8 @@ func (e *NetworkError) Unwrap() error {
 // ErrMaxSitemaps, ErrMaxURLs or ErrMaxValidationErrors, and ErrMaxResponseSize for gzip
 // content that is too large.
 //
+// The error holds no text longer than 4096 bytes, like a *ValidationError.
+//
 // Example usage:
 //
 //	var parseErr *sitemap.ParseError
@@ -166,6 +168,13 @@ func (e *ParseError) Unwrap() error {
 //
 // How many entries of a document are not valid is up to the document, so a call records no
 // more errors of this type than the limit set with SetMaxValidationErrors allows.
+//
+// What a document holds is as long as its author likes as well, and the error quotes it. It
+// therefore holds no text longer than 4096 bytes, twice the length a URL of a sitemap may
+// have. A URL that is longer is cut to its first 4096 bytes and ends in "…" to tell that it
+// was; the URL a call was made for is named whole. An Err whose message is longer is replaced
+// by an error with the message cut the same way, which errors.Is and errors.As find nothing
+// beyond.
 //
 // Example usage:
 //
