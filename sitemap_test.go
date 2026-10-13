@@ -7681,10 +7681,10 @@ func TestTolerantExtensionURL(t *testing.T) {
 			if want == same {
 				want = test.url
 			}
-			got := tolerantExtensionURL(test.url)
+			got := New().tolerantExtensionURL(test.url)
 			mustEqual(t, "tolerantExtensionURL", got, want)
 			// The URL that is returned is returned as it is.
-			mustEqual(t, "tolerantExtensionURL of the result", tolerantExtensionURL(got), got)
+			mustEqual(t, "tolerantExtensionURL of the result", New().tolerantExtensionURL(got), got)
 		})
 	}
 
@@ -7703,7 +7703,7 @@ func TestTolerantExtensionURL(t *testing.T) {
 			if over > 0 {
 				want = url
 			}
-			mustEqual(t, "tolerantExtensionURL", tolerantExtensionURL(url), want)
+			mustEqual(t, "tolerantExtensionURL", New().tolerantExtensionURL(url), want)
 		})
 	}
 }
@@ -8359,7 +8359,7 @@ func TestValidateAbsoluteURL(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateAbsoluteURL(test.url)
+			err := New().validateAbsoluteURL(test.url)
 			if test.err == "" {
 				if err != nil {
 					t.Fatalf("expected no error, got %v", err)
@@ -17868,4 +17868,258 @@ func TestS_Parse_ErrorsAreBounded(t *testing.T) {
 		}
 		mustEqual(t, "cause is wrapped", errors.Is(err, cause), true)
 	})
+}
+
+// TestS_validationError_Room checks the errors that report a URL of a document:
+// one is made as long as there is room for it, and the error that stands for the
+// ones left out is returned in its place once there is none.
+func TestS_validationError_Room(t *testing.T) {
+	const url = "https://example.com/page"
+	cause := errors.New("cause")
+	value := invalidValue{element: "<priority>", text: " 0,5 "}
+	makers := map[string]struct {
+		make    func(s *S) error
+		message string
+	}{
+		"validationErrorf": {
+			make:    func(s *S) error { return s.validationErrorf(url, "scheme %q, %d of %d", "ftp", 1, 2) },
+			message: `scheme "ftp", 1 of 2`,
+		},
+		"validationErrorf without arguments": {
+			make: func(s *S) error {
+				// Called through a variable, as vet reads the message as a format.
+				makeError := s.validationErrorf
+				return makeError(url, "taken as it is: 100%d")
+			},
+			message: "taken as it is: 100%d",
+		},
+		"validationError": {
+			make:    func(s *S) error { return s.validationError(url, cause) },
+			message: "cause",
+		},
+		"invalidValueError": {
+			make:    func(s *S) error { return s.invalidValueError(url, value) },
+			message: `invalid <priority> value "0,5"`,
+		},
+	}
+	rooms := []struct {
+		name   string
+		limits callLimits
+		full   bool
+	}{
+		{name: "no limit", limits: callLimits{validationErrors: 5}},
+		{name: "nothing recorded", limits: callLimits{maxValidationErrors: 1}},
+		{name: "room for one", limits: callLimits{maxValidationErrors: 3, validationErrors: 2}},
+		{name: "limit reached", limits: callLimits{maxValidationErrors: 3, validationErrors: 3}, full: true},
+		{name: "limit exceeded", limits: callLimits{maxValidationErrors: 3, validationErrors: 4}, full: true},
+	}
+	for name, maker := range makers {
+		for _, room := range rooms {
+			t.Run(name+"/"+room.name, func(t *testing.T) {
+				s := &S{limits: room.limits}
+				mustEqual(t, "validationErrorsFull", s.validationErrorsFull(), room.full)
+				err := maker.make(s)
+				if room.full {
+					mustEqual(t, "error", err, errValidationLeftOut)
+					// It is left out the way the error itself would be.
+					s.addError(err)
+					mustEqual(t, "recorded", len(s.errs), 0)
+					mustEqual(t, "noted as left out", s.limits.validationErrorsLeftOut, true)
+					return
+				}
+				var validationErr *ValidationError
+				if !errors.As(err, &validationErr) {
+					t.Fatalf("got %T, want a *ValidationError", err)
+				}
+				if err == errValidationLeftOut {
+					t.Fatal("got the error of the ones left out")
+				}
+				mustEqual(t, "URL", validationErr.URL, url)
+				mustEqual(t, "message", validationErr.Err.Error(), maker.message)
+				if name == "validationError" {
+					mustEqual(t, "cause", validationErr.Err, cause)
+				}
+				if again := maker.make(s); again == err {
+					t.Error("the same error was returned twice")
+				}
+			})
+		}
+	}
+}
+
+// TestS_Validation_NoErrorMadeOverTheLimit checks that nothing which validates an
+// entry makes an error there is no room for: it finds the entry as wrong as it
+// does with room, and returns the error that stands for the ones left out for
+// each thing that is wrong with it.
+func TestS_Validation_NoErrorMadeOverTheLimit(t *testing.T) {
+	const page = "https://example.com/page"
+	const base = "https://example.com/sitemap.xml"
+	long := "https://example.com/" + strings.Repeat("x", maxLocLength)
+	resolve := func(loc, base string) func(s *S) []error {
+		return func(s *S) []error {
+			_, err := s.resolveAndValidateLoc(loc, base)
+			return []error{err}
+		}
+	}
+	one := func(err error) []error { return []error{err} }
+	tests := []struct {
+		name   string
+		strict bool
+		errs   func(s *S) []error
+		count  int
+	}{
+		{name: "location is empty", errs: resolve("", base), count: 1},
+		{name: "base cannot be parsed", errs: resolve("/page", "://example.com"), count: 1},
+		{name: "location cannot be parsed", errs: resolve("https://[::1/page", base), count: 1},
+		{name: "scheme is not supported", errs: resolve("ftp://example.com/page", base), count: 1},
+		{name: "host is missing", errs: resolve("https:///page", base), count: 1},
+		{name: "location is too long", errs: resolve(long, base), count: 1},
+		{name: "resolved location cannot be parsed", errs: resolve("//::", base), count: 1},
+		{name: "strict: URL is not one", strict: true, errs: resolve("/page", base), count: 1},
+		{name: "strict: scheme differs", strict: true, errs: resolve("http://example.com/page", base), count: 1},
+		{name: "strict: host differs", strict: true, errs: resolve("https://example.org/page", base), count: 1},
+		{name: "strict: location is too long", strict: true, errs: resolve(long, base), count: 1},
+		{name: "strict: change frequency", strict: true, count: 1, errs: func(s *S) []error {
+			return one(s.validateChangeFreq(page, pointerOfURLChangeFreq("Daily")))
+		}},
+		{name: "strict: priority", strict: true, count: 1, errs: func(s *S) []error {
+			return one(s.validatePriority(page, pointerOfFloat32(2)))
+		}},
+		{name: "image URL is too long", count: 1, errs: func(s *S) []error {
+			_, errs := s.validateAndFilterImages(page, []Image{{Loc: long}})
+			return errs
+		}},
+		{name: "strict: images", strict: true, count: 3, errs: func(s *S) []error {
+			_, errs := s.validateAndFilterImages(page, []Image{
+				{},
+				{Loc: "/image.jpg"},
+				{Loc: "https://example.com/image.jpg", License: "/licence"},
+			})
+			return errs
+		}},
+		{name: "strict: news", strict: true, count: 4, errs: func(s *S) []error {
+			_, errs := s.validateNews(page, &News{}, nil)
+			return errs
+		}},
+		{name: "strict: news with an empty date", strict: true, count: 4, errs: func(s *S) []error {
+			_, errs := s.validateNews(page, &News{}, pointerOfString(" "))
+			return errs
+		}},
+		{name: "strict: videos", strict: true, count: 9, errs: func(s *S) []error {
+			_, errs := s.validateAndFilterVideos(page, []Video{
+				{},
+				{
+					ThumbnailLoc: "https://example.com/thumbnail.jpg",
+					Duration:     pointerOfInt(maxVideoDuration + 1),
+					Rating:       pointerOfFloat32Video(maxVideoRating + 1),
+					ViewCount:    pointerOfInt(-1),
+					Tags:         make([]string, maxVideoTags+1),
+				},
+				{
+					ThumbnailLoc: "https://example.com/thumbnail.jpg",
+					Title:        "Title",
+					Description:  "Description",
+					ContentLoc:   "/video.mp4",
+				},
+			})
+			return errs
+		}},
+		{name: "alternate link is too long", count: 1, errs: func(s *S) []error {
+			_, errs := s.validateAndFilterHreflangs(page, []AlternateLink{{Href: long}})
+			return errs
+		}},
+		{name: "strict: alternate links", strict: true, count: 4, errs: func(s *S) []error {
+			_, errs := s.validateAndFilterHreflangs(page, []AlternateLink{
+				{},
+				{Href: "https://example.com/de", Rel: "canonical", Hreflang: "de"},
+				{Href: "https://example.com/de", Rel: "alternate"},
+				{Href: "/de", Rel: "alternate", Hreflang: "de"},
+			})
+			return errs
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			withRoom := &S{cfg: config{strict: test.strict}, limits: callLimits{maxValidationErrors: 100}}
+			errs := test.errs(withRoom)
+			mustEqual(t, "errors with room", len(errs), test.count)
+			for _, err := range errs {
+				if _, ok := err.(*ValidationError); !ok || err == errValidationLeftOut {
+					t.Errorf("with room: got %T %v, want a *ValidationError of its own", err, err)
+				}
+			}
+
+			full := &S{cfg: config{strict: test.strict}, limits: callLimits{maxValidationErrors: 1, validationErrors: 1}}
+			errs = test.errs(full)
+			mustEqual(t, "errors over the limit", len(errs), test.count)
+			for _, err := range errs {
+				mustEqual(t, "error over the limit", err, errValidationLeftOut)
+			}
+		})
+	}
+
+	t.Run("a call records none of them", func(t *testing.T) {
+		content := `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>ftp://example.com/a</loc></url>
+  <url><loc>ftp://example.com/b</loc></url>
+  <url><loc>https://example.com/c</loc><lastmod>yesterday</lastmod></url>
+  <url><loc>https://example.com/d</loc></url>
+</urlset>`
+		s := New().SetMaxValidationErrors(1)
+		requireParse(t, s, base, &content)
+		mustEqual(t, "URLs", s.GetURLCount(), int64(2))
+		errs := s.GetErrors()
+		mustEqual(t, "errors", len(errs), 2)
+		mustEqual(t, "first error", errs[0].Error(), `validate "ftp://example.com/a": unsupported scheme "ftp"`)
+		mustEqual(t, "limit error", errors.Is(errs[1], ErrMaxValidationErrors), true)
+		for _, err := range errs {
+			if err == errValidationLeftOut {
+				t.Error("the error of the ones left out was recorded")
+			}
+		}
+		// The shared error is as it was made: nothing has cut it or named a URL in it.
+		mustEqual(t, "shared error", errValidationLeftOut.Error(), `validate "": validation error left out`)
+	})
+}
+
+// TestS_InvalidValue_NotQuotedOverTheLimit checks that a value which cannot be
+// parsed is not put into the message of an error there is no room for. That
+// error is recorded nowhere, so what tells is the memory the message takes: it
+// quotes the value, and is as long as the value is.
+func TestS_InvalidValue_NotQuotedOverTheLimit(t *testing.T) {
+	const size = 4 << 20
+	value := strings.Repeat("x", size)
+	allocated := func(f func()) uint64 {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		f()
+		runtime.ReadMemStats(&after)
+		return after.TotalAlloc - before.TotalAlloc
+	}
+	notADate := func(string) (LastModTime, error) { return LastModTime{}, errors.New("not a date") }
+	reports := map[string]func(s *S){
+		"date": func(s *S) {
+			s.lastMod("https://example.com/page", dateElement{name: "<lastmod>", text: &value, parse: notADate})
+		},
+		"value of a <url>": func(s *S) {
+			entry := &urlEntry{URL: URL{Loc: "https://example.com/page"}, invalid: []invalidValue{{element: "<priority>", text: value}}}
+			s.addURLEntry(entry, "https://example.com/sitemap.xml")
+		},
+	}
+	for name, report := range reports {
+		t.Run(name, func(t *testing.T) {
+			withRoom := &S{limits: callLimits{maxValidationErrors: 1}}
+			if got := allocated(func() { report(withRoom) }); got < size {
+				t.Errorf("with room: %d bytes allocated, want the %d of the value at least", got, size)
+			}
+			mustEqual(t, "errors with room", len(withRoom.errs), 1)
+
+			full := &S{limits: callLimits{maxValidationErrors: 1, validationErrors: 1}}
+			if got := allocated(func() { report(full) }); got > size/2 {
+				t.Errorf("over the limit: %d bytes allocated for a value of %d", got, size)
+			}
+			mustEqual(t, "errors over the limit", len(full.errs), 0)
+			mustEqual(t, "noted as left out", full.limits.validationErrorsLeftOut, true)
+		})
+	}
 }

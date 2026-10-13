@@ -321,6 +321,9 @@ func assertValidationErrorLimit(t *testing.T, mode string, strict bool, content 
 	got := []string{}
 	reported := 0
 	for _, err := range limited.GetErrors() {
+		if err == errValidationLeftOut {
+			t.Fatalf("%s mode: the error that stands for the validation errors left out was recorded", mode)
+		}
 		if errors.Is(err, ErrMaxValidationErrors) {
 			reported++
 			continue
@@ -1007,7 +1010,7 @@ func FuzzStrictURL(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, rawURL string) {
-		err := extensionURLError(rawURL, true)
+		err := New().extensionURLError(rawURL, true)
 		if err == nil {
 			assertLocInvariants(t, "strict", []string{rawURL})
 			assertNoExcludedCharacter(t, []string{rawURL})
