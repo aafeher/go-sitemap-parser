@@ -3558,7 +3558,7 @@ func (s *S) validateVideoFieldsStrict(loc string, v Video) []error {
 		errs = append(errs, s.validationErrorf(loc, "strict mode: video <duration> %d is out of range [1, %d]", *v.Duration, maxVideoDuration))
 	}
 	if v.Rating != nil && (*v.Rating < 0.0 || *v.Rating > maxVideoRating) {
-		errs = append(errs, s.validationErrorf(loc, "strict mode: video <rating> %g is out of range [0.0, %g]", *v.Rating, maxVideoRating))
+		errs = append(errs, s.validationErrorf(loc, "strict mode: video <rating> %g is out of range [0.0, %.1f]", *v.Rating, maxVideoRating))
 	}
 	if v.ViewCount != nil && *v.ViewCount < 0 {
 		errs = append(errs, s.validationErrorf(loc, "strict mode: video <view_count> %d is negative", *v.ViewCount))
