@@ -4098,7 +4098,7 @@ func unzip(content string, maxSize int64) (string, error) {
 }
 
 // lastModFormats are the date and time layouts accepted in <lastmod> and in the date elements
-// of the extensions.
+// of the extensions. A text is a date in the first of them it can be parsed with.
 var lastModFormats = []string{
 	"2006",
 	"2006-01",
@@ -4111,6 +4111,69 @@ var lastModFormats = []string{
 	"2006-01-02T15:04:05.999999999Z",
 	time.RFC3339,
 	time.RFC3339Nano,
+}
+
+// The layouts of lastModFormats, by what tells them apart at a glance, see lastModFormatsOf.
+// Each list holds its layouts in the order lastModFormats holds them in.
+var (
+	// lastModYearFormats, lastModMonthFormats and lastModDayFormats are the layouts of a
+	// date without a time, each of one length.
+	lastModYearFormats  = lastModFormats[0:1]
+	lastModMonthFormats = lastModFormats[1:2]
+	lastModDayFormats   = lastModFormats[2:3]
+	// lastModMinuteOffsetFormats and lastModMinuteUTCFormats are the layouts of a time
+	// without seconds, with the time zone as an offset and as "Z".
+	lastModMinuteOffsetFormats = lastModFormats[3:4]
+	lastModMinuteUTCFormats    = lastModFormats[4:5]
+	// lastModSecondOffsetFormats are the layouts of a time with seconds that can end in an
+	// offset, and lastModSecondUTCFormats the ones that can end in "Z". The layouts of RFC
+	// 3339 take the time zone either way.
+	lastModSecondOffsetFormats = []string{lastModFormats[5], lastModFormats[7], lastModFormats[9], lastModFormats[10]}
+	lastModSecondUTCFormats    = []string{lastModFormats[6], lastModFormats[8], lastModFormats[9], lastModFormats[10]}
+)
+
+// lastModDateLength is the length of the date a layout with a time begins with, "2006-01-02".
+// The "T" that begins the time follows it.
+const lastModDateLength = len("2006-01-02")
+
+// lastModFormatsOf returns the layouts of lastModFormats that text may be a date in, in the
+// order lastModFormats holds them in. It leaves out the ones text cannot be in, which is all
+// but one of them for a date as documents give it, and all of them for most text that is no
+// date. time.Parse makes an error with a copy of the text each time it fails, so every layout
+// that is tried in vain costs a text of any length its length again.
+//
+// What tells is the form the layouts have in common. The ones without a time have a length
+// of their own, as their numbers have a fixed number of digits. The others have a "T" after
+// the date. Their minutes are of two digits and follow the first colon of the time, so the
+// character after them is a colon if there are seconds, and begins the time zone if there
+// are none. A layout that ends in "Z" takes no other end, and one that ends in an offset
+// ends in a digit.
+func lastModFormatsOf(text string) []string {
+	if len(text) <= lastModDateLength || text[lastModDateLength] != 'T' {
+		switch len(text) {
+		case len("2006"):
+			return lastModYearFormats
+		case len("2006-01"):
+			return lastModMonthFormats
+		case lastModDateLength:
+			return lastModDayFormats
+		}
+		return nil
+	}
+	utc := text[len(text)-1] == 'Z'
+	// The hour is what stands between the "T" and the first colon.
+	clock := text[lastModDateLength+1:]
+	afterMinutes := strings.IndexByte(clock, ':') + len(":04")
+	if afterMinutes < len(clock) && clock[afterMinutes] == ':' {
+		if utc {
+			return lastModSecondUTCFormats
+		}
+		return lastModSecondOffsetFormats
+	}
+	if utc {
+		return lastModMinuteUTCFormats
+	}
+	return lastModMinuteOffsetFormats
 }
 
 // rfc822Layouts are the layouts of a date and time of RFC 822 whose time zone is given as an
@@ -4209,9 +4272,12 @@ func (l *LastModTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error
 // parseLastModTime parses a date or a date and time in one of lastModFormats, ignoring
 // surrounding whitespace. Empty text is no date and fails like any other text that is none:
 // what an empty element stands for is up to the caller.
+//
+// Only the layouts the text may be in are tried, see lastModFormatsOf: the result is that of
+// trying them all.
 func parseLastModTime(text string) (LastModTime, error) {
 	text = strings.TrimSpace(text)
-	for _, format := range lastModFormats {
+	for _, format := range lastModFormatsOf(text) {
 		if parsedTime, err := time.Parse(format, text); err == nil {
 			return LastModTime{parsedTime}, nil
 		}

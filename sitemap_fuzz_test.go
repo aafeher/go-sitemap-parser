@@ -1454,3 +1454,49 @@ func slicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// FuzzParseLastModTime checks that parseLastModTime, which tries only the
+// layouts a text may be in, reads every text the way trying all of them does:
+// the same texts are dates, and they are the same dates.
+func FuzzParseLastModTime(f *testing.F) {
+	seeds := []string{
+		"2024",
+		"2024-01",
+		"2024-01-15",
+		"2024-01-15T10:30+01:00",
+		"2024-01-15T10:30Z",
+		"2024-01-15T10:30:45-08:00",
+		"2024-01-15T10:30:45Z",
+		"2024-01-15T10:30:45.123456789+01:00",
+		"2024-01-15T10:30:45,5Z",
+		"2024-01-15T1:30:45Z",
+		" 2024-01-15T10:30:45Z\n",
+		"2024-01-15T10:30:45",
+		"2024-01-15 10:30:45Z",
+		"2024-01-15T::::Z",
+		"0000-01-01T00:00:00+23:59",
+		"yesterday",
+		"",
+	}
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, text string) {
+		mustParseLastModTimeLikeAll(t, text)
+
+		got, err := parseLastModTime(text)
+		if err != nil && !got.IsZero() {
+			t.Fatalf("parseLastModTime(%q) fails with %v and returns the date %v", text, err, got.Time)
+		}
+		// Every layout that is tried is one of the layouts, and they are tried in order.
+		last := -1
+		for _, format := range lastModFormatsOf(strings.TrimSpace(text)) {
+			i := slices.Index(lastModFormats, format)
+			if i <= last {
+				t.Fatalf("lastModFormatsOf(%q): the layout %q is out of order", text, format)
+			}
+			last = i
+		}
+	})
+}
