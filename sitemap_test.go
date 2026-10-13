@@ -3382,6 +3382,49 @@ func TestS_Parse_ConfigErrors(t *testing.T) {
 		}
 	}
 
+	// The error of a blocked call wraps the configuration errors that are outstanding, in
+	// the order GetErrors returns them and in a list of its own.
+	t.Run("the error of a blocked call wraps the configuration errors", func(t *testing.T) {
+		for name, parse := range map[string]func(s *S) error{
+			"Parse": func(s *S) error {
+				_, err := s.Parse(url, &valid)
+				return err
+			},
+			"ParseContext": func(s *S) error {
+				_, err := s.ParseContext(context.Background(), url, nil)
+				return err
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				s := New().SetMaxDepth(0).SetFollow([]string{`(`}).SetMaxURLs(-1)
+				err := parse(s)
+				mustEqual(t, "message", err.Error(), blocked)
+
+				recorded := s.GetErrors()
+				mustEqual(t, "errors recorded", len(recorded), 3)
+				for _, configErr := range recorded {
+					mustEqual(t, "errors.Is "+configErr.Error(), errors.Is(err, configErr), true)
+				}
+				var first *ConfigError
+				if !errors.As(err, &first) {
+					t.Fatalf("expected the error to wrap a *ConfigError")
+				}
+				mustEqual(t, "the first of them is found", error(first) == recorded[0], true)
+				mustEqual(t, "field", first.Field, "maxDepth")
+				mustEqual(t, "no other error is matched", errors.Is(err, ErrMaxDepth), false)
+
+				wrapped := err.(interface{ Unwrap() []error }).Unwrap()
+				mustEqual(t, "errors wrapped", len(wrapped), 3)
+
+				// What is done to the instance afterwards does not change the error.
+				s.SetMaxDepth(5).SetFollow(nil).SetMaxURLs(0)
+				mustEqual(t, "errors recorded afterwards", len(s.GetErrors()), 0)
+				mustEqual(t, "still wrapped", errors.Is(err, recorded[0]) && errors.Is(err, recorded[2]), true)
+				mustEqual(t, "errors wrapped afterwards", len(wrapped), 3)
+			})
+		}
+	})
+
 	t.Run("block parsing until the setting is corrected", func(t *testing.T) {
 		s := New().SetMaxDepth(0)
 		requireBlocked(t, s)

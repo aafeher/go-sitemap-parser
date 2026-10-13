@@ -722,6 +722,11 @@ func ExampleConfigError() {
 	content := `<urlset><url><loc>https://example.com/</loc></url></urlset>`
 	if _, err := s.Parse("https://example.com/sitemap.xml", &content); err != nil {
 		fmt.Println(err)
+		// The error of the call wraps the errors that are outstanding.
+		var configErr *sitemap.ConfigError
+		if errors.As(err, &configErr) {
+			fmt.Println("because of", configErr.Field)
+		}
 	}
 
 	s.SetMaxDepth(5)
@@ -732,6 +737,7 @@ func ExampleConfigError() {
 	// Output:
 	// maxDepth - must be greater than 0, got 0
 	// errors occurred before parsing, see GetErrors() for details
+	// because of maxDepth
 	// 1 URL
 }
 

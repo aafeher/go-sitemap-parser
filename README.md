@@ -662,9 +662,9 @@ The error `Parse()` returns is about the document at `url` itself. It is `nil` i
 | `*ValidationError` | `url` is not an HTTP or HTTPS URL with a host (checked when the content is to be fetched) |
 | `*NetworkError` | The document could not be fetched |
 | `*ParseError` | The document could not be parsed: it is not a sitemap, it is empty, its XML or gzip content is broken, it expands beyond the size limit |
-| an untyped error | A configuration error is outstanding, so nothing was parsed, see [Reusing an instance](#reusing-an-instance) |
+| an error that wraps the `*ConfigError` values | A configuration error is outstanding, so nothing was parsed, see [Reusing an instance](#reusing-an-instance) |
 
-Except for the last, the error returned is the very one `GetErrors()` holds about the document.
+Except for the last, the error returned is the very one `GetErrors()` holds about the document. The last wraps the configuration errors `GetErrors()` holds, so `errors.As` finds a `*ConfigError` in it.
 
 What goes wrong further on does not fail the call and is reported via [`GetErrors()`](#geterrors) only: a sitemap the document lists that cannot be fetched or parsed, an entry that is not valid, a limit being reached (see [Max depth](#max-depth), [Max sitemaps](#max-sitemaps) and [Max URLs](#max-urls)). A `nil` error therefore does not mean that nothing was skipped, and `GetErrors()` is worth checking after every call:
 
@@ -762,12 +762,17 @@ for _, url := range []string{"https://example.com/sitemap.xml", "https://example
 }
 ```
 
-Configuration errors are the exception, because they belong to the instance rather than to a single call. A `*ConfigError` recorded by a `Set*` method stays in `GetErrors()`, and while any of them is outstanding `Parse()` does not parse anything and returns the error `errors occurred before parsing, see GetErrors() for details`. Calling the same setter again with a valid value clears its error:
+Configuration errors are the exception, because they belong to the instance rather than to a single call. A `*ConfigError` recorded by a `Set*` method stays in `GetErrors()`, and while any of them is outstanding `Parse()` does not parse anything and returns the error `errors occurred before parsing, see GetErrors() for details`. That error wraps the configuration errors that are outstanding: `errors.As` finds a `*ConfigError` in it, the first of them, and `errors.Is` matches each of the errors `GetErrors()` holds for them. Calling the same setter again with a valid value clears its error:
 
 ```go
 s := sitemap.New().SetMaxDepth(0) // invalid: recorded as a *ConfigError
 
 _, err := s.Parse(url, nil) // err: errors occurred before parsing, see GetErrors() for details
+
+var configErr *sitemap.ConfigError
+if errors.As(err, &configErr) {
+	fmt.Println(configErr.Field) // maxDepth
+}
 
 s.SetMaxDepth(5)           // valid: clears the error recorded for maxDepth
 _, err = s.Parse(url, nil) // parses normally

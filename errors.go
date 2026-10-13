@@ -63,8 +63,30 @@ func (e *limitError) Unwrap() error {
 	return e.limit
 }
 
+// blockedError is the error of a Parse or ParseContext call that parsed nothing because
+// configuration errors are outstanding. It wraps those errors, so errors.As finds a
+// *ConfigError in it, and errors.Is matches each of the errors GetErrors returned for them.
+type blockedError struct {
+	// configErrs are the configuration errors that were outstanding when the call was made.
+	configErrs []error
+}
+
+func (e *blockedError) Error() string {
+	return "errors occurred before parsing, see GetErrors() for details"
+}
+
+// Unwrap returns the configuration errors that kept the call from parsing, in the order
+// GetErrors returns them.
+func (e *blockedError) Unwrap() []error {
+	return e.configErrs
+}
+
 // ConfigError is returned when a configuration setter receives an invalid value.
 // Callers can inspect the Field to determine which configuration setting caused the error.
+//
+// A Parse or ParseContext call that is made while such an error is outstanding parses nothing,
+// and the error it returns wraps the outstanding ones: errors.As finds the first of them in
+// it.
 //
 // Example usage:
 //
