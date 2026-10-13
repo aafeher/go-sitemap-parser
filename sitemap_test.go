@@ -18123,3 +18123,202 @@ func TestS_InvalidValue_NotQuotedOverTheLimit(t *testing.T) {
 		})
 	}
 }
+
+// parseLastModTimeWithAll parses text the way parseLastModTime is to: as a date
+// in the first of lastModFormats it can be parsed with. It tries them all, which
+// is what parseLastModTime spares itself.
+func parseLastModTimeWithAll(text string) (LastModTime, bool) {
+	text = strings.TrimSpace(text)
+	for _, format := range lastModFormats {
+		if parsed, err := time.Parse(format, text); err == nil {
+			return LastModTime{parsed}, true
+		}
+	}
+	return LastModTime{}, false
+}
+
+// mustParseLastModTimeLikeAll fails the test if parseLastModTime does not read
+// text the way parseLastModTimeWithAll does.
+func mustParseLastModTimeLikeAll(t *testing.T, text string) {
+	t.Helper()
+	want, isDate := parseLastModTimeWithAll(text)
+	got, err := parseLastModTime(text)
+	if (err == nil) != isDate {
+		t.Fatalf("parseLastModTime(%q): error %v, but a date with all of the layouts: %t", text, err, isDate)
+	}
+	const layout = "2006-01-02T15:04:05.999999999Z07:00 MST"
+	if !got.Equal(want.Time) || got.Format(layout) != want.Format(layout) || got.Location().String() != want.Location().String() {
+		t.Fatalf("parseLastModTime(%q) = %v, with all of the layouts %v", text, got.Time, want.Time)
+	}
+}
+
+func TestLastModFormatsOf(t *testing.T) {
+	const (
+		year = iota
+		month
+		day
+		minuteOffset
+		minuteUTC
+		secondOffset
+		secondUTC
+		nanoOffset
+		nanoUTC
+		rfc3339
+		rfc3339Nano
+	)
+	tests := []struct {
+		text string
+		want []int
+	}{
+		{"2024", []int{year}},
+		{"2024-01", []int{month}},
+		{"2024-01-15", []int{day}},
+		{"2024-01-15T10:30+01:00", []int{minuteOffset}},
+		{"2024-01-15T10:30-01:00", []int{minuteOffset}},
+		{"2024-01-15T10:30Z", []int{minuteUTC}},
+		{"2024-01-15T1:30Z", []int{minuteUTC}},
+		{"2024-01-15T10:30:45+01:00", []int{secondOffset, nanoOffset, rfc3339, rfc3339Nano}},
+		{"2024-01-15T10:30:45.123+01:00", []int{secondOffset, nanoOffset, rfc3339, rfc3339Nano}},
+		{"2024-01-15T1:30:45+01:00", []int{secondOffset, nanoOffset, rfc3339, rfc3339Nano}},
+		{"2024-01-15T10:30:45Z", []int{secondUTC, nanoUTC, rfc3339, rfc3339Nano}},
+		{"2024-01-15T10:30:45,123Z", []int{secondUTC, nanoUTC, rfc3339, rfc3339Nano}},
+		{"2024-01-15T1:30:45Z", []int{secondUTC, nanoUTC, rfc3339, rfc3339Nano}},
+		// No date, and told from one by its form: nothing is tried.
+		{"", nil},
+		{"202", nil},
+		{"20245", nil},
+		{"2024-1", nil},
+		{"2024-01-5", nil},
+		{"2024-01-155", nil},
+		{"yesterday", nil},
+		{"2024-01-15 10:30:45Z", nil},
+		{"2024-01-15t10:30:45Z", nil},
+		{"2024-01-1T10:30:45Z", nil},
+		{strings.Repeat("x", 1000), nil},
+		// No date either, but of the form of one: the layouts of that form are tried.
+		{"year", []int{year}},
+		{"2024/01", []int{month}},
+		{"2024-01-32", []int{day}},
+		{"2024-01-15T", []int{minuteOffset}},
+		{"2024-01-15TZ", []int{minuteUTC}},
+		{"2024-01-15T10", []int{minuteOffset}},
+		{"2024-01-15T10:", []int{minuteOffset}},
+		{"2024-01-15T10:3", []int{minuteOffset}},
+		{"2024-01-15T10:30", []int{minuteOffset}},
+		{"2024-01-15T10:30:", []int{secondOffset, nanoOffset, rfc3339, rfc3339Nano}},
+		{"2024-01-15T10:30:45", []int{secondOffset, nanoOffset, rfc3339, rfc3339Nano}},
+		{"2024-01-15T10:3:45Z", []int{minuteUTC}},
+		{"2024-01-15T10:30:45z", []int{secondOffset, nanoOffset, rfc3339, rfc3339Nano}},
+		{"2024-01-15T::::Z", []int{secondUTC, nanoUTC, rfc3339, rfc3339Nano}},
+		{"2024-01-15T:::Z", []int{minuteUTC}},
+		{"2024-01-15T:30:Z", []int{secondUTC, nanoUTC, rfc3339, rfc3339Nano}},
+	}
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("%q", test.text), func(t *testing.T) {
+			var want []string
+			for _, format := range test.want {
+				want = append(want, lastModFormats[format])
+			}
+			if got := lastModFormatsOf(test.text); !slices.Equal(got, want) {
+				t.Errorf("got %q, want %q", got, want)
+			}
+			mustParseLastModTimeLikeAll(t, test.text)
+		})
+	}
+
+	t.Run("a time written in a layout may be in that layout", func(t *testing.T) {
+		times := []time.Time{
+			time.Date(2024, 1, 15, 10, 30, 45, 0, time.UTC),
+			time.Date(2024, 12, 31, 23, 59, 59, 123456789, time.FixedZone("", 90*60)),
+			time.Date(1, 1, 1, 0, 0, 0, 500000000, time.FixedZone("", -8*60*60)),
+		}
+		for _, format := range lastModFormats {
+			for _, written := range times {
+				text := written.Format(format)
+				if !slices.Contains(lastModFormatsOf(text), format) {
+					t.Errorf("%q, written in the layout %q, is not tried in it: %q", text, format, lastModFormatsOf(text))
+				}
+				mustParseLastModTimeLikeAll(t, text)
+			}
+		}
+	})
+}
+
+// TestParseLastModTime_LikeAllLayouts checks that parseLastModTime reads a text
+// the way trying every layout does, on dates and on what a change of one
+// character makes of them.
+func TestParseLastModTime_LikeAllLayouts(t *testing.T) {
+	texts := []string{
+		"2024",
+		"2024-01",
+		"2024-01-15",
+		"2024-01-15T10:30+01:00",
+		"2024-01-15T10:30Z",
+		"2024-01-15T10:30:45-08:00",
+		"2024-01-15T10:30:45Z",
+		"2024-01-15T10:30:45.123456789+01:00",
+		"2024-01-15T10:30:45.5Z",
+		"2024-01-15T1:30:45Z",
+	}
+	const characters = "0159TZz:+-., x"
+	count := 0
+	for _, text := range texts {
+		mustParseLastModTimeLikeAll(t, text)
+		for i := 0; i <= len(text); i++ {
+			for _, c := range characters {
+				// One character more, one another, and one fewer.
+				mustParseLastModTimeLikeAll(t, text[:i]+string(c)+text[i:])
+				count++
+				if i < len(text) {
+					mustParseLastModTimeLikeAll(t, text[:i]+string(c)+text[i+1:])
+					mustParseLastModTimeLikeAll(t, text[:i]+text[i+1:])
+					count += 2
+				}
+			}
+		}
+	}
+	if count < 5000 {
+		t.Errorf("%d texts compared", count)
+	}
+}
+
+// TestParseLastModTime_OneLayoutTried checks that a date costs what parsing it
+// with the layout it is in costs, and no more: no layout is tried in vain,
+// which would cost an error each.
+func TestParseLastModTime_OneLayoutTried(t *testing.T) {
+	dates := map[string]string{
+		"2024":                          "2006",
+		"2024-01":                       "2006-01",
+		"2024-01-15":                    "2006-01-02",
+		"2024-01-15T10:30+01:00":        "2006-01-02T15:04-07:00",
+		"2024-01-15T10:30Z":             "2006-01-02T15:04Z",
+		"2024-01-15T10:30:45+01:00":     "2006-01-02T15:04:05-07:00",
+		"2024-01-15T10:30:45Z":          "2006-01-02T15:04:05Z",
+		"2024-01-15T10:30:45.123+01:00": "2006-01-02T15:04:05-07:00",
+		"2024-01-15T10:30:45.123Z":      "2006-01-02T15:04:05Z",
+	}
+	for text, layout := range dates {
+		t.Run(text, func(t *testing.T) {
+			if _, err := time.Parse(layout, text); err != nil {
+				t.Fatalf("time.Parse(%q, %q): %v", layout, text, err)
+			}
+			want := testing.AllocsPerRun(100, func() { _, _ = time.Parse(layout, text) })
+			got := testing.AllocsPerRun(100, func() { _, _ = parseLastModTime(text) })
+			mustEqual(t, "allocations", got, want)
+		})
+	}
+
+	// A text that has not the form of a date costs its error, however long it is.
+	long := strings.Repeat("x", 1<<20)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := parseLastModTime(long)
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("a megabyte of x is a date")
+	}
+	// The message quotes the text, which a megabyte of memory is doubled for a few times.
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 6<<20 {
+		t.Errorf("%d bytes allocated for a text of %d that is no date", allocated, len(long))
+	}
+}
