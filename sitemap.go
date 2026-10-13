@@ -1063,7 +1063,9 @@ func (s *S) GetStrict() bool {
 // errors collected by the previous call. Configuration errors recorded by the Set*
 // methods are the exception. They persist across calls, and while any of them
 // is outstanding Parse does not parse anything and returns an error with the
-// message "errors occurred before parsing, see GetErrors() for details".
+// message "errors occurred before parsing, see GetErrors() for details". That
+// error wraps the configuration errors that are outstanding, so errors.As finds
+// a *ConfigError in it.
 // Calling the same setter again with a valid value clears its error.
 //
 // A sitemap that is reached through a redirect is located at the URL it was
@@ -1096,13 +1098,14 @@ func (s *S) GetStrict() bool {
 // It returns the S structure, and a nil error if the document at the given
 // URL was fetched and parsed. Otherwise the error tells why it was not:
 //
-//   - a configuration error is outstanding, see above;
+//   - a configuration error is outstanding, see above: an error that wraps
+//     the *ConfigError values;
 //   - the URL is not valid: a *ValidationError;
 //   - the document could not be fetched: a *NetworkError;
 //   - the document could not be parsed: a *ParseError.
 //
 // Except for the first, the error returned is the one GetErrors() holds about
-// it. What goes wrong further on is in GetErrors() only and does not fail the
+// it; the first wraps the ones GetErrors() holds. What goes wrong further on is in GetErrors() only and does not fail the
 // call: a sitemap the document lists that cannot be fetched or parsed, a limit
 // that is reached, an entry that is not valid. The error of a limit wraps the
 // error that stands for it, such as ErrMaxURLs, so errors.Is tells which limit
@@ -1180,7 +1183,9 @@ func (s *S) ParseContext(ctx context.Context, url string, urlContent *string) (*
 
 	if len(s.errs) > 0 {
 		s.mu.Unlock()
-		return s, errors.New("errors occurred before parsing, see GetErrors() for details")
+		// The list is the one GetErrors returns at this point. It is never changed in
+		// place, so what a setter does afterwards does not change the error.
+		return s, &blockedError{configErrs: slices.Clip(s.errs)}
 	}
 
 	if urlContent == nil {

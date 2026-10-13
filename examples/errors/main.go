@@ -48,6 +48,15 @@ func main() {
 		}
 	}
 
+	// Nothing is parsed while the error is outstanding. The error of the call
+	// wraps it, so the setting to correct can be told from that error as well.
+	_, err := s.Parse("https://example.com/sitemap.xml", nil)
+	fmt.Printf("  Parse: %v\n", err)
+	var blockedBy *sitemap.ConfigError
+	if errors.As(err, &blockedBy) {
+		fmt.Printf("  blocked by: %q\n", blockedBy.Field)
+	}
+
 	// ── 2. NetworkError ───────────────────────────────────────────────────────
 	fmt.Println("\n=== NetworkError ===")
 	notFound := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
