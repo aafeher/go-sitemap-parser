@@ -1513,7 +1513,8 @@ func (s *S) GetURLCount() int64 {
 // GetRandomURLs returns a slice of randomly selected URLs from the S object's URL list. The number of URLs to select is specified by the parameter n.
 // If n exceeds the number of URLs in the list, all of them are returned, in random order.
 // If n is zero or negative, or the S object is nil, an empty slice is returned.
-// The function creates a copy of the original URLs list and randomly selects n URLs from it, removing them to avoid duplicates.
+// No URL of the list is selected twice. The list itself is not copied: what the call costs
+// goes by n, the number of URLs selected, not by the number of URLs there are.
 // The selected URLs are returned as a new slice. Each of them is a copy that is the caller's
 // own, with everything it points to, like the ones URLs yields.
 func (s *S) GetRandomURLs(n int) []URL {
@@ -1522,25 +1523,68 @@ func (s *S) GetRandomURLs(n int) []URL {
 	}
 
 	s.mu.Lock()
-	originalURLs := make([]URL, len(s.urls))
-	copy(originalURLs, s.urls)
-	s.mu.Unlock()
-
 	// No more URLs can be selected than there are. Without this cap the result would be
 	// allocated for n elements, however large n is.
-	n = min(n, len(originalURLs))
-	randURLs := make([]URL, 0, n)
+	n = min(n, len(s.urls))
+	randURLs := make([]URL, n)
+	for i, index := range randomIndices(n, len(s.urls)) {
+		randURLs[i] = s.urls[index]
+	}
+	s.mu.Unlock()
 
-	for i := 0; i < n; i++ {
-		index := rand.IntN(len(originalURLs))
-		randURLs = append(randURLs, cloneURL(originalURLs[index]))
-
-		// Remove the selected URL from the original list to avoid duplicates
-		originalURLs[index] = originalURLs[len(originalURLs)-1] // Replace it with the last one.
-		originalURLs = originalURLs[:len(originalURLs)-1]       // Remove last element.
+	// What a URL of the list points to is not changed once the URL is in the list, so it is
+	// copied without the lock.
+	for i := range randURLs {
+		randURLs[i] = cloneURL(randURLs[i])
 	}
 
 	return randURLs
+}
+
+// denseSampleDivisor decides how randomIndices keeps track of the indices it has selected:
+// in a list of all of them when it is to select more than one in denseSampleDivisor, and in
+// a map of the ones it has moved otherwise. An entry of the map takes several times the
+// memory an index of the list does, so the map is worth it for a small part of the indices
+// only.
+const denseSampleDivisor = 8
+
+// randomIndices returns n indices of a list of the given length, selected at random: no
+// index twice, each selection of n as likely as any other, and in an order that is as
+// likely as any other. n must not be negative or greater than length.
+//
+// It shuffles the first n places of the list of all indices the way Fisher and Yates do:
+// the index at place i is exchanged with the one at a random place from i on. Selecting a
+// few of many indices, it does not write that list down. It notes the places an index was
+// moved to instead; every other place holds the index of its own number. What it costs goes
+// by n then, not by length.
+func randomIndices(n, length int) []int {
+	if n > length/denseSampleDivisor {
+		indices := make([]int, length)
+		for i := range indices {
+			indices[i] = i
+		}
+		for i := range n {
+			j := i + rand.IntN(length-i)
+			indices[i], indices[j] = indices[j], indices[i]
+		}
+		return indices[:n:n]
+	}
+
+	indices := make([]int, n)
+	moved := make(map[int]int, n)
+	at := func(place int) int {
+		if index, ok := moved[place]; ok {
+			return index
+		}
+		return place
+	}
+	for i := range indices {
+		j := i + rand.IntN(length-i)
+		indices[i] = at(j)
+		// Place i is not looked at again, so only the index that goes to place j is noted.
+		moved[j] = at(i)
+	}
+	return indices
 }
 
 // setContent extracts the main URL content or returns the provided URL content if not nil.
