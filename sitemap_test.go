@@ -18506,3 +18506,67 @@ func TestREADME_LinksEveryExample(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateAndFilter checks what the entries of the extensions have in common
+// when they are validated, see validateAndFilter.
+func TestValidateAndFilter(t *testing.T) {
+	const page = "https://example.com/page"
+
+	t.Run("the list passed is left as it is", func(t *testing.T) {
+		for _, strict := range []bool{false, true} {
+			s := &S{cfg: config{strict: strict}}
+			images := []Image{{}, {Loc: "https://example.com/a.jpg"}, {}, {Loc: "https://example.com/b.jpg"}}
+			valid, _ := s.validateAndFilterImages(page, images)
+			mustEqual(t, "images kept", len(valid), 2)
+			mustEqual(t, "first image kept", valid[0].Loc, "https://example.com/a.jpg")
+			mustEqual(t, "second image kept", valid[1].Loc, "https://example.com/b.jpg")
+			mustEqual(t, "first image passed", images[0].Loc, "")
+			mustEqual(t, "second image passed", images[1].Loc, "https://example.com/a.jpg")
+			mustEqual(t, "third image passed", images[2].Loc, "")
+
+			videos := []Video{{}, {ThumbnailLoc: "https://example.com/t.jpg"}}
+			validVideos, _ := s.validateAndFilterVideos(page, videos)
+			mustEqual(t, "videos kept", len(validVideos), 1)
+			mustEqual(t, "first video passed", videos[0].ThumbnailLoc, "")
+
+			links := []AlternateLink{{}, {Href: "https://example.com/de", Rel: "alternate", Hreflang: "de"}}
+			validLinks, _ := s.validateAndFilterHreflangs(page, links)
+			mustEqual(t, "links kept", len(validLinks), 1)
+			mustEqual(t, "first link passed", links[0].Href, "")
+		}
+	})
+
+	t.Run("a list with nothing in it is returned as it is", func(t *testing.T) {
+		s := &S{cfg: config{strict: true}}
+		images, errs := s.validateAndFilterImages(page, []Image{})
+		if images == nil || len(images) != 0 || errs != nil {
+			t.Errorf("an empty list: got %v and %v", images, errs)
+		}
+		images, errs = s.validateAndFilterImages(page, nil)
+		if images != nil || errs != nil {
+			t.Errorf("nil: got %v and %v", images, errs)
+		}
+	})
+
+	t.Run("an alternate link is left out for the first thing that is wrong with it", func(t *testing.T) {
+		long := "/" + strings.Repeat("x", maxLocLength)
+		tests := []struct {
+			link AlternateLink
+			want string
+		}{
+			{AlternateLink{Href: long, Rel: "canonical"}, fmt.Sprintf(`validate %q: URL exceeds maximum length of 2048 characters (2049)`, long)},
+			{AlternateLink{Href: "/de", Rel: "canonical"}, `validate "/de": strict mode: alternate link <rel> must be "alternate", got "canonical"`},
+			{AlternateLink{Href: "/de", Rel: "alternate"}, `validate "/de": strict mode: alternate link <hreflang> is empty`},
+			{AlternateLink{Href: "/de", Rel: "alternate", Hreflang: "de"}, `validate "/de": strict mode: unsupported scheme ""`},
+		}
+		for _, test := range tests {
+			s := &S{cfg: config{strict: true}}
+			valid, errs := s.validateAndFilterHreflangs(page, []AlternateLink{test.link})
+			mustEqual(t, "links kept", len(valid), 0)
+			if len(errs) != 1 {
+				t.Fatalf("got the errors %v, want one", errs)
+			}
+			mustEqual(t, "error", errs[0].Error(), test.want)
+		}
+	})
+}

@@ -3433,26 +3433,69 @@ func (s *S) validatePriority(loc string, priority *float32) error {
 // loc is the parent page URL: the error for an image without a Loc names it, there being
 // no URL of the image to name.
 func (s *S) validateAndFilterImages(loc string, images []Image) ([]Image, []error) {
-	if len(images) == 0 {
-		return images, nil
+	return validateAndFilter(s, loc, images, &imageRules)
+}
+
+// imageRules are the rules validateAndFilterImages documents.
+var imageRules = extensionRules[Image]{
+	element: "image <loc>",
+	url:     func(img *Image) string { return img.Loc },
+	reject:  func(s *S, img *Image) error { return s.extensionURLError(img.Loc, s.cfg.strict) },
+	strict:  func(s *S, _ string, img *Image) []error { return s.secondaryURLErrors(img.License) },
+}
+
+// extensionRules are what validateAndFilter goes by for the entries of one extension: the
+// images, the videos or the alternate links of a page. Its functions are given what they
+// need, the instance and the page among it, and capture nothing: a set of rules is made
+// once, not for every page.
+type extensionRules[T any] struct {
+	// element names the element or the attribute that holds the URL an entry is known by,
+	// the way the error of an entry without that URL names it: "image <loc>".
+	element string
+	// url returns the URL an entry is known by.
+	url func(entry *T) string
+	// reject returns the error an entry that has that URL is left out for, and nil for an
+	// entry that is kept.
+	reject func(s *S, entry *T) error
+	// strict returns what strict mode reports about an entry that is kept, on the page at
+	// loc. It is nil if there is nothing else for strict mode to check.
+	strict func(s *S, loc string, entry *T) []error
+}
+
+// validateAndFilter validates the entries of an extension on the page at loc, and returns
+// the ones that are kept, in their order, along with the validation errors. It is what the
+// extensions have in common:
+//
+//   - An entry without the URL it is known by is left out: without a word in tolerant mode,
+//     and with an error that names loc in strict mode, there being no URL of the entry to
+//     name.
+//   - An entry rules.reject returns an error for is left out with that error.
+//   - Every other entry is kept. What rules.strict returns for it is reported in strict mode,
+//     and costs the entry nothing.
+//
+// entries is left as it is; a list with nothing in it is returned as it is.
+func validateAndFilter[T any](s *S, loc string, entries []T, rules *extensionRules[T]) ([]T, []error) {
+	if len(entries) == 0 {
+		return entries, nil
 	}
-	valid := images[:0:0]
+	valid := entries[:0:0]
 	var errs []error
-	for _, img := range images {
-		if img.Loc == "" {
+	for i := range entries {
+		entry := &entries[i]
+		if rules.url(entry) == "" {
 			if s.cfg.strict {
-				errs = append(errs, s.validationErrorf(loc, "strict mode: image <loc> is empty"))
+				errs = append(errs, s.validationErrorf(loc, "strict mode: %s is empty", rules.element))
 			}
 			continue
 		}
-		if err := s.extensionURLError(img.Loc, s.cfg.strict); err != nil {
+		if err := rules.reject(s, entry); err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		if s.cfg.strict {
-			errs = append(errs, s.secondaryURLErrors(img.License)...)
+		if s.cfg.strict && rules.strict != nil {
+			errs = append(errs, rules.strict(s, loc, entry)...)
 		}
-		valid = append(valid, img)
+		valid = append(valid, *entry)
 	}
 	return valid, errs
 }
@@ -3515,35 +3558,22 @@ func (s *S) validateNews(loc string, news *News, dateText *string) (*News, []err
 // record errors but keep the video entry.
 // loc is the parent page URL, which the errors that are not about a URL name.
 func (s *S) validateAndFilterVideos(loc string, videos []Video) ([]Video, []error) {
-	if len(videos) == 0 {
-		return videos, nil
-	}
-	valid := videos[:0:0]
-	var errs []error
-	for _, v := range videos {
-		if v.ThumbnailLoc == "" {
-			if s.cfg.strict {
-				errs = append(errs, s.validationErrorf(loc, "strict mode: video <thumbnail_loc> is empty"))
-			}
-			continue
-		}
-		if err := s.extensionURLError(v.ThumbnailLoc, s.cfg.strict); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if s.cfg.strict {
-			errs = append(errs, s.validateVideoFieldsStrict(loc, v)...)
-		}
-		valid = append(valid, v)
-	}
-	return valid, errs
+	return validateAndFilter(s, loc, videos, &videoRules)
+}
+
+// videoRules are the rules validateAndFilterVideos documents.
+var videoRules = extensionRules[Video]{
+	element: "video <thumbnail_loc>",
+	url:     func(v *Video) string { return v.ThumbnailLoc },
+	reject:  func(s *S, v *Video) error { return s.extensionURLError(v.ThumbnailLoc, s.cfg.strict) },
+	strict:  (*S).validateVideoFieldsStrict,
 }
 
 // validateVideoFieldsStrict checks non-fatal strict-mode constraints on a video entry.
 // A field that is missing or out of range is no URL that is rejected, so its error names loc,
 // the page the video is on, as the errors of a news entry do. The other URLs of the video
 // have to be URLs where they are given, see secondaryURLErrors; the error of one names it.
-func (s *S) validateVideoFieldsStrict(loc string, v Video) []error {
+func (s *S) validateVideoFieldsStrict(loc string, v *Video) []error {
 	var errs []error
 	if v.Title == "" {
 		errs = append(errs, s.validationErrorf(loc, "strict mode: video <title> is empty"))
@@ -3583,39 +3613,32 @@ func (s *S) validateVideoFieldsStrict(loc string, v Video) []error {
 // loc is the parent page URL: the error for a link without an Href names it, there being
 // no URL of the link to name.
 func (s *S) validateAndFilterHreflangs(loc string, links []AlternateLink) ([]AlternateLink, []error) {
-	if len(links) == 0 {
-		return links, nil
+	return validateAndFilter(s, loc, links, &hreflangRules)
+}
+
+// hreflangRules are the rules validateAndFilterHreflangs documents.
+var hreflangRules = extensionRules[AlternateLink]{
+	element: "alternate link <href>",
+	url:     func(link *AlternateLink) string { return link.Href },
+	reject:  (*S).hreflangError,
+}
+
+// hreflangError returns the error an alternate link that has an Href is left out for, and
+// nil for a link that is kept, see validateAndFilterHreflangs. The error names the Href.
+func (s *S) hreflangError(link *AlternateLink) error {
+	if len(link.Href) > maxLocLength {
+		return s.validationErrorf(link.Href, "URL exceeds maximum length of %d characters (%d)", maxLocLength, len(link.Href))
 	}
-	valid := links[:0:0]
-	var errs []error
-	for _, link := range links {
-		if link.Href == "" {
-			if s.cfg.strict {
-				errs = append(errs, s.validationErrorf(loc, "strict mode: alternate link <href> is empty"))
-			}
-			continue
-		}
-		if len(link.Href) > maxLocLength {
-			errs = append(errs, s.validationErrorf(link.Href, "URL exceeds maximum length of %d characters (%d)", maxLocLength, len(link.Href)))
-			continue
-		}
-		if s.cfg.strict {
-			if link.Rel != "alternate" {
-				errs = append(errs, s.validationErrorf(link.Href, "strict mode: alternate link <rel> must be \"alternate\", got %q", link.Rel))
-				continue
-			}
-			if link.Hreflang == "" {
-				errs = append(errs, s.validationErrorf(link.Href, "strict mode: alternate link <hreflang> is empty"))
-				continue
-			}
-			if err := s.validateAbsoluteURL(link.Href); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-		}
-		valid = append(valid, link)
+	if !s.cfg.strict {
+		return nil
 	}
-	return valid, errs
+	if link.Rel != "alternate" {
+		return s.validationErrorf(link.Href, "strict mode: alternate link <rel> must be \"alternate\", got %q", link.Rel)
+	}
+	if link.Hreflang == "" {
+		return s.validationErrorf(link.Href, "strict mode: alternate link <hreflang> is empty")
+	}
+	return s.validateAbsoluteURL(link.Href)
 }
 
 // resolveAndValidateLoc resolves and validates a <loc> URL found in a sitemap.
