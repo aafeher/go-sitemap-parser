@@ -341,21 +341,28 @@ func assertValidationErrorLimit(t *testing.T, mode string, strict bool, content 
 	}
 }
 
-// unique returns the values of list in the order they are in it, each of them
-// once.
-func unique(list []string) []string {
-	values := []string{}
-	for _, value := range list {
-		if !slices.Contains(values, value) {
-			values = append(values, value)
+// requestedOnce returns the URLs of list in the order they are in it, each of
+// the requests they stand for once: of the URLs that are spellings of one
+// request, the first. Two URLs are such spellings when requestKey returns the
+// same key for them, as for "https://example.com/" and "https://EXAMPLE.com:443/#top".
+// It is what a call lists of the sitemaps it is to fetch.
+func requestedOnce(list []string) []string {
+	urls := []string{}
+	keys := map[string]struct{}{}
+	for _, url := range list {
+		key := requestKey(url)
+		if _, requested := keys[key]; !requested {
+			keys[key] = struct{}{}
+			urls = append(urls, url)
 		}
 	}
-	return values
+	return urls
 }
 
 // assertSitemapsListed checks the sitemaps a call lists for content. With no
 // pattern set with SetFollow they are the sitemaps the call is to fetch: each
-// of them once, in the order the document lists them. A limit on the sitemaps
+// of them once however its URL is spelt, see requestedOnce, in the order the
+// document lists them. A limit on the sitemaps
 // takes nothing but the end off them, and is reported whenever there are more
 // of them and at no other time.
 func assertSitemapsListed(t *testing.T, mode string, strict bool, content string) {
@@ -370,7 +377,7 @@ func assertSitemapsListed(t *testing.T, mode string, strict bool, content string
 	toFetch, _ := New().SetStrict(strict).parseDocument(fuzzBaseURL, content)
 	unlimited := parse(0)
 	all := listedLocs(unlimited)
-	if want := unique(toFetch); !slicesEqual(all, want) {
+	if want := requestedOnce(toFetch); !slicesEqual(all, want) {
 		t.Fatalf("%s mode: the sitemaps listed are %q, the ones to fetch are %q", mode, all, want)
 	}
 	if count := unlimited.GetSitemapCount(); count != int64(len(all)) {
@@ -709,6 +716,7 @@ func FuzzParse(f *testing.F) {
 		`<urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xmlns:video="http://www.google.com/schemas/sitemap-video/1.1" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://example.com/p</loc><image:image><image:loc>https://[2001:db8::1]:8443/a.jpg</image:loc><image:license>https://[2001:db8::1]/licence[1]</image:license></image:image><image:image><image:loc>https://cdn.example.net/b.jpg?size[]=1</image:loc></image:image><video:video><video:thumbnail_loc>https://cdn.example.net/t.jpg?zoom=100%</video:thumbnail_loc></video:video><video:video><video:thumbnail_loc>https://cdn.example.net/t.jpg</video:thumbnail_loc><video:content_loc>https://cdn.example.net/v.mp4?q=%4</video:content_loc><video:view_count>-1</video:view_count></video:video><xhtml:link rel="alternate" hreflang="de" href="https://example.com/de?id]=1"/></url></urlset>`,
 		`<urlset><url><loc>https://example.com/é` + strings.Repeat("é", maxErrorTextLength) + `</loc><lastmod>` + strings.Repeat("ő", maxErrorTextLength) + `</lastmod></url><url><loc>https://` + strings.Repeat("a", 2*maxErrorTextLength) + `/%zz</loc></url></urlset>`,
 		`<` + strings.Repeat("é", maxErrorTextLength) + `/>`,
+		`<sitemapindex><sitemap><loc>/#00</loc></sitemap><sitemap><loc>.</loc></sitemap><sitemap><loc>https://EXAMPLE.com:443/</loc></sitemap><sitemap><loc>https://example.com/?</loc></sitemap></sitemapindex>`,
 		`<sitemapindex><sitemap><loc>`,
 		"",
 		"not xml at all",
@@ -1231,6 +1239,7 @@ func FuzzParseRobotsTXT(f *testing.F) {
 		"Sitemap: ftp://example.com/sitemap.xml\nSitemap: file:///etc/passwd\nSitemap: javascript:alert(1)\n",
 		"Sitemap: https://example.com/" + strings.Repeat("a", maxLocLength+100) + "\n",
 		"Sitemap: https://example.com/%zz.xml\n",
+		"Sitemap: https://example.com/a.xml\nSitemap: https://EXAMPLE.com:443/a.xml\nSitemap: /a.xml\nSitemap: /a.xml?\n",
 		"Sitemap: https://example.com/site map.xml?v=a b\nSitemap: https://EXAMPLE.com:8443/other-port.xml\n",
 		"Sitemap: //\nSitemap: ///no-host.xml\nSitemap: //:8080/port-only.xml\nSitemap: //::\nSitemap: //example.com:80:80/two-ports.xml\n",
 		"Sitemap: https:///no-host.xml\nSitemap: https://:8080/port-only.xml\nSitemap: https:no-slash.xml\nSitemap: https://user@/user-only.xml\n",
@@ -1282,8 +1291,9 @@ func FuzzParseRobotsTXT(f *testing.F) {
 			}
 
 			// With no pattern set with SetFollow, the sitemaps that are listed
-			// are the ones that are fetched, each of them once.
-			if listed, want := robotsTXTListed(strict, content), unique(locs); !slicesEqual(listed, want) {
+			// are the ones that are fetched, each of them once however its URL
+			// is spelt.
+			if listed, want := robotsTXTListed(strict, content), requestedOnce(locs); !slicesEqual(listed, want) {
 				t.Fatalf("%s mode: the sitemaps listed are %q, the ones to fetch are %q", mode, listed, want)
 			}
 		}
