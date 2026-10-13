@@ -39,6 +39,10 @@ If a fix is warranted, a patched release will be published and you will be credi
   - Anchor the patterns. A pattern matches anywhere in the URL, so `example\.com` also matches `https://example.com.evil.test/sitemap.xml`; `^https://example\.com/` does not.
   - The patterns are not applied to the URL passed to `Parse()`, and not to the URL a request is redirected to. Restrict redirects with the `CheckRedirect` of a custom `*http.Client`.
   - A pattern is matched against the URL, not against the address its host resolves to. It can keep the parser to the hosts it names; it cannot tell an internal address from a public one.
+- `SetStrict(true)` keeps the entries of a sitemap index to the host the index is on: an entry on another host, another port or the other protocol is reported as a `*ValidationError` and is not requested, as the protocol has a sitemap index list the sitemaps of its own host only. It is a part of the protection, not the whole of it:
+  - The sitemaps a `robots.txt` names are requested on whichever host they are, in strict mode too: the protocol lets a `robots.txt` name the sitemaps of other hosts.
+  - A request that is redirected is followed to wherever it leads, and the entries of a sitemap index that was reached through a redirect are compared with the URL it was served from. An index that is redirected to an internal host may list the sitemaps of that host.
+  - The host is compared by its name, not by the address the name resolves to, like a pattern of `SetFollow()`.
 - Use `SetMaxDepth()` to limit recursion depth (default: 10).
 - Use `SetMaxSitemaps()` to limit the number of requests a document can make the parser send (default: 50,000 sitemaps per call).
 - Use `SetMaxConcurrency()` to limit the number of concurrent outbound connections (default: 16).

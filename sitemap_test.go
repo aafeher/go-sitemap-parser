@@ -18570,3 +18570,73 @@ func TestValidateAndFilter(t *testing.T) {
 		}
 	})
 }
+
+// TestS_Parse_Strict_RequestsToOtherHosts checks what SECURITY.md says of strict
+// mode and the requests of the parser: an entry of a sitemap index on another
+// host is not requested, while a sitemap a robots.txt names on another host and
+// a URL a request is redirected to are.
+func TestS_Parse_Strict_RequestsToOtherHosts(t *testing.T) {
+	var requests atomic.Int64
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = fmt.Fprintf(w, `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>http://%s/page</loc></url></urlset>`, r.Host)
+	}))
+	defer other.Close()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const index = `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>%s</loc></sitemap></sitemapindex>`
+		switch r.URL.Path {
+		case "/index.xml":
+			_, _ = fmt.Fprintf(w, index, other.URL+"/sitemap.xml")
+		case "/robots.txt":
+			_, _ = fmt.Fprintf(w, "Sitemap: %s/sitemap.xml\n", other.URL)
+		case "/own-index.xml":
+			_, _ = fmt.Fprintf(w, index, server.URL+"/redirected.xml")
+		case "/redirected.xml":
+			http.Redirect(w, r, other.URL+"/sitemap.xml", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		path         string
+		strict       bool
+		wantRequests int64
+	}{
+		{"/index.xml", false, 1},
+		{"/index.xml", true, 0},
+		{"/robots.txt", false, 1},
+		{"/robots.txt", true, 1},
+		{"/own-index.xml", false, 1},
+		{"/own-index.xml", true, 1},
+		{"/redirected.xml", false, 1},
+		{"/redirected.xml", true, 1},
+	}
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("%s strict=%t", test.path, test.strict), func(t *testing.T) {
+			requests.Store(0)
+			s := New().SetStrict(test.strict)
+			requireParse(t, s, server.URL+test.path, nil)
+			mustEqual(t, "requests to the other host", requests.Load(), test.wantRequests)
+			mustEqual(t, "URLs", s.GetURLCount(), test.wantRequests)
+			if test.wantRequests == 1 {
+				mustEqual(t, "errors", s.GetErrorsCount(), int64(0))
+				return
+			}
+			errs := s.GetErrors()
+			if len(errs) != 1 {
+				t.Fatalf("got the errors %v, want one", errs)
+			}
+			var validationErr *ValidationError
+			if !errors.As(errs[0], &validationErr) {
+				t.Fatalf("got %T, want a *ValidationError", errs[0])
+			}
+			mustEqual(t, "URL of the error", validationErr.URL, other.URL+"/sitemap.xml")
+			if !strings.Contains(validationErr.Err.Error(), "does not match sitemap host") {
+				t.Errorf("got the error %v", validationErr.Err)
+			}
+		})
+	}
+}
