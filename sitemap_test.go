@@ -18322,3 +18322,145 @@ func TestParseLastModTime_OneLayoutTried(t *testing.T) {
 		t.Errorf("%d bytes allocated for a text of %d that is no date", allocated, len(long))
 	}
 }
+
+func TestRandomIndices(t *testing.T) {
+	// The sizes are on both sides of where the indices are kept track of another way, see
+	// denseSampleDivisor.
+	sizes := []struct{ n, length int }{
+		{0, 0},
+		{0, 5},
+		{1, 1},
+		{1, 7},
+		{1, 8},
+		{1, 9},
+		{2, 15},
+		{2, 16},
+		{2, 17},
+		{5, 5},
+		{5, 6},
+		{5, 1000},
+		{125, 1000},
+		{126, 1000},
+		{999, 1000},
+		{1000, 1000},
+	}
+	for _, size := range sizes {
+		t.Run(fmt.Sprintf("%d of %d", size.n, size.length), func(t *testing.T) {
+			for range 200 {
+				indices := randomIndices(size.n, size.length)
+				mustEqual(t, "indices", len(indices), size.n)
+				selected := make(map[int]bool, len(indices))
+				for _, index := range indices {
+					if index < 0 || index >= size.length {
+						t.Fatalf("index %d of a list of %d: %v", index, size.length, indices)
+					}
+					if selected[index] {
+						t.Fatalf("index %d selected twice: %v", index, indices)
+					}
+					selected[index] = true
+				}
+			}
+		})
+	}
+
+	// Each index is as likely as any other at each place of the result: of the 60,000
+	// selections, 10,000 are expected to have a given index at a given place, and 100 is the
+	// standard deviation of that number.
+	t.Run("every index is as likely at every place", func(t *testing.T) {
+		const length, rounds, expected, tolerance = 6, 60000, 10000, 1000
+		for _, n := range []int{1, 3, length} {
+			// A list that is as long is shuffled as a whole, and a longer one of which as few
+			// are selected is not written down.
+			for _, pad := range []int{0, length * denseSampleDivisor * 10} {
+				counts := make([][length]int, n)
+				for range rounds {
+					for place, index := range randomIndices(n, length+pad) {
+						// The indices of the longer list are counted by their remainder: each
+						// stands for as many of them.
+						counts[place][index%length]++
+					}
+				}
+				for place := range counts {
+					for index, count := range counts[place] {
+						if count < expected-tolerance || count > expected+tolerance {
+							t.Errorf("%d of %d: index %d was selected %d times at place %d, expected about %d",
+								n, length+pad, index, count, place, expected)
+						}
+					}
+				}
+			}
+		}
+	})
+
+	// Each selection of two is as likely as any other, whichever way they are selected.
+	t.Run("every pair is as likely", func(t *testing.T) {
+		const rounds, tolerance = 60000, 1000
+		for _, length := range []int{4, 40} {
+			// Of 40 indices, two are few enough not to write the list down. They are counted
+			// by their remainder; the pairs with the same remainder are left out.
+			counts := map[[2]int]int{}
+			total := 0
+			for total < rounds {
+				pair := randomIndices(2, length)
+				first, second := pair[0]%4, pair[1]%4
+				if first == second {
+					continue
+				}
+				counts[[2]int{first, second}]++
+				total++
+			}
+			mustEqual(t, "pairs", len(counts), 12)
+			for pair, count := range counts {
+				if expected := rounds / 12; count < expected-tolerance || count > expected+tolerance {
+					t.Errorf("of %d: the pair %v was selected %d times, expected about %d", length, pair, count, expected)
+				}
+			}
+		}
+	})
+}
+
+// TestS_GetRandomURLs_Selection checks that GetRandomURLs returns URLs of the
+// list, none of them twice, and that the list is left as it was.
+func TestS_GetRandomURLs_Selection(t *testing.T) {
+	const count = 1000
+	s := &S{urls: make([]URL, count)}
+	for i := range s.urls {
+		s.urls[i].Loc = fmt.Sprintf("https://example.com/page-%d", i)
+	}
+	listed := make(map[string]bool, count)
+	for _, u := range s.urls {
+		listed[u.Loc] = true
+	}
+	for _, n := range []int{1, 5, count / denseSampleDivisor, count/denseSampleDivisor + 1, count - 1, count, count + 1} {
+		t.Run(fmt.Sprintf("%d", n), func(t *testing.T) {
+			got := s.GetRandomURLs(n)
+			mustEqual(t, "URLs", len(got), min(n, count))
+			selected := make(map[string]bool, len(got))
+			for _, u := range got {
+				if !listed[u.Loc] {
+					t.Fatalf("%q is no URL of the list", u.Loc)
+				}
+				if selected[u.Loc] {
+					t.Fatalf("%q was selected twice", u.Loc)
+				}
+				selected[u.Loc] = true
+			}
+			for i, u := range s.urls {
+				mustEqual(t, "URL of the list", u.Loc, fmt.Sprintf("https://example.com/page-%d", i))
+			}
+		})
+	}
+
+	// A call for a few URLs costs no copy of the list, and no list of its indices either.
+	t.Run("the list is not copied", func(t *testing.T) {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		got := s.GetRandomURLs(5)
+		runtime.ReadMemStats(&after)
+		mustEqual(t, "URLs", len(got), 5)
+		indicesSize := uint64(count) * uint64(reflect.TypeOf(int(0)).Size())
+		if allocated := after.TotalAlloc - before.TotalAlloc; allocated > indicesSize/2 {
+			t.Errorf("%d bytes allocated for 5 URLs of %d, whose indices take up %d bytes", allocated, count, indicesSize)
+		}
+	})
+}

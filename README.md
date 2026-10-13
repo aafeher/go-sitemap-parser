@@ -984,6 +984,8 @@ randomURLs := s.GetRandomURLs(5)
 
 Each of them is a copy that is the caller's own, with everything it points to, like the URLs [`URLs()`](#urls) yields: it may be changed.
 
+What the call costs goes by `n`, not by the number of parsed URLs: a few URLs of millions are selected without copying the list.
+
 #### GetSitemaps
 
 Returns the sitemaps that the documents of the most recent `Parse()` / `ParseContext()` call list, as a `[]Sitemap` slice: the `Sitemap:` lines of the `robots.txt` the call was made for, and the entries of every sitemap index it read.
