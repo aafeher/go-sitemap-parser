@@ -2105,6 +2105,9 @@ func (s *S) hasRoomForURL() bool {
 // An error about a document is recorded no larger than maxErrorTextLength allows, see
 // boundError.
 //
+// A *ValidationError there is no room for is not made in the first place, see
+// validationErrorf.
+//
 // Must be called with s.mu held, unless no other goroutine has access to s.
 func (s *S) addError(err error) {
 	if s.hasRoomForError(err) {
@@ -2116,13 +2119,68 @@ func (s *S) addError(err error) {
 // hasRoomForError tells whether err is one to record, and counts it if it is, see addError.
 func (s *S) hasRoomForError(err error) bool {
 	if _, ok := err.(*ValidationError); ok {
-		if s.limits.maxValidationErrors > 0 && s.limits.validationErrors >= s.limits.maxValidationErrors {
+		if s.validationErrorsFull() {
 			s.limits.validationErrorsLeftOut = true
 			return false
 		}
 		s.limits.validationErrors++
 	}
 	return true
+}
+
+// validationErrorsFull tells whether the call has recorded as many validation errors as the
+// limit set with SetMaxValidationErrors allows, so that there is room for no other.
+func (s *S) validationErrorsFull() bool {
+	return s.limits.maxValidationErrors > 0 && s.limits.validationErrors >= s.limits.maxValidationErrors
+}
+
+// errValidationLeftOut is the *ValidationError that stands for every one there is no room
+// for, see validationErrorf. It is never recorded, and so never returned to a caller.
+var errValidationLeftOut error = &ValidationError{Err: errors.New("validation error left out")}
+
+// validationErrorf returns the *ValidationError that reports url, a URL of a document, for
+// the cause that format and args describe the way fmt.Errorf reads them. A format without
+// args is the message of the cause as it stands.
+//
+// A document may hold any number of entries that are wrong, and a limit keeps all but the
+// first of their errors from being recorded, see addError. Whether an entry is wrong has to
+// be found out for each of them all the same, as it decides whether the entry is returned,
+// but what is wrong with it is told to no one once there is no room for the error. Such an
+// error is therefore not made: errValidationLeftOut is returned in its place, which costs
+// nothing, where the message of an error that quotes a value of the document costs as much
+// as the value is long. addError leaves it out as it would the error itself, and notes that
+// an error had to be left out.
+//
+// The errors of a call only grow in number, so there is no room later for an error there
+// was no room for when it would have been made.
+//
+// Must be called with s.mu held, unless no other goroutine has access to s.
+func (s *S) validationErrorf(url string, format string, args ...any) error {
+	if s.validationErrorsFull() {
+		return errValidationLeftOut
+	}
+	if len(args) == 0 {
+		return &ValidationError{URL: url, Err: errors.New(format)}
+	}
+	return &ValidationError{URL: url, Err: fmt.Errorf(format, args...)}
+}
+
+// validationError returns the *ValidationError that reports url for cause, an error that has
+// been made already, see validationErrorf.
+func (s *S) validationError(url string, cause error) error {
+	if s.validationErrorsFull() {
+		return errValidationLeftOut
+	}
+	return &ValidationError{URL: url, Err: cause}
+}
+
+// invalidValueError returns the *ValidationError that reports loc for v, a value of its entry
+// that cannot be parsed, see validationErrorf.
+func (s *S) invalidValueError(loc string, v invalidValue) error {
+	if s.validationErrorsFull() {
+		return errValidationLeftOut
+	}
+	return &ValidationError{URL: loc, Err: v.err()}
 }
 
 // maxErrorTextLength is the length in bytes up to which an error about a document holds a
@@ -2612,7 +2670,7 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 	// entry when the value is one of its own, as it does for a priority out of range; a
 	// value of an extension costs the entry nothing more in either mode.
 	for _, invalid := range entry.invalid {
-		s.addError(&ValidationError{URL: u.Loc, Err: invalid.err()})
+		s.addError(s.invalidValueError(u.Loc, invalid))
 	}
 	if s.cfg.strict && entry.invalidOwn {
 		return
@@ -2633,7 +2691,7 @@ func (s *S) addURLEntry(entry *urlEntry, baseURL string) {
 	// Tolerant mode returns the URLs of the extensions the way it returns the location.
 	// Strict mode returns them as the document gives them, as it does the location.
 	if !s.cfg.strict {
-		u.encodeExtensionURLs()
+		s.encodeExtensionURLs(&u)
 	}
 	validImages, imageErrs := s.validateAndFilterImages(u.Loc, u.Images)
 	u.Images = validImages
@@ -2784,7 +2842,7 @@ func (s *S) lastMod(loc string, date dateElement) *LastModTime {
 	}
 	parsed, err := date.parse(*date.text)
 	if err != nil {
-		s.addError(&ValidationError{URL: loc, Err: invalidValue{element: date.name, text: *date.text}.err()})
+		s.addError(s.invalidValueError(loc, invalidValue{element: date.name, text: *date.text}))
 		return nil
 	}
 	return &parsed
@@ -3294,7 +3352,7 @@ func (s *S) validateChangeFreq(loc string, changeFreq *URLChangeFreq) error {
 		return nil
 	}
 	if !slices.Contains(changeFreqs[:], *changeFreq) {
-		return &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: invalid <changefreq> value %q", string(*changeFreq))}
+		return s.validationErrorf(loc, "strict mode: invalid <changefreq> value %q", string(*changeFreq))
 	}
 	return nil
 }
@@ -3308,7 +3366,7 @@ func (s *S) validatePriority(loc string, priority *float32) error {
 		return nil
 	}
 	if *priority < 0.0 || *priority > 1.0 {
-		return &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: priority %g is out of range [0.0, 1.0]", *priority)}
+		return s.validationErrorf(loc, "strict mode: priority %g is out of range [0.0, 1.0]", *priority)
 	}
 	return nil
 }
@@ -3320,7 +3378,7 @@ func (s *S) validatePriority(loc string, priority *float32) error {
 // an empty Loc is an error. In both modes, a Loc exceeding maxLocLength characters
 // is rejected. In strict mode, Loc must additionally be an absolute HTTP or HTTPS URL,
 // see extensionURLError. In tolerant mode the URLs of the images have been
-// percent-encoded by the time they get here, see URL.encodeExtensionURLs, as have those
+// percent-encoded by the time they get here, see encodeExtensionURLs, as have those
 // of the videos and of the alternate links.
 //
 // For an image that is kept, strict mode also validates License, a URL the image need not
@@ -3339,16 +3397,16 @@ func (s *S) validateAndFilterImages(loc string, images []Image) ([]Image, []erro
 	for _, img := range images {
 		if img.Loc == "" {
 			if s.cfg.strict {
-				errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: image <loc> is empty")})
+				errs = append(errs, s.validationErrorf(loc, "strict mode: image <loc> is empty"))
 			}
 			continue
 		}
-		if err := extensionURLError(img.Loc, s.cfg.strict); err != nil {
+		if err := s.extensionURLError(img.Loc, s.cfg.strict); err != nil {
 			errs = append(errs, err)
 			continue
 		}
 		if s.cfg.strict {
-			errs = append(errs, secondaryURLErrors(img.License)...)
+			errs = append(errs, s.secondaryURLErrors(img.License)...)
 		}
 		valid = append(valid, img)
 	}
@@ -3378,20 +3436,20 @@ func (s *S) validateNews(loc string, news *News, dateText *string) (*News, []err
 	}
 	var errs []error
 	if news.Title == "" {
-		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <title> is empty")})
+		errs = append(errs, s.validationErrorf(loc, "strict mode: news <title> is empty"))
 	}
 	if news.Publication.Name == "" {
-		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication><name> is empty")})
+		errs = append(errs, s.validationErrorf(loc, "strict mode: news <publication><name> is empty"))
 	}
 	if news.Publication.Language == "" {
-		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication><language> is empty")})
+		errs = append(errs, s.validationErrorf(loc, "strict mode: news <publication><language> is empty"))
 	}
 	if news.PublicationDate == nil {
 		switch {
 		case dateText == nil:
-			errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication_date> is missing")})
+			errs = append(errs, s.validationErrorf(loc, "strict mode: news <publication_date> is missing"))
 		case emptyElement(dateText):
-			errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: news <publication_date> is empty")})
+			errs = append(errs, s.validationErrorf(loc, "strict mode: news <publication_date> is empty"))
 		}
 	}
 	return news, errs
@@ -3421,16 +3479,16 @@ func (s *S) validateAndFilterVideos(loc string, videos []Video) ([]Video, []erro
 	for _, v := range videos {
 		if v.ThumbnailLoc == "" {
 			if s.cfg.strict {
-				errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: video <thumbnail_loc> is empty")})
+				errs = append(errs, s.validationErrorf(loc, "strict mode: video <thumbnail_loc> is empty"))
 			}
 			continue
 		}
-		if err := extensionURLError(v.ThumbnailLoc, s.cfg.strict); err != nil {
+		if err := s.extensionURLError(v.ThumbnailLoc, s.cfg.strict); err != nil {
 			errs = append(errs, err)
 			continue
 		}
 		if s.cfg.strict {
-			errs = append(errs, validateVideoFieldsStrict(loc, v)...)
+			errs = append(errs, s.validateVideoFieldsStrict(loc, v)...)
 		}
 		valid = append(valid, v)
 	}
@@ -3441,34 +3499,34 @@ func (s *S) validateAndFilterVideos(loc string, videos []Video) ([]Video, []erro
 // A field that is missing or out of range is no URL that is rejected, so its error names loc,
 // the page the video is on, as the errors of a news entry do. The other URLs of the video
 // have to be URLs where they are given, see secondaryURLErrors; the error of one names it.
-func validateVideoFieldsStrict(loc string, v Video) []error {
+func (s *S) validateVideoFieldsStrict(loc string, v Video) []error {
 	var errs []error
 	if v.Title == "" {
-		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: video <title> is empty")})
+		errs = append(errs, s.validationErrorf(loc, "strict mode: video <title> is empty"))
 	}
 	if v.Description == "" {
-		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: video <description> is empty")})
+		errs = append(errs, s.validationErrorf(loc, "strict mode: video <description> is empty"))
 	}
 	if v.ContentLoc == "" && v.PlayerLoc == "" {
-		errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: video must have at least one of <content_loc> or <player_loc>")})
+		errs = append(errs, s.validationErrorf(loc, "strict mode: video must have at least one of <content_loc> or <player_loc>"))
 	}
 	if v.Duration != nil && (*v.Duration < 1 || *v.Duration > maxVideoDuration) {
-		errs = append(errs, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: video <duration> %d is out of range [1, %d]", *v.Duration, maxVideoDuration)})
+		errs = append(errs, s.validationErrorf(loc, "strict mode: video <duration> %d is out of range [1, %d]", *v.Duration, maxVideoDuration))
 	}
 	if v.Rating != nil && (*v.Rating < 0.0 || *v.Rating > maxVideoRating) {
-		errs = append(errs, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: video <rating> %g is out of range [0.0, %g]", *v.Rating, maxVideoRating)})
+		errs = append(errs, s.validationErrorf(loc, "strict mode: video <rating> %g is out of range [0.0, %g]", *v.Rating, maxVideoRating))
 	}
 	if v.ViewCount != nil && *v.ViewCount < 0 {
-		errs = append(errs, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: video <view_count> %d is negative", *v.ViewCount)})
+		errs = append(errs, s.validationErrorf(loc, "strict mode: video <view_count> %d is negative", *v.ViewCount))
 	}
 	if len(v.Tags) > maxVideoTags {
-		errs = append(errs, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: video has %d tags, maximum is %d", len(v.Tags), maxVideoTags)})
+		errs = append(errs, s.validationErrorf(loc, "strict mode: video has %d tags, maximum is %d", len(v.Tags), maxVideoTags))
 	}
 	var uploaderInfo string
 	if v.Uploader != nil {
 		uploaderInfo = v.Uploader.Info
 	}
-	return append(errs, secondaryURLErrors(v.ContentLoc, v.PlayerLoc, uploaderInfo)...)
+	return append(errs, s.secondaryURLErrors(v.ContentLoc, v.PlayerLoc, uploaderInfo)...)
 }
 
 // validateAndFilterHreflangs validates the alternate link (hreflang) entries on a parsed URL
@@ -3489,24 +3547,24 @@ func (s *S) validateAndFilterHreflangs(loc string, links []AlternateLink) ([]Alt
 	for _, link := range links {
 		if link.Href == "" {
 			if s.cfg.strict {
-				errs = append(errs, &ValidationError{URL: loc, Err: errors.New("strict mode: alternate link <href> is empty")})
+				errs = append(errs, s.validationErrorf(loc, "strict mode: alternate link <href> is empty"))
 			}
 			continue
 		}
 		if len(link.Href) > maxLocLength {
-			errs = append(errs, &ValidationError{URL: link.Href, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(link.Href))})
+			errs = append(errs, s.validationErrorf(link.Href, "URL exceeds maximum length of %d characters (%d)", maxLocLength, len(link.Href)))
 			continue
 		}
 		if s.cfg.strict {
 			if link.Rel != "alternate" {
-				errs = append(errs, &ValidationError{URL: link.Href, Err: fmt.Errorf("strict mode: alternate link <rel> must be \"alternate\", got %q", link.Rel)})
+				errs = append(errs, s.validationErrorf(link.Href, "strict mode: alternate link <rel> must be \"alternate\", got %q", link.Rel))
 				continue
 			}
 			if link.Hreflang == "" {
-				errs = append(errs, &ValidationError{URL: link.Href, Err: errors.New("strict mode: alternate link <hreflang> is empty")})
+				errs = append(errs, s.validationErrorf(link.Href, "strict mode: alternate link <hreflang> is empty"))
 				continue
 			}
-			if err := validateAbsoluteURL(link.Href); err != nil {
+			if err := s.validateAbsoluteURL(link.Href); err != nil {
 				errs = append(errs, err)
 				continue
 			}
@@ -3544,37 +3602,37 @@ func (s *S) resolveAndValidateLoc(loc string, baseURL string) (string, error) {
 // to, the sitemaps named in a robots.txt do not.
 func (s *S) resolveAndValidate(loc string, baseURL string, onBaseHost bool) (string, error) {
 	if loc == "" {
-		return loc, &ValidationError{URL: baseURL, Err: errors.New("<loc> of an entry is empty or missing")}
+		return loc, s.validationErrorf(baseURL, "<loc> of an entry is empty or missing")
 	}
 
 	base, err := neturl.Parse(baseURL)
 	if err != nil {
-		return loc, &ValidationError{URL: baseURL, Err: err}
+		return loc, s.validationError(baseURL, err)
 	}
 
 	parsed, err := neturl.Parse(loc)
 	if err != nil {
-		return loc, &ValidationError{URL: loc, Err: err}
+		return loc, s.validationError(loc, err)
 	}
 
 	if s.cfg.strict {
 		if err := strictURLError(loc, parsed); err != nil {
-			return loc, &ValidationError{URL: loc, Err: err}
+			return loc, s.validationError(loc, err)
 		}
 		if onBaseHost && parsed.Scheme != base.Scheme {
-			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: scheme %q does not match sitemap scheme %q", parsed.Scheme, base.Scheme)}
+			return loc, s.validationErrorf(loc, "strict mode: scheme %q does not match sitemap scheme %q", parsed.Scheme, base.Scheme)
 		}
 		if onBaseHost && !sameHost(parsed, base) {
-			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("strict mode: host %q does not match sitemap host %q", parsed.Host, base.Host)}
+			return loc, s.validationErrorf(loc, "strict mode: host %q does not match sitemap host %q", parsed.Host, base.Host)
 		}
 		if len(loc) > maxLocLength {
-			return loc, &ValidationError{URL: loc, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(loc))}
+			return loc, s.validationErrorf(loc, "URL exceeds maximum length of %d characters (%d)", maxLocLength, len(loc))
 		}
 		return loc, nil
 	}
 
 	// Tolerant mode: resolve relative URLs against the base
-	resolved, err := tolerantURL(loc, parsed, base)
+	resolved, err := s.tolerantURL(loc, parsed, base)
 	if err != nil {
 		return loc, err
 	}
@@ -3587,14 +3645,14 @@ func (s *S) resolveAndValidate(loc string, baseURL string, onBaseHost bool) (str
 // returns a *ValidationError for a loc that does not resolve to an HTTP or HTTPS URL which
 // names a host, is of at most maxLocLength characters and is one neturl.Parse accepts. parsed
 // is loc as neturl.Parse reads it.
-func tolerantURL(loc string, parsed, base *neturl.URL) (string, error) {
+func (s *S) tolerantURL(loc string, parsed, base *neturl.URL) (string, error) {
 	resolved := base.ResolveReference(parsed)
 	resolved.Host = asciiHost(resolved)
 	if resolved.Scheme != "http" && resolved.Scheme != "https" {
-		return "", &ValidationError{URL: resolved.String(), Err: fmt.Errorf("unsupported scheme %q", resolved.Scheme)}
+		return "", s.validationErrorf(resolved.String(), "unsupported scheme %q", resolved.Scheme)
 	}
 	if resolved.Hostname() == "" || namesNoHost(loc, parsed) {
-		return "", &ValidationError{URL: loc, Err: errors.New("missing host")}
+		return "", s.validationErrorf(loc, "missing host")
 	}
 	// A space is no part of a URL, and neither is a character that is not in ASCII: a request
 	// for a URL with one of them in it is malformed. Those of the path and the fragment are
@@ -3602,7 +3660,7 @@ func tolerantURL(loc string, parsed, base *neturl.URL) (string, error) {
 	// this takes care of the rest, the ones of the query.
 	resolvedStr := percentEncode(resolved.String())
 	if len(resolvedStr) > maxLocLength {
-		return "", &ValidationError{URL: resolvedStr, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(resolvedStr))}
+		return "", s.validationErrorf(resolvedStr, "URL exceeds maximum length of %d characters (%d)", maxLocLength, len(resolvedStr))
 	}
 	// neturl.Parse checks the host of a URL only when the URL names its scheme, so a reference
 	// such as "//::" is read without complaint and resolves to "https://::", which is no URL.
@@ -3610,7 +3668,7 @@ func tolerantURL(loc string, parsed, base *neturl.URL) (string, error) {
 	// above, whatever differs from it is here.
 	if resolvedStr != loc {
 		if _, err := neturl.Parse(resolvedStr); err != nil {
-			return "", &ValidationError{URL: loc, Err: err}
+			return "", s.validationError(loc, err)
 		}
 	}
 	return resolvedStr, nil
@@ -3625,7 +3683,7 @@ func tolerantURL(loc string, parsed, base *neturl.URL) (string, error) {
 // scheme, one that names no host, one that cannot be parsed, and one that would be longer
 // than maxLocLength characters percent-encoded. Tolerant mode drops no image, video or
 // alternate link over the form of its URL, so there is nothing else to do about these.
-func tolerantExtensionURL(rawURL string) string {
+func (s *S) tolerantExtensionURL(rawURL string) string {
 	if encodableBytes(rawURL) == 0 {
 		return rawURL
 	}
@@ -3636,7 +3694,7 @@ func tolerantExtensionURL(rawURL string) string {
 	// The URL is resolved against nothing. An absolute URL resolves to itself whatever it is
 	// resolved against; a relative one is left without a scheme that way, and is no URL
 	// tolerantURL returns.
-	if encoded, err := tolerantURL(rawURL, parsed, &neturl.URL{}); err == nil {
+	if encoded, err := s.tolerantURL(rawURL, parsed, &neturl.URL{}); err == nil {
 		return encoded
 	}
 	return rawURL
@@ -3644,27 +3702,27 @@ func tolerantExtensionURL(rawURL string) string {
 
 // encodeURLs brings each of the given URLs of an extension into the form tolerant mode
 // returns it in, see tolerantExtensionURL.
-func encodeURLs(urls ...*string) {
+func (s *S) encodeURLs(urls ...*string) {
 	for _, u := range urls {
-		*u = tolerantExtensionURL(*u)
+		*u = s.tolerantExtensionURL(*u)
 	}
 }
 
 // encodeExtensionURLs brings the URLs of the extensions of u into the form tolerant mode
 // returns them in: those of its images, of its videos and of its alternate links.
-func (u *URL) encodeExtensionURLs() {
+func (s *S) encodeExtensionURLs(u *URL) {
 	for i := range u.Images {
-		encodeURLs(&u.Images[i].Loc, &u.Images[i].License)
+		s.encodeURLs(&u.Images[i].Loc, &u.Images[i].License)
 	}
 	for i := range u.Videos {
 		video := &u.Videos[i]
-		encodeURLs(&video.ThumbnailLoc, &video.ContentLoc, &video.PlayerLoc)
+		s.encodeURLs(&video.ThumbnailLoc, &video.ContentLoc, &video.PlayerLoc)
 		if video.Uploader != nil {
-			encodeURLs(&video.Uploader.Info)
+			s.encodeURLs(&video.Uploader.Info)
 		}
 	}
 	for i := range u.Hreflangs {
-		encodeURLs(&u.Hreflangs[i].Href)
+		s.encodeURLs(&u.Hreflangs[i].Href)
 	}
 }
 
@@ -3808,13 +3866,13 @@ func isControl(r rune) bool {
 // image and of a video, see secondaryURLErrors. It has to be a URL strictURLError has nothing
 // against; unlike the location of the page, it may be on any host.
 // It returns a *ValidationError for rawURL, or nil.
-func validateAbsoluteURL(rawURL string) error {
+func (s *S) validateAbsoluteURL(rawURL string) error {
 	parsed, err := neturl.Parse(rawURL)
 	if err == nil {
 		err = strictURLError(rawURL, parsed)
 	}
 	if err != nil {
-		return &ValidationError{URL: rawURL, Err: err}
+		return s.validationError(rawURL, err)
 	}
 	return nil
 }
@@ -3823,12 +3881,12 @@ func validateAbsoluteURL(rawURL string) error {
 // accepted. In both modes it must not exceed maxLocLength characters; when strict is set it
 // has to be an absolute HTTP or HTTPS URL as well, see validateAbsoluteURL. It returns a
 // *ValidationError for rawURL, or nil.
-func extensionURLError(rawURL string, strict bool) error {
+func (s *S) extensionURLError(rawURL string, strict bool) error {
 	if len(rawURL) > maxLocLength {
-		return &ValidationError{URL: rawURL, Err: fmt.Errorf("URL exceeds maximum length of %d characters (%d)", maxLocLength, len(rawURL))}
+		return s.validationErrorf(rawURL, "URL exceeds maximum length of %d characters (%d)", maxLocLength, len(rawURL))
 	}
 	if strict {
-		return validateAbsoluteURL(rawURL)
+		return s.validateAbsoluteURL(rawURL)
 	}
 	return nil
 }
@@ -3840,13 +3898,13 @@ func extensionURLError(rawURL string, strict bool) error {
 // absolute HTTP or HTTPS URL of at most maxLocLength characters, see extensionURLError.
 // It returns a *ValidationError for each URL that is not one. Such a URL costs the entry
 // nothing: the entry is returned with it, as the document gives it.
-func secondaryURLErrors(urls ...string) []error {
+func (s *S) secondaryURLErrors(urls ...string) []error {
 	var errs []error
 	for _, u := range urls {
 		if u == "" {
 			continue
 		}
-		if err := extensionURLError(u, true); err != nil {
+		if err := s.extensionURLError(u, true); err != nil {
 			errs = append(errs, err)
 		}
 	}
