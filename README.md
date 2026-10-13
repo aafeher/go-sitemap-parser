@@ -155,6 +155,8 @@ s = s.SetMaxResponseSize(10 * 1024 * 1024) // 10 MB
 s := sitemap.New().SetMaxResponseSize(10 * 1024 * 1024) // 10 MB
 ```
 
+See [`examples/maxresponsesize`](examples/maxresponsesize/main.go) for a runnable example.
+
 #### Max depth
 
 To set the maximum recursion depth for following sitemap indexes, use the `SetMaxDepth()` function. A sitemap index may reference other sitemap indexes; this limits how many levels deep the parser will follow. The default is 10.
@@ -317,6 +319,8 @@ s := sitemap.New().SetMaxConcurrency(8)
 
 Cancelling the supplied `context.Context` while sitemaps wait for a slot ends the wait at once. The sitemaps that were still waiting are not fetched, and nothing is recorded for them: that the call was cut short is reported once for the call, see [Parse with context](#parse-with-context).
 
+See [`examples/maxconcurrency`](examples/maxconcurrency/main.go) for a runnable example.
+
 #### Multi-threading
 
 By default, the package uses multi-threading to fetch and parse sitemaps concurrently.
@@ -390,6 +394,8 @@ s := sitemap.New().SetRules([]string{
 	`category/`,
 })
 ```
+
+See [`examples/rules`](examples/rules/main.go) for a runnable example.
 
 #### HTTP client
 
@@ -680,6 +686,8 @@ for _, e := range s.GetErrors() {
 }
 ```
 
+See [`examples/simple`](examples/simple/main.go) for a runnable example of a call and its result, and [`examples/advanced`](examples/advanced/main.go) for one that sets the instance up first and reads the URLs, their number and a random few of them afterwards.
+
 ### Parse with context
 
 For new code, prefer `ParseContext()` so that callers can propagate cancellation
@@ -828,6 +836,8 @@ The slice returned is the list the instance keeps, not a copy of it, so a call c
 - **It does not change afterwards.** URLs collected later are in what a later `GetURLs()` call returns.
 
 For URLs to change and for a list to sort, there is [`URLs()`](#urls), which yields each URL as a copy. The slice is never `nil`.
+
+See [`examples/geturls`](examples/geturls/main.go) for a runnable example.
 
 Each `URL` struct contains the following fields:
 - `Loc` (`string`) — the URL location; never empty, an entry without a `<loc>` is skipped
@@ -985,6 +995,8 @@ randomURLs := s.GetRandomURLs(5)
 Each of them is a copy that is the caller's own, with everything it points to, like the URLs [`URLs()`](#urls) yields: it may be changed.
 
 What the call costs goes by `n`, not by the number of parsed URLs: a few URLs of millions are selected without copying the list.
+
+See [`examples/getrandomurls`](examples/getrandomurls/main.go) for a runnable example.
 
 #### GetSitemaps
 
