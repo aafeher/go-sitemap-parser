@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
+	"os"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -18463,4 +18464,45 @@ func TestS_GetRandomURLs_Selection(t *testing.T) {
 			t.Errorf("%d bytes allocated for 5 URLs of %d, whose indices take up %d bytes", allocated, count, indicesSize)
 		}
 	})
+}
+
+// TestREADME_LinksEveryExample checks that the README links each program under
+// examples/, and no program that is not there.
+func TestREADME_LinksEveryExample(t *testing.T) {
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir("examples")
+	if err != nil {
+		t.Fatal(err)
+	}
+	examples := map[string]bool{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := os.Stat("examples/" + entry.Name() + "/main.go"); err != nil {
+			t.Errorf("examples/%s has no main.go: %v", entry.Name(), err)
+		}
+		examples[entry.Name()] = true
+	}
+	if len(examples) == 0 {
+		t.Fatal("no examples found")
+	}
+
+	linked := map[string]bool{}
+	for _, link := range regexp.MustCompile(`\]\(examples/([^/)]+)/main\.go\)`).FindAllStringSubmatch(string(readme), -1) {
+		linked[link[1]] = true
+	}
+	for name := range examples {
+		if !linked[name] {
+			t.Errorf("README.md does not link examples/%s/main.go", name)
+		}
+	}
+	for name := range linked {
+		if !examples[name] {
+			t.Errorf("README.md links examples/%s/main.go, which is not there", name)
+		}
+	}
 }
